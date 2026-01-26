@@ -2,6 +2,7 @@ import { getProject } from '@/lib/db/queries/projects'
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
+import { DeleteButton } from './_components/delete-button'
 
 type Props = {
     params: { id: string }
@@ -44,9 +45,13 @@ export default async function ProjectDetailPage({ params }: Props) {
                     </div>
                     <div className="flex gap-2">
                         <Button variant="outline" asChild>
-                            <Link href={`/projects/${project.id}/edit`}>Edit</Link>
+                            <Link
+                                href={`/projects/${project.id}/edit?title=${encodeURIComponent(project.title)}&logline=${encodeURIComponent(project.logline || '')}&duration=${project.duration_seconds || ''}&status=${project.status}`}
+                            >
+                                Edit
+                            </Link>
                         </Button>
-                        <Button variant="destructive">Delete</Button>
+                        <DeleteButton projectId={project.id} projectTitle={project.title} />
                     </div>
                 </div>
             </div>
