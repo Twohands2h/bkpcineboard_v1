@@ -14,7 +14,8 @@ NON implementare MAI questi elementi, anche se richiesti:
 
 1. **Duplicazione Entità**: Le entità non vengono MAI copiate. Solo single source of truth.
 2. **Organizzazione Basata su Cartelle**: La Shotlist È la struttura. No logica filesystem.
-3. **Creazione Entità Inline**: Le entità devono essere create deliberatamente nella Entity Library.
+3. **Creazione Entità Inline**: Nessuna creazione automatica o silenziosa. 
+   Se un @mention non esiste, la UI DEVE chiedere esplicitamente all'utente se creare l'entità nella Entity Library.
 4. **Shot ID Mutabili**: Gli Shot ID (1.1, 2.3) sono identificatori strutturali immutabili.
 5. **Feature di Produttività Generiche**: No kanban board, calendar view, o task assignment.
 6. **Entità/Shot Illimitati in Beta**: Limiti rigidi (5 entità, 10 shot) devono essere applicati.
@@ -55,6 +56,10 @@ lib/db/queries/       # Funzioni query organizzate per dominio
 3. **Sistema Riferimenti**: @mentions creano link relazionali, non copie di testo
 4. **Lineage Versioni**: parent_id traccia evoluzione generazioni
 5. **Memory First**: Ogni feature chiede "Preserva la memoria del film?"
+6. **Canvas Semantici**: Non esiste un "canvas generico"
+   - Pre-production canvas ≠ Shot canvas
+   - Ogni canvas ha semantica cinematografica esplicita
+   - La condivisione del codice avviene a livello di primitives, non di logica
 
 ## 💻 STANDARD CODICE
 
@@ -89,7 +94,8 @@ lib/db/queries/       # Funzioni query organizzate per dominio
 entities (
   id uuid PRIMARY KEY,
   project_id uuid NOT NULL,
-  name text UNIQUE per project,
+  slug text UNIQUE per project,
+  name text,
   type text CHECK (type IN ('character', 'environment', 'asset')),
   master_prompt text,
   metadata jsonb
@@ -99,8 +105,14 @@ entities (
 ### Vincoli
 - Max 5 entità per progetto (applicato in app logic)
 - Max 10 shot per progetto (applicato in app logic)
-- Nomi entità unici per progetto (vincolo database)
+- Slug entità unici per progetto (vincolo database)
 - Shot ID immutabili dopo creazione (app logic)
+
+### Identificatori Stabili
+- Ogni entità deve avere un identificatore stabile (slug/handle) separato dal display name
+- I riferimenti (@mentions) risolvono sempre verso lo slug, non verso il nome testuale
+- Lo slug viene generato dal nome alla creazione e rimane immutabile
+- Il display name può essere modificato senza rompere i riferimenti
 
 ### Policy RLS
 - Gli utenti possono accedere solo ai propri progetti
