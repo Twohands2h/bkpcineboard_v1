@@ -97,6 +97,94 @@ export type Database = {
         }
         Relationships: []
       }
+      shotlists: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: string
+          project_id: string
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          project_id: string
+          title?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          project_id?: string
+          title?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shotlists_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shots: {
+        Row: {
+          board_id: string | null
+          created_at: string
+          description: string | null
+          entity_references: Json
+          id: string
+          order_index: number
+          shot_number: string
+          shot_type: string | null
+          shotlist_id: string
+          status: string
+          title: string | null
+          updated_at: string
+        }
+        Insert: {
+          board_id?: string | null
+          created_at?: string
+          description?: string | null
+          entity_references?: Json
+          id?: string
+          order_index?: number
+          shot_number?: string
+          shot_type?: string | null
+          shotlist_id: string
+          status?: string
+          title?: string | null
+          updated_at?: string
+        }
+        Update: {
+          board_id?: string | null
+          created_at?: string
+          description?: string | null
+          entity_references?: Json
+          id?: string
+          order_index?: number
+          shot_number?: string
+          shot_type?: string | null
+          shotlist_id?: string
+          status?: string
+          title?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shots_shotlist_id_fkey"
+            columns: ["shotlist_id"]
+            isOneToOne: false
+            referencedRelation: "shotlists"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
