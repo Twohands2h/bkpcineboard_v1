@@ -87,16 +87,19 @@ export default async function ProjectDetailPage({ params }: Props) {
 
             {/* Placeholders for future sections */}
             <div className="space-y-6">
-                {/* Entities placeholder */}
-                <div className="border rounded-lg p-6">
-                    <h2 className="text-lg font-semibold mb-2">Entities</h2>
+                {/* Entities */}
+                <Link
+                    href={`/projects/${project.id}/entities`}
+                    className="block border rounded-lg p-6 hover:border-primary transition-colors"
+                >
+                    <h2 className="text-lg font-semibold mb-2">Project Memory</h2>
                     <p className="text-sm text-muted-foreground">
-                        Characters, environments, and assets will appear here.
+                        Characters, environments, and assets for this film.
                     </p>
                     <p className="text-xs text-muted-foreground mt-2">
-                        Coming in Week 4+
+                        Click to manage entities →
                     </p>
-                </div>
+                </Link>
 
                 {/* Shotlist placeholder */}
                 <div className="border rounded-lg p-6">
