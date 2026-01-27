@@ -93,7 +93,7 @@ export async function getShotsByEntity(
         .from('shots')
         .select('*')
         .eq('shotlist_id', shotlistId)
-        .contains('entity_references', [{ slug: entitySlug }])
+        .filter('entity_references', 'cs', JSON.stringify([{ slug: entitySlug }]))
         .order('order_index', { ascending: true })
 
     if (error) {
