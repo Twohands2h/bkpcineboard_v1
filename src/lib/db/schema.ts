@@ -14,6 +14,56 @@ export type Database = {
   }
   public: {
     Tables: {
+      entities: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: string
+          master_prompt: string | null
+          name: string
+          order_index: number | null
+          project_id: string
+          reference_images: Json
+          slug: string
+          type: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          master_prompt?: string | null
+          name: string
+          order_index?: number | null
+          project_id: string
+          reference_images?: Json
+          slug: string
+          type: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          master_prompt?: string | null
+          name?: string
+          order_index?: number | null
+          project_id?: string
+          reference_images?: Json
+          slug?: string
+          type?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "entities_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       projects: {
         Row: {
           created_at: string
