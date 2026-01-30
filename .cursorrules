@@ -1,280 +1,153 @@
-# CineBoard - Cursor AI Rules v1.2
-# Sistema di Memoria per Film AI - Governance dello Sviluppo
+# CineBoard - Cursor Rules
+# Version: 2.0
+# Date: January 28, 2026
 
-## 🎯 IDENTITÀ DEL PROGETTO
+## Project Identity
 
-CineBoard è un Sistema di Memoria per Film AI, NON uno strumento di produttività.
-- Risolviamo il "collasso di coerenza" nel filmmaking AI
-- Creiamo una nuova categoria: "Sistemi Operativi per Film AI"
-- NON siamo in competizione con Milanote/Notion/Miro
+CineBoard is the **AI Film Operating System** — the persistent memory of your AI film.
 
-## 🚫 RIFIUTI ARCHITETTURALI
+**Core Principle:**
+> CineBoard non genera, non interpreta, non riscrive.
+> Organizza, conserva, rende trasportabile.
 
-NON implementare MAI questi elementi, anche se richiesti:
+## Architecture
 
-1. **Duplicazione Entità**: Le entità non vengono MAI copiate. Solo single source of truth.
-2. **Organizzazione Basata su Cartelle**: La Shotlist È la struttura. No logica filesystem.
-3. **Creazione Entità Inline**: Nessuna creazione automatica o silenziosa. 
-   Se un @mention non esiste, la UI DEVE chiedere esplicitamente all'utente se creare l'entità nella Entity Library.
-4. **Shot ID Mutabili**: Gli Shot ID (1.1, 2.3) sono identificatori strutturali immutabili.
-5. **Feature di Produttività Generiche**: No kanban board, calendar view, o task assignment.
-6. **Entità/Shot Illimitati in Beta**: Limiti rigidi (5 entità, 10 shot) devono essere applicati.
-
-## 📐 ARCHITETTURA CORE
-
-### Domain Layer (Infrastruttura)
 ```
-lib/domain/entities/
-├── types.ts        # Tipi dominio entità (Character, Environment, Asset)
-├── invariants.ts   # Regole business (max 5 entità, unicità nomi)
-└── relations.ts    # Risoluzione riferimenti entità (@mentions)
-```
-
-- Le entità sono INFRASTRUTTURA, non componenti feature
-- Mai importare entità da components/entities/
-- Tutta la logica entità passa per lib/domain/entities/
-
-### Database Layer
-```
-supabase/migrations/  # UNICA FONTE DI VERITÀ
-lib/db/queries/       # Funzioni query organizzate per dominio
+PROJECT
+├── ENTITIES (canon)
+│   ├── Character
+│   ├── Environment
+│   └── Asset
+├── SHOTLIST (optional)
+│   └── SHOTS (narrative nodes)
+│       └── Board workspace (0:1)
+│           └── TAKES (production variants)
+├── BOARDS (creative canvas)
+│   ├── Free
+│   ├── Source (1:N Entity)
+│   └── Workspace (1:1 Entity/Shot)
+└── TEMPLATES (reusable structures)
 ```
 
-- Tutti i cambi schema SOLO in supabase/migrations/
-- Nessun file migration in lib/db/
-- Tipi TypeScript generati da Supabase
+## Code Patterns
 
-### Organizzazione Componenti
-- Cartelle dominio: projects/, entities/, shotlist/, shots/
-- Semantica cinema applicata (cinematic-canvas.tsx, non board-canvas.tsx)
-- Shot board sono workspace di generazione, NON moodboard generici
+### File Locations
+- Server Actions: `src/app/actions/`
+- Query Functions: `src/lib/db/queries/`
+- Types: `src/lib/db/schema.ts` (Supabase generated)
+- UI Components: `src/components/`
+- Pages: `src/app/` (App Router)
 
-## 🎬 PRINCIPI LOGICA CINEMA
+### NO Barrel Files
+- Import directly: `import { fn } from '@/lib/db/queries/entities'`
+- Never create `index.ts` for exports
 
-1. **Shotlist come Spina Dorsale**: Shot ID codificano gerarchia scena/shot (1.1 = Scena 1, Shot 1)
-2. **Persistenza Entità**: Personaggi/Ambienti/Asset con master prompt
-3. **Sistema Riferimenti**: @mentions creano link relazionali, non copie di testo
-4. **Lineage Versioni**: parent_id traccia evoluzione generazioni
-5. **Memory First**: Ogni feature chiede "Preserva la memoria del film?"
-6. **Canvas Semantici**: Non esiste un "canvas generico"
-   - Pre-production canvas ≠ Shot canvas
-   - Ogni canvas ha semantica cinematografica esplicita
-   - La condivisione del codice avviene a livello di primitives, non di logica
+### Server Action Pattern
+```typescript
+'use server'
+import { revalidatePath } from 'next/cache'
 
-## 💻 STANDARD CODICE
-
-### TypeScript
-- Strict mode abilitato
-- No tipi `any` (usa `unknown` se necessario)
-- Schema Zod per tutti i dati esterni
-- Tipi dominio da lib/domain/entities/types.ts
-
-### Pattern React
-- Server Component di default
-- Client Component solo quando necessario (usa direttiva "use client")
-- React Query per stato server (entità, shot, progetti)
-- Zustand solo per stato UI (canvas pan/zoom, selezioni)
-
-### Convenzioni Naming
-- Componenti: PascalCase (EntityCard.tsx)
-- Utilities: camelCase (resolveEntityReferences)
-- Database: snake_case (tabella entity_references)
-- Shot ID: Formato immutabile "1.1", "2.3" (Scena.Shot)
-
-### Struttura File
-- Un componente per file
-- Co-locare tipi con implementazione
-- Query in lib/db/queries/[domain].ts
-- Hook in lib/hooks/use-[feature].ts
-
-## 🗄️ REGOLE DATABASE
-
-### Tabelle Entità
-```sql
-entities (
-  id uuid PRIMARY KEY,
-  project_id uuid NOT NULL,
-  slug text UNIQUE per project,
-  name text,
-  type text CHECK (type IN ('character', 'environment', 'asset')),
-  master_prompt text,
-  metadata jsonb
-)
+export async function createAction(parentId: string, formData: FormData) {
+  // 1. Parse formData
+  // 2. Call query function
+  // 3. revalidatePath
+  // 4. Return { id } (no redirect on create)
+}
 ```
 
-### Vincoli
-- Max 5 entità per progetto (applicato in app logic)
-- Max 10 shot per progetto (applicato in app logic)
-- Slug entità unici per progetto (vincolo database)
-- Shot ID immutabili dopo creazione (app logic)
+### Query Function Pattern
+```typescript
+import { createClient } from '@/lib/supabase/server'
+import { Database } from '@/lib/db/schema'
 
-### Identificatori Stabili
-- Ogni entità deve avere un identificatore stabile (slug/handle) separato dal display name
-- I riferimenti (@mentions) risolvono sempre verso lo slug, non verso il nome testuale
-- Lo slug viene generato dal nome alla creazione e rimane immutabile
-- Il display name può essere modificato senza rompere i riferimenti
+type Resource = Database['public']['Tables']['resources']['Row']
 
-### Policy RLS
-- Gli utenti possono accedere solo ai propri progetti
-- Tutte le tabelle ereditano controllo accesso a livello progetto
-- Nessun accesso pubblico a nessuna tabella
-
-## 🔄 GESTIONE STATO
-
-### React Query (Stato Server)
-```tsx
-// ✅ CORRETTO
-const { data: entities } = useEntities(projectId);
-
-// ❌ SBAGLIATO
-const entities = useEntityStore((state) => state.entities);
+export async function getResource(id: string): Promise<Resource | null> {
+  const supabase = await createClient()
+  const { data, error } = await supabase.from('resources').select('*').eq('id', id).single()
+  if (error && error.code !== 'PGRST116') throw new Error(error.message)
+  return data
+}
 ```
 
-### Zustand (Solo Stato UI)
-```tsx
-// ✅ CORRETTO: Stato UI canvas
-const { zoom, pan } = useCanvasStore();
+### Page Component Pattern
+```typescript
+interface PageProps {
+  params: { id: string }  // NOT Promise, direct object
+}
 
-// ❌ SBAGLIATO: Dati server in Zustand
-const entities = useEntityStore((state) => state.entities);
+export default async function Page({ params }: PageProps) {
+  const { id } = params
+  // fetch data, render
+}
 ```
 
-## 🎨 PRINCIPI UI/UX
+## Vocabulary (Film-First)
 
-### Estetica Cinema
-- Dark mode primario (film noir)
-- Font monospace per numeri shot
-- Colori tipo entità: Character (viola), Environment (teal), Asset (arancione)
-- Formattazione minimale (no header/bullet eccessivi in prosa)
+Use cinematographic terms:
+- **Entity** = canonical character/environment/asset
+- **Shot** = narrative node (NOT generation)
+- **Take** = production variant (only in Shot Board)
+- **Board** = creative workspace
+- **Crystallize** = turn Board content into Entity/Shot
 
-### Strategia Responsive
-- Desktop (>1024px): Feature complete
-- Tablet (768-1024px): Layout semplificato
-- Mobile (<768px): Solo modalità viewer (no editing in v1.0)
+Avoid generic terms:
+- ❌ "module", "card", "item", "block"
+- ✅ "Shot", "Entity", "Take", "Board Node"
 
-### API Componenti
-```tsx
-// ✅ CORRETTO: Props esplicite
-<EntityBadge entity={entity} showType={true} />
+## Non-Negotiable Principles
 
-// ❌ SBAGLIATO: Comportamento implicito
-<EntityBadge {...entity} />
+1. **Board is always free** — no imposed type
+2. **Entity is canon** — master_prompt + reference_images
+3. **Shot is narrative** — no generation data
+4. **Take only for Shot** — Entity has no Takes
+5. **Export is foundational** — no lock-in
+6. **Templates are structure** — no canonical content
+7. **Nothing overwritten** — only superseded in time
+
+## Database
+
+- RLS enabled on all tables
+- Permissive policies during development
+- FK with CASCADE delete
+- Triggers for updated_at
+- JSONB for flexible data (entity_references)
+
+## Commands
+
+```bash
+# Development
+npm run dev
+
+# TypeScript check
+npx tsc --noEmit
+
+# Clear cache if errors
+rm -rf .next
+
+# Supabase
+npx supabase migration list
+npx supabase db push
+npx supabase gen types typescript --project-id [id] > src/lib/db/schema.ts
 ```
 
-## 🚀 WORKFLOW SVILUPPO
+## Current Status
 
-### Prima di Scrivere Codice
-1. Verifica se feature viola rifiuti architetturali
-2. Verifica separazione domain layer (entità = infrastruttura)
-3. Conferma logica cinema preservata (non logica produttività)
-4. Rivedi pattern esistenti nel codebase
+### Complete
+- Projects CRUD
+- Entities v1 (Character/Environment/Asset)
+- Shotlist + Shots
+- Entity ↔ Shot cross-navigation
+- Board Conceptual Design v2.0 FINAL
 
-### Quando Crei Componenti
-1. Server Component di default
-2. Aggiungi "use client" solo se necessario (hooks, eventi, stato)
-3. Importa tipi dominio da lib/domain/entities/types.ts
-4. Usa React Query per data fetching
+### Next
+- Board implementation (schema, queries, UI)
+- Takes
+- Export
 
-### Quando Scrivi Query
-1. Posiziona in lib/db/queries/[domain].ts
-2. Usa Supabase client da lib/supabase/server.ts
-3. Ritorna dati tipizzati (tipi da lib/db/schema.ts)
-4. Gestisci errori esplicitamente
+## Key Files
 
-### Quando Aggiungi Migration
-1. Crea in supabase/migrations/[NNN]_[description].sql
-2. Test locale: supabase db reset
-3. Verifica policy RLS
-4. Rigenera tipi: supabase gen types typescript
-
-## 🧪 FILOSOFIA TESTING
-
-### Testing Relazionale
-```
-Test: Aggiorna master prompt entità
-Verifica: Tutti gli shot riflettono il cambio
-Verifica: Pannello riferimenti si aggiorna
-Verifica: Nessun dato orfano
-```
-
-### Testing Limiti
-```
-Test: Crea 6a entità
-Verifica: UI blocca creazione
-Verifica: Mostra messaggio "Limite beta raggiunto"
-```
-
-### Testing Immutabilità
-```
-Test: Tentativo cambio shot ID
-Verifica: Operazione fallisce con grazia
-Verifica: Utente vede messaggio errore chiaro
-```
-
-## 📦 DIPENDENZE
-
-### Stack Core
-- Next.js 14 (App Router)
-- TypeScript (strict mode)
-- Supabase (auth + database)
-- React Query (stato server)
-- Zustand (stato UI)
-- Zod (validazione)
-- Shadcn UI (componenti)
-- @xyflow/react (canvas)
-
-### Policy Versioni
-- Blocca versioni major in package.json
-- Testa aggiornamenti in branch isolato
-- Mai auto-update in produzione
-
-## 🎯 FOCUS SETTIMANA 1
-
-**Giorni 1-2:** Setup progetto, flusso auth
-**Giorni 3-4:** Pagine auth (login/signup)
-**Giorni 5-7:** Schema database (tabella projects), CRUD progetti base
-
-**Fuori Scope Settimana 1:**
-- Implementazione canvas (Settimana 2)
-- Sistema entità (Settimana 4)
-- Shotlist (Settimana 7)
-- @References (Settimana 10)
-
-## 🚨 BANDIERE ROSSE
-
-Se vedi questi pattern, FERMATI e riconsidera:
-
-- ❌ "Aggiungiamo una feature cartelle per gli shot"
-- ❌ "Gli utenti dovrebbero poter duplicare entità"
-- ❌ "Rendiamo gli shot ID editabili"
-- ❌ "Aggiungiamo una vista kanban"
-- ❌ "Salviamo entità in Zustand"
-- ❌ "Creiamo entità automaticamente da @mentions"
-- ❌ "Permettiamo entità illimitate in beta"
-
-## ✅ LUCI VERDI
-
-Questi pattern si allineano con l'architettura CineBoard:
-
-- ✅ "Riferimenti entità risolti via relations.ts"
-- ✅ "Shot ID salvati come testo immutabile"
-- ✅ "Master prompt collegati alle entità"
-- ✅ "Shotlist applica struttura narrativa"
-- ✅ "React Query cachea dati entità"
-- ✅ "Limiti rigidi applicati a 5 entità, 10 shot"
-- ✅ "Logica cinema preservata nei nomi componenti"
-
-## 📚 DOCUMENTI CHIAVE
-
-1. RESEARCH_FINAL.md - Strategia creazione categoria
-2. FEATURE_SPECS.md - Definizioni feature
-3. TECH_STACK.md - Decisioni tecniche
-4. ROADMAP.md - Piano sviluppo 12 settimane
-5. WIREFRAMES_PLAN.md - Specifiche UI/UX
-
-## 🎬 PROMEMORIA FINALE
-
-Ogni riga di codice deve rispondere:
-**"Preserva la memoria del film?"**
-
-Se no, riconsidera l'implementazione.
+- `BOARD_CONCEPTUAL_DESIGN.md` — Source of truth for Board architecture
+- `FEATURE_SPECS_v2.0.md` — Feature specifications
+- `ROADMAP_v2.0.md` — Development timeline
+- `TECH_STACK_v2.0.md` — Technical decisions

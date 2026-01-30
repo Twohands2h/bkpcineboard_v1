@@ -40,6 +40,7 @@ export function generateSlug(name: string): string {
 /**
  * Get all entities for a project
  * Ordered by type, then name
+ * Filters only active entities (soft delete support)
  */
 export async function getEntitiesByProject(
     projectId: string
@@ -50,6 +51,7 @@ export async function getEntitiesByProject(
         .from('entities')
         .select('*')
         .eq('project_id', projectId)
+        .eq('status', 'active')
         .order('type', { ascending: true })
         .order('name', { ascending: true })
 
@@ -63,6 +65,7 @@ export async function getEntitiesByProject(
 
 /**
  * Get entities by type for a project
+ * Filters only active entities
  */
 export async function getEntitiesByType(
     projectId: string,
@@ -75,6 +78,7 @@ export async function getEntitiesByType(
         .select('*')
         .eq('project_id', projectId)
         .eq('type', type)
+        .eq('status', 'active')
         .order('name', { ascending: true })
 
     if (error) {
@@ -111,6 +115,7 @@ export async function getEntity(id: string): Promise<EntityRow | null> {
 /**
  * Count entities in a project
  * Used to enforce max 5 limit in Server Action
+ * Counts only active entities
  */
 export async function countEntitiesByProject(
     projectId: string
@@ -121,6 +126,7 @@ export async function countEntitiesByProject(
         .from('entities')
         .select('*', { count: 'exact', head: true })
         .eq('project_id', projectId)
+        .eq('status', 'active')
 
     if (error) {
         console.error('Error counting entities:', error)
