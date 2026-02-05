@@ -1,11 +1,11 @@
 'use client'
 
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react'
 import { NodeShell } from './NodeShell'
 import { NoteContent, type NoteData } from './NodeContent'
 
 // ===================================================
-// TAKE CANVAS — CONTAINER (CineBoard R1)
+// TAKE CANVAS — CONTAINER (CineBoard R1 + R3.4 + R3.6)
 // ===================================================
 
 interface TakeCanvasProps {
@@ -21,6 +21,11 @@ interface TakeCanvasProps {
     // Se rimossa, il sistema funziona identicamente — perde solo
     // la capacità di avvisare l'utente di cambiamenti non salvati.
     onDirty?: () => void
+    // ── R3.6: initialNodes seed-only ──
+    // Usato SOLO per inizializzare useState al mount.
+    // NON è una prop reattiva. NON genera useEffect.
+    // Serve SOLO per restore: nuovo Take parte con snapshot.payload.
+    initialNodes?: CanvasNode[]
 }
 
 interface CanvasNode {
@@ -34,12 +39,23 @@ interface CanvasNode {
     data: NoteData
 }
 
+// ── R3.4: Ref imperativo per lettura snapshot on-demand ──
+export interface TakeCanvasHandle {
+    getSnapshot: () => CanvasNode[]
+}
+
 type InteractionMode = 'idle' | 'dragging' | 'editing'
 
 const DRAG_THRESHOLD = 3
 
-export function TakeCanvas({ takeId, onDirty }: TakeCanvasProps) {
-    const [nodes, setNodes] = useState<CanvasNode[]>([])
+export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
+    function TakeCanvas({ takeId, onDirty, initialNodes }, ref) {
+    // ── R3.6: nodes inizializzati da initialNodes (seed-only) ──
+    // Lazy initializer: eseguito SOLO al mount.
+    // initialNodes NON è reattivo, NON genera useEffect.
+    const [nodes, setNodes] = useState<CanvasNode[]>(
+        () => initialNodes ?? []
+    )
     const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
     const [interactionMode, setInteractionMode] = useState<InteractionMode>('idle')
     const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
@@ -74,9 +90,15 @@ export function TakeCanvas({ takeId, onDirty }: TakeCanvasProps) {
         onDirty()
     }, [onDirty])
 
+    // ── R3.4: Esponi metodo imperativo per lettura snapshot ──
+    useImperativeHandle(ref, () => ({
+        getSnapshot: () => structuredClone(nodes)
+    }), [nodes])
+
     // Reset su cambio Take
+    // NOTA R3.6: setNodes([]) rimosso perché key={takeId} forza già
+    // unmount/remount completo. Reset esplicito interferirebbe con initialNodes.
     useEffect(() => {
-        setNodes([])
         setSelectedNodeId(null)
         setInteractionMode('idle')
         setEditingField(null)
@@ -278,7 +300,7 @@ export function TakeCanvas({ takeId, onDirty }: TakeCanvasProps) {
                             onDataChange={(data) => handleDataChange(node.id, data)}
                             onFieldFocus={handleFieldFocus}
                             onFieldBlur={handleFieldBlur}
-
+                            onStartEditing={(field) => handleStartEditing(node.id, field)}
                         />
                     </NodeShell>
                 ))}
@@ -291,4 +313,4 @@ export function TakeCanvas({ takeId, onDirty }: TakeCanvasProps) {
             </div>
         </div>
     )
-}
+})
