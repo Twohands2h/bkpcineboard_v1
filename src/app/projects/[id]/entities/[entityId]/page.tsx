@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { getProject } from '@/lib/db/queries/projects'
 import { getEntity } from '@/lib/db/queries/entities'
-import { getShotlistByProject } from '@/lib/db/queries/shotlists'
+import { getShotsByProject } from "@/lib/db/queries/shots"
 import { getShotsByEntity } from '@/lib/db/queries/shots'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -35,7 +35,7 @@ export default async function EntityDetailPage({ params }: PageProps) {
     if (!entity) notFound()
 
     // Get shots that reference this entity
-    const shotlist = await getShotlistByProject(projectId)
+    const shotlist = await getShotsByProject(projectId)
     const shotsUsingEntity = shotlist
         ? await getShotsByEntity(shotlist.id, entity.slug)
         : []

@@ -61,16 +61,16 @@ export async function getBoardWorkspaceLink(
   } else if (link.target_type === 'shot') {
     const { data: shot } = await supabase
       .from('shots')
-      .select('title, shot_number, shotlist_id, shotlists!inner(project_id)')
+      .select('visual_description, shot_number, scene_id, scenes!inner(project_id)')
       .eq('id', link.target_id)
       .single()
 
     if (shot) {
       // Supabase returns !inner relations as arrays, access first element
-      const shotlists = shot.shotlists as unknown as { project_id: string }[]
-      const projectId = shotlists?.[0]?.project_id
-      targetName = shot.title || `Shot ${shot.shot_number}`
-      targetUrl = projectId ? `/projects/${projectId}/shotlist/${link.target_id}` : ''
+      const scenes = shot.scenes as unknown as { project_id: string }[]
+      const projectId = scenes?.[0]?.project_id
+      targetName = shot.visual_description || `Shot ${shot.shot_number}`
+      targetUrl = projectId ? `/projects/${projectId}/shots/${link.target_id}` : ''
     }
   }
 
@@ -112,7 +112,7 @@ export async function getWorkspaceBoardForTarget(
   // Supabase returns !inner relations as arrays, access first element
   const boards = data.boards as unknown as { title: string }[]
   const boardTitle = boards?.[0]?.title || 'Untitled'
-  
+
   return {
     board_id: data.board_id,
     board_title: boardTitle
@@ -166,11 +166,11 @@ export async function getShotsForWorkspace(
 ): Promise<Array<{ id: string; title: string; shot_number: string; has_workspace: boolean }>> {
   const supabase = await createClient()
 
-  // Get all shots for project
+  // Get all shots for project via scenes
   const { data: shots, error } = await supabase
     .from('shots')
-    .select('id, title, shot_number, shotlists!inner(project_id)')
-    .eq('shotlists.project_id', projectId)
+    .select('id, visual_description, shot_number, scene_id, scenes!inner(project_id)')
+    .eq('scenes.project_id', projectId)
     .order('shot_number')
 
   if (error || !shots) {
@@ -189,7 +189,7 @@ export async function getShotsForWorkspace(
 
   return shots.map(s => ({
     id: s.id,
-    title: s.title || `Shot ${s.shot_number}`,
+    title: s.visual_description || `Shot ${s.shot_number}`,
     shot_number: s.shot_number,
     has_workspace: workspaceTargetIds.has(s.id)
   }))

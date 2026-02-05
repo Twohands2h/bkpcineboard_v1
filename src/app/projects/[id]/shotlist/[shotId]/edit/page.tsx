@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { getProject } from '@/lib/db/queries/projects'
 import { getShot } from '@/lib/db/queries/shots'
-import { getShotlistByProject } from '@/lib/db/queries/shotlists'
+import { getShotsByProject } from "@/lib/db/queries/shots"
 import { getEntitiesByProject } from '@/lib/db/queries/entities'
 import { ArrowLeft } from 'lucide-react'
 import { ShotForm } from '@/components/shots/shot-form'
@@ -20,7 +20,7 @@ export default async function EditShotPage({ params }: PageProps) {
     const shot = await getShot(shotId)
     if (!shot) notFound()
 
-    const shotlist = await getShotlistByProject(projectId)
+    const shotlist = await getShotsByProject(projectId)
     if (!shotlist) notFound()
 
     const entities = await getEntitiesByProject(projectId)

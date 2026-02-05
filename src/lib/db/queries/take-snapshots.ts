@@ -2,6 +2,7 @@
 // ============================================
 // TAKE SNAPSHOTS — Query & Domain Functions
 // CineBoard R2 · Persistenza Controllata
+// R3.5 · Snapshot History Read-Only
 // ============================================
 //
 // take_snapshots = registro storico append-only
@@ -132,4 +133,33 @@ export async function loadTakeSnapshotById(
     }
 
     return (snapshot as TakeSnapshotRow) ?? null
+}
+
+/**
+ * R3.5: Lista tutti gli snapshot di un Take (ordinati per created_at DESC)
+ * 
+ * Usato per snapshot history read-only nel UI.
+ * Audit trail: mostra ultimi N snapshot senza azioni mutative.
+ * 
+ * @param takeId - ID del Take
+ * @param limit - Numero massimo di snapshot da restituire (default 10)
+ */
+export async function listTakeSnapshots(
+    takeId: string,
+    limit: number = 10
+): Promise<TakeSnapshotRow[]> {
+    const supabase = await createClient()
+
+    const { data, error } = await supabase
+        .from('take_snapshots')
+        .select('*')
+        .eq('take_id', takeId)
+        .order('created_at', { ascending: false })
+        .limit(limit)
+
+    if (error) {
+        throw new Error(`Failed to list take snapshots: ${error.message}`)
+    }
+
+    return (data as TakeSnapshotRow[]) ?? []
 }

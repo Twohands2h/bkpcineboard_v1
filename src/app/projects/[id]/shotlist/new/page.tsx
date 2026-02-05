@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { getProject } from '@/lib/db/queries/projects'
-import { getOrCreateShotlist } from '@/lib/db/queries/shotlists'
+import { getOrCreateShotlist } from "@/lib/db/queries/shots"
 import { getEntitiesByProject } from '@/lib/db/queries/entities'
 import { ArrowLeft } from 'lucide-react'
 import { ShotForm } from '@/components/shots/shot-form'

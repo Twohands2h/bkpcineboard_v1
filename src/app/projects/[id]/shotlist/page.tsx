@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { getProject } from '@/lib/db/queries/projects'
-import { getShotlistByProject } from '@/lib/db/queries/shotlists'
+import { getShotsByProject } from "@/lib/db/queries/shots"
 import { getShotsByShotlist } from '@/lib/db/queries/shots'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -31,7 +31,7 @@ export default async function ShotlistPage({ params }: PageProps) {
     const project = await getProject(projectId)
     if (!project) notFound()
 
-    const shotlist = await getShotlistByProject(projectId)
+    const shotlist = await getShotsByProject(projectId)
 
     // If no shotlist exists, show empty state
     if (!shotlist) {

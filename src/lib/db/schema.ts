@@ -14,54 +14,6 @@ export type Database = {
     }
     public: {
         Tables: {
-            board_derivations: {
-                Row: {
-                    board_id: string
-                    created_at: string
-                    ended_at: string | null
-                    fork_note: string | null
-                    forked_at: string
-                    id: string
-                    source_board_id: string
-                    status: string
-                }
-                Insert: {
-                    board_id: string
-                    created_at?: string
-                    ended_at?: string | null
-                    fork_note?: string | null
-                    forked_at?: string
-                    id?: string
-                    source_board_id: string
-                    status?: string
-                }
-                Update: {
-                    board_id?: string
-                    created_at?: string
-                    ended_at?: string | null
-                    fork_note?: string | null
-                    forked_at?: string
-                    id?: string
-                    source_board_id?: string
-                    status?: string
-                }
-                Relationships: [
-                    {
-                        foreignKeyName: "board_derivations_board_id_fkey"
-                        columns: ["board_id"]
-                        isOneToOne: false
-                        referencedRelation: "boards"
-                        referencedColumns: ["id"]
-                    },
-                    {
-                        foreignKeyName: "board_derivations_source_board_id_fkey"
-                        columns: ["source_board_id"]
-                        isOneToOne: false
-                        referencedRelation: "boards"
-                        referencedColumns: ["id"]
-                    },
-                ]
-            }
             board_links: {
                 Row: {
                     board_id: string
@@ -237,11 +189,45 @@ export type Database = {
                         referencedRelation: "projects"
                         referencedColumns: ["id"]
                     },
+                ]
+            }
+            decision_notes: {
+                Row: {
+                    body: string
+                    created_at: string
+                    id: string
+                    parent_id: string
+                    parent_type: string
+                    project_id: string
+                    status: string
+                    updated_at: string
+                }
+                Insert: {
+                    body: string
+                    created_at?: string
+                    id?: string
+                    parent_id: string
+                    parent_type: string
+                    project_id: string
+                    status?: string
+                    updated_at?: string
+                }
+                Update: {
+                    body?: string
+                    created_at?: string
+                    id?: string
+                    parent_id?: string
+                    parent_type?: string
+                    project_id?: string
+                    status?: string
+                    updated_at?: string
+                }
+                Relationships: [
                     {
-                        foreignKeyName: "boards_template_id_fkey"
-                        columns: ["template_id"]
+                        foreignKeyName: "decision_notes_project_id_fkey"
+                        columns: ["project_id"]
                         isOneToOne: false
-                        referencedRelation: "templates"
+                        referencedRelation: "projects"
                         referencedColumns: ["id"]
                     },
                 ]
@@ -255,8 +241,11 @@ export type Database = {
                     name: string
                     order_index: number | null
                     project_id: string
+                    prompt_snippet: string | null
                     reference_images: Json
                     slug: string
+                    status: string
+                    trigger_token: string | null
                     type: string
                     updated_at: string
                 }
@@ -268,8 +257,11 @@ export type Database = {
                     name: string
                     order_index?: number | null
                     project_id: string
+                    prompt_snippet?: string | null
                     reference_images?: Json
                     slug: string
+                    status?: string
+                    trigger_token?: string | null
                     type: string
                     updated_at?: string
                 }
@@ -281,8 +273,11 @@ export type Database = {
                     name?: string
                     order_index?: number | null
                     project_id?: string
+                    prompt_snippet?: string | null
                     reference_images?: Json
                     slug?: string
+                    status?: string
+                    trigger_token?: string | null
                     type?: string
                     updated_at?: string
                 }
@@ -303,6 +298,8 @@ export type Database = {
                     id: string
                     logline: string | null
                     owner_id: string | null
+                    screenplay_file_url: string | null
+                    screenplay_text: string | null
                     status: string | null
                     title: string
                     updated_at: string
@@ -313,6 +310,8 @@ export type Database = {
                     id?: string
                     logline?: string | null
                     owner_id?: string | null
+                    screenplay_file_url?: string | null
+                    screenplay_text?: string | null
                     status?: string | null
                     title: string
                     updated_at?: string
@@ -323,17 +322,20 @@ export type Database = {
                     id?: string
                     logline?: string | null
                     owner_id?: string | null
+                    screenplay_file_url?: string | null
+                    screenplay_text?: string | null
                     status?: string | null
                     title?: string
                     updated_at?: string
                 }
                 Relationships: []
             }
-            shotlists: {
+            scenes: {
                 Row: {
                     created_at: string
                     description: string | null
                     id: string
+                    order_index: number
                     project_id: string
                     title: string
                     updated_at: string
@@ -342,21 +344,23 @@ export type Database = {
                     created_at?: string
                     description?: string | null
                     id?: string
+                    order_index?: number
                     project_id: string
-                    title?: string
+                    title: string
                     updated_at?: string
                 }
                 Update: {
                     created_at?: string
                     description?: string | null
                     id?: string
+                    order_index?: number
                     project_id?: string
                     title?: string
                     updated_at?: string
                 }
                 Relationships: [
                     {
-                        foreignKeyName: "shotlists_project_id_fkey"
+                        foreignKeyName: "scenes_project_id_fkey"
                         columns: ["project_id"]
                         isOneToOne: false
                         referencedRelation: "projects"
@@ -364,94 +368,233 @@ export type Database = {
                     },
                 ]
             }
-            shots: {
+            shot_entities: {
                 Row: {
-                    board_id: string | null
-                    created_at: string
-                    description: string | null
-                    entity_references: Json
-                    id: string
-                    order_index: number
-                    shot_number: string
-                    shot_type: string | null
-                    shotlist_id: string
-                    status: string
-                    title: string | null
-                    updated_at: string
+                    entity_id: string
+                    shot_id: string
                 }
                 Insert: {
-                    board_id?: string | null
-                    created_at?: string
-                    description?: string | null
-                    entity_references?: Json
-                    id?: string
-                    order_index?: number
-                    shot_number?: string
-                    shot_type?: string | null
-                    shotlist_id: string
-                    status?: string
-                    title?: string | null
-                    updated_at?: string
+                    entity_id: string
+                    shot_id: string
                 }
                 Update: {
-                    board_id?: string | null
-                    created_at?: string
-                    description?: string | null
-                    entity_references?: Json
-                    id?: string
-                    order_index?: number
-                    shot_number?: string
-                    shot_type?: string | null
-                    shotlist_id?: string
-                    status?: string
-                    title?: string | null
-                    updated_at?: string
+                    entity_id?: string
+                    shot_id?: string
                 }
                 Relationships: [
                     {
-                        foreignKeyName: "shots_shotlist_id_fkey"
-                        columns: ["shotlist_id"]
+                        foreignKeyName: "shot_entities_entity_id_fkey"
+                        columns: ["entity_id"]
                         isOneToOne: false
-                        referencedRelation: "shotlists"
+                        referencedRelation: "entities"
+                        referencedColumns: ["id"]
+                    },
+                    {
+                        foreignKeyName: "shot_entities_shot_id_fkey"
+                        columns: ["shot_id"]
+                        isOneToOne: false
+                        referencedRelation: "shots"
                         referencedColumns: ["id"]
                     },
                 ]
             }
-            take_items: {
+            shot_references: {
                 Row: {
-                    board_node_id: string
+                    caption: string | null
                     created_at: string
                     id: string
-                    metadata: Json | null
                     order_index: number
+                    shot_id: string
+                    source: string | null
+                    type: string
+                }
+                Insert: {
+                    caption?: string | null
+                    created_at?: string
+                    id?: string
+                    order_index?: number
+                    shot_id: string
+                    source?: string | null
+                    type?: string
+                }
+                Update: {
+                    caption?: string | null
+                    created_at?: string
+                    id?: string
+                    order_index?: number
+                    shot_id?: string
+                    source?: string | null
+                    type?: string
+                }
+                Relationships: [
+                    {
+                        foreignKeyName: "shot_references_shot_id_fkey"
+                        columns: ["shot_id"]
+                        isOneToOne: false
+                        referencedRelation: "shots"
+                        referencedColumns: ["id"]
+                    },
+                ]
+            }
+            shots: {
+                Row: {
+                    created_at: string
+                    id: string
+                    order_index: number
+                    project_id: string
+                    scene_id: string
+                    status: string
+                    technical_notes: string | null
+                    updated_at: string
+                    visual_description: string
+                }
+                Insert: {
+                    created_at?: string
+                    id?: string
+                    order_index?: number
+                    project_id: string
+                    scene_id: string
+                    status?: string
+                    technical_notes?: string | null
+                    updated_at?: string
+                    visual_description: string
+                }
+                Update: {
+                    created_at?: string
+                    id?: string
+                    order_index?: number
+                    project_id?: string
+                    scene_id?: string
+                    status?: string
+                    technical_notes?: string | null
+                    updated_at?: string
+                    visual_description?: string
+                }
+                Relationships: [
+                    {
+                        foreignKeyName: "shots_project_id_fkey"
+                        columns: ["project_id"]
+                        isOneToOne: false
+                        referencedRelation: "projects"
+                        referencedColumns: ["id"]
+                    },
+                    {
+                        foreignKeyName: "shots_scene_id_fkey"
+                        columns: ["scene_id"]
+                        isOneToOne: false
+                        referencedRelation: "scenes"
+                        referencedColumns: ["id"]
+                    },
+                ]
+            }
+            take_nodes: {
+                Row: {
+                    created_at: string
+                    data: Json
+                    height: number
+                    id: string
+                    order_index: number
+                    position_x: number
+                    position_y: number
+                    take_id: string
+                    type: string
+                    updated_at: string
+                    width: number
+                }
+                Insert: {
+                    created_at?: string
+                    data?: Json
+                    height?: number
+                    id?: string
+                    order_index?: number
+                    position_x?: number
+                    position_y?: number
+                    take_id: string
+                    type?: string
+                    updated_at?: string
+                    width?: number
+                }
+                Update: {
+                    created_at?: string
+                    data?: Json
+                    height?: number
+                    id?: string
+                    order_index?: number
+                    position_x?: number
+                    position_y?: number
+                    take_id?: string
+                    type?: string
+                    updated_at?: string
+                    width?: number
+                }
+                Relationships: [
+                    {
+                        foreignKeyName: "take_nodes_take_id_fkey"
+                        columns: ["take_id"]
+                        isOneToOne: false
+                        referencedRelation: "takes"
+                        referencedColumns: ["id"]
+                    },
+                ]
+            }
+            take_snapshots: {
+                Row: {
+                    created_at: string
+                    created_by: string
+                    id: string
+                    payload: Json
+                    project_id: string
+                    reason: string
+                    scene_id: string
+                    shot_id: string
                     take_id: string
                 }
                 Insert: {
-                    board_node_id: string
                     created_at?: string
+                    created_by: string
                     id?: string
-                    metadata?: Json | null
-                    order_index?: number
+                    payload: Json
+                    project_id: string
+                    reason: string
+                    scene_id: string
+                    shot_id: string
                     take_id: string
                 }
                 Update: {
-                    board_node_id?: string
                     created_at?: string
+                    created_by?: string
                     id?: string
-                    metadata?: Json | null
-                    order_index?: number
+                    payload?: Json
+                    project_id?: string
+                    reason?: string
+                    scene_id?: string
+                    shot_id?: string
                     take_id?: string
                 }
                 Relationships: [
                     {
-                        foreignKeyName: "take_items_board_node_id_fkey"
-                        columns: ["board_node_id"]
+                        foreignKeyName: "take_snapshots_project_id_fkey"
+                        columns: ["project_id"]
                         isOneToOne: false
-                        referencedRelation: "board_nodes"
+                        referencedRelation: "projects"
                         referencedColumns: ["id"]
                     },
                     {
-                        foreignKeyName: "take_items_take_id_fkey"
+                        foreignKeyName: "take_snapshots_scene_id_fkey"
+                        columns: ["scene_id"]
+                        isOneToOne: false
+                        referencedRelation: "scenes"
+                        referencedColumns: ["id"]
+                    },
+                    {
+                        foreignKeyName: "take_snapshots_shot_id_fkey"
+                        columns: ["shot_id"]
+                        isOneToOne: false
+                        referencedRelation: "shots"
+                        referencedColumns: ["id"]
+                    },
+                    {
+                        foreignKeyName: "take_snapshots_take_id_fkey"
                         columns: ["take_id"]
                         isOneToOne: false
                         referencedRelation: "takes"
@@ -462,35 +605,45 @@ export type Database = {
             takes: {
                 Row: {
                     created_at: string
-                    description: string | null
                     id: string
-                    name: string
-                    order_index: number
-                    shot_id: string
+                    media_type: string
+                    project_id: string
+                    prompt_snapshot: string | null
+                    shot_id: string | null
+                    source: string | null
                     status: string
-                    updated_at: string
+                    tool_meta: Json | null
                 }
                 Insert: {
                     created_at?: string
-                    description?: string | null
                     id?: string
-                    name: string
-                    order_index?: number
-                    shot_id: string
+                    media_type?: string
+                    project_id: string
+                    prompt_snapshot?: string | null
+                    shot_id?: string | null
+                    source?: string | null
                     status?: string
-                    updated_at?: string
+                    tool_meta?: Json | null
                 }
                 Update: {
                     created_at?: string
-                    description?: string | null
                     id?: string
-                    name?: string
-                    order_index?: number
-                    shot_id?: string
+                    media_type?: string
+                    project_id?: string
+                    prompt_snapshot?: string | null
+                    shot_id?: string | null
+                    source?: string | null
                     status?: string
-                    updated_at?: string
+                    tool_meta?: Json | null
                 }
                 Relationships: [
+                    {
+                        foreignKeyName: "takes_project_id_fkey"
+                        columns: ["project_id"]
+                        isOneToOne: false
+                        referencedRelation: "projects"
+                        referencedColumns: ["id"]
+                    },
                     {
                         foreignKeyName: "takes_shot_id_fkey"
                         columns: ["shot_id"]
@@ -500,59 +653,12 @@ export type Database = {
                     },
                 ]
             }
-            templates: {
-                Row: {
-                    created_at: string
-                    description: string | null
-                    id: string
-                    name: string
-                    project_id: string | null
-                    status: string
-                    structure: Json
-                    template_type: string | null
-                    updated_at: string
-                    user_id: string | null
-                }
-                Insert: {
-                    created_at?: string
-                    description?: string | null
-                    id?: string
-                    name: string
-                    project_id?: string | null
-                    status?: string
-                    structure?: Json
-                    template_type?: string | null
-                    updated_at?: string
-                    user_id?: string | null
-                }
-                Update: {
-                    created_at?: string
-                    description?: string | null
-                    id?: string
-                    name?: string
-                    project_id?: string | null
-                    status?: string
-                    structure?: Json
-                    template_type?: string | null
-                    updated_at?: string
-                    user_id?: string | null
-                }
-                Relationships: [
-                    {
-                        foreignKeyName: "templates_project_id_fkey"
-                        columns: ["project_id"]
-                        isOneToOne: false
-                        referencedRelation: "projects"
-                        referencedColumns: ["id"]
-                    },
-                ]
-            }
         }
         Views: {
             [_ in never]: never
         }
         Functions: {
-            [_ in never]: never
+            archive_board: { Args: { board_id: string }; Returns: Json }
         }
         Enums: {
             [_ in never]: never

@@ -1,282 +1,101 @@
 import { createClient } from '@/lib/supabase/server'
-import { Database } from '@/lib/db/schema'
 
-type Shot = Database['public']['Tables']['shots']['Row']
-type ShotInsert = Database['public']['Tables']['shots']['Insert']
-type ShotUpdate = Database['public']['Tables']['shots']['Update']
-
-// Type for entity references (JSONB structure)
-export interface EntityReference {
-    slug: string
-    role?: string
-    context_note?: string
+export interface Shot {
+  id: string
+  project_id: string
+  scene_id: string
+  visual_description: string
+  technical_notes: string | null
+  order_index: number
+  status: string
+  created_at: string
+  updated_at: string
 }
 
-export type ShotStatus = 'planning' | 'in_progress' | 'review' | 'done'
-
-// ============================================
-// READ
-// ============================================
-
 /**
- * Get all shots for a shotlist, ordered by order_index
+ * Get single shot by id
  */
-export async function getShotsByShotlist(shotlistId: string): Promise<Shot[]> {
-    const supabase = await createClient()
+export async function getShot(shotId: string): Promise<Shot | null> {
+  const supabase = await createClient()
 
-    const { data, error } = await supabase
-        .from('shots')
-        .select('*')
-        .eq('shotlist_id', shotlistId)
-        .order('order_index', { ascending: true })
+  const { data, error } = await supabase
+    .from('shots')
+    .select('*')
+    .eq('id', shotId)
+    .single()
 
-    if (error) {
-        throw new Error(`Failed to fetch shots: ${error.message}`)
-    }
-
-    return data ?? []
+  if (error) return null
+  return data as Shot
 }
 
 /**
- * Get single shot by ID
+ * Alias di getShot (per compatibilità)
  */
-export async function getShot(id: string): Promise<Shot | null> {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-        .from('shots')
-        .select('*')
-        .eq('id', id)
-        .single()
-
-    if (error && error.code !== 'PGRST116') {
-        throw new Error(`Failed to fetch shot: ${error.message}`)
-    }
-
-    return data
+export async function getShotById(shotId: string): Promise<Shot | null> {
+  return getShot(shotId)
 }
 
 /**
- * Get shots by status
+ * Get shots by project
  */
-export async function getShotsByStatus(
-    shotlistId: string,
-    status: ShotStatus
-): Promise<Shot[]> {
-    const supabase = await createClient()
+export async function getShotsByProject(projectId: string): Promise<Shot[]> {
+  const supabase = await createClient()
 
-    const { data, error } = await supabase
-        .from('shots')
-        .select('*')
-        .eq('shotlist_id', shotlistId)
-        .eq('status', status)
-        .order('order_index', { ascending: true })
+  const { data, error } = await supabase
+    .from('shots')
+    .select('*')
+    .eq('project_id', projectId)
+    .order('order_index', { ascending: true })
 
-    if (error) {
-        throw new Error(`Failed to fetch shots by status: ${error.message}`)
-    }
-
-    return data ?? []
+  if (error) return []
+  return data as Shot[]
 }
 
 /**
- * Get shots containing a specific entity
- * Uses JSONB containment operator
+ * Get shots by entity (STUB)
  */
-export async function getShotsByEntity(
-    shotlistId: string,
-    entitySlug: string
-): Promise<Shot[]> {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-        .from('shots')
-        .select('*')
-        .eq('shotlist_id', shotlistId)
-        .filter('entity_references', 'cs', JSON.stringify([{ slug: entitySlug }]))
-        .order('order_index', { ascending: true })
-
-    if (error) {
-        throw new Error(`Failed to fetch shots by entity: ${error.message}`)
-    }
-
-    return data ?? []
+export async function getShotsByEntity(_entityId: string): Promise<Shot[]> {
+  return []
 }
 
 /**
- * Count shots in a shotlist
+ * Get shots by shotlist (STUB - legacy)
  */
-export async function countShotsByShotlist(shotlistId: string): Promise<number> {
-    const supabase = await createClient()
-
-    const { count, error } = await supabase
-        .from('shots')
-        .select('*', { count: 'exact', head: true })
-        .eq('shotlist_id', shotlistId)
-
-    if (error) {
-        throw new Error(`Failed to count shots: ${error.message}`)
-    }
-
-    return count ?? 0
+export async function getShotsByShotlist(_shotlistId: string): Promise<Shot[]> {
+  return []
 }
 
 /**
- * Get next order_index for new shot
- */
-export async function getNextOrderIndex(shotlistId: string): Promise<number> {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-        .from('shots')
-        .select('order_index')
-        .eq('shotlist_id', shotlistId)
-        .order('order_index', { ascending: false })
-        .limit(1)
-        .single()
-
-    if (error && error.code !== 'PGRST116') {
-        throw new Error(`Failed to get next order index: ${error.message}`)
-    }
-
-    return data ? data.order_index + 1 : 0
-}
-
-// ============================================
-// CREATE
-// ============================================
-
-/**
- * Create a new shot
- * Auto-assigns order_index if not provided
+ * Create shot (STUB)
  */
 export async function createShot(
-    shotlistId: string,
-    data: {
-        shot_number: string
-        title?: string
-        description?: string
-        shot_type?: string
-        entity_references?: EntityReference[]
-        status?: ShotStatus
-        order_index?: number
-    }
+  _projectId: string,
+  _sceneId: string,
+  _data: Partial<Shot>
 ): Promise<Shot> {
-    const supabase = await createClient()
-
-    // Get next order_index if not provided
-    const orderIndex = data.order_index ?? await getNextOrderIndex(shotlistId)
-
-    const insertData: ShotInsert = {
-        shotlist_id: shotlistId,
-        shot_number: data.shot_number,
-        title: data.title ?? null,
-        description: data.description ?? null,
-        shot_type: data.shot_type ?? null,
-        entity_references: (data.entity_references ?? []) as unknown as Database['public']['Tables']['shots']['Insert']['entity_references'],
-        status: data.status ?? 'planning',
-        order_index: orderIndex,
-    }
-
-    const { data: shot, error } = await supabase
-        .from('shots')
-        .insert(insertData)
-        .select()
-        .single()
-
-    if (error) {
-        throw new Error(`Failed to create shot: ${error.message}`)
-    }
-
-    return shot
+  throw new Error('createShot not implemented')
 }
 
-// ============================================
-// UPDATE
-// ============================================
-
 /**
- * Update shot
- * Note: shotlist_id is immutable (shot belongs to one shotlist)
+ * Update shot (STUB)
  */
 export async function updateShot(
-    id: string,
-    data: {
-        shot_number?: string
-        title?: string
-        description?: string
-        shot_type?: string
-        entity_references?: EntityReference[]
-        status?: ShotStatus
-        order_index?: number
-    }
+  _shotId: string,
+  _data: Partial<Shot>
 ): Promise<Shot> {
-    const supabase = await createClient()
-
-    const updateData: ShotUpdate = {}
-    if (data.shot_number !== undefined) updateData.shot_number = data.shot_number
-    if (data.title !== undefined) updateData.title = data.title
-    if (data.description !== undefined) updateData.description = data.description
-    if (data.shot_type !== undefined) updateData.shot_type = data.shot_type
-    if (data.entity_references !== undefined) {
-        updateData.entity_references = data.entity_references as unknown as Database['public']['Tables']['shots']['Update']['entity_references']
-    }
-    if (data.status !== undefined) updateData.status = data.status
-    if (data.order_index !== undefined) updateData.order_index = data.order_index
-
-    const { data: shot, error } = await supabase
-        .from('shots')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single()
-
-    if (error) {
-        throw new Error(`Failed to update shot: ${error.message}`)
-    }
-
-    return shot
+  throw new Error('updateShot not implemented')
 }
 
 /**
- * Reorder shots (batch update order_index)
- * Takes array of { id, order_index } pairs
+ * Delete shot (STUB)
  */
-export async function reorderShots(
-    updates: Array<{ id: string; order_index: number }>
-): Promise<void> {
-    const supabase = await createClient()
-
-    // Supabase doesn't support batch update, so we do individual updates
-    // TODO: Consider RPC function for atomic reorder if performance is an issue
-    for (const update of updates) {
-        const { error } = await supabase
-            .from('shots')
-            .update({ order_index: update.order_index })
-            .eq('id', update.id)
-
-        if (error) {
-            throw new Error(`Failed to reorder shot ${update.id}: ${error.message}`)
-        }
-    }
+export async function deleteShot(_shotId: string): Promise<void> {
+  throw new Error('deleteShot not implemented')
 }
 
-// ============================================
-// DELETE
-// ============================================
-
 /**
- * Delete shot
+ * Get or create shotlist (STUB - legacy)
  */
-export async function deleteShot(id: string): Promise<void> {
-    const supabase = await createClient()
-
-    const { error } = await supabase
-        .from('shots')
-        .delete()
-        .eq('id', id)
-
-    if (error) {
-        throw new Error(`Failed to delete shot: ${error.message}`)
-    }
+export async function getOrCreateShotlist(_projectId: string): Promise<any> {
+  throw new Error('getOrCreateShotlist not implemented - legacy function')
 }

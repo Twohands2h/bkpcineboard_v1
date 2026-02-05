@@ -61,7 +61,7 @@ export async function crystallize(input: CrystallizeInput): Promise<CrystallizeR
   if (targetType === 'shot') {
     // Trova shotlist del progetto
     const { data: shotlist } = await supabase
-      .from('shotlists')
+      .from("@/lib/db/queries/shots")
       .select('id')
       .eq('project_id', projectId)
       .single()
@@ -127,7 +127,7 @@ export async function crystallize(input: CrystallizeInput): Promise<CrystallizeR
   // 2. Crea Board Workspace
   // ============================================
 
-  const boardTitle = targetType === 'shot' 
+  const boardTitle = targetType === 'shot'
     ? `${name} — Workspace`
     : `${name} — Workspace`
 
@@ -197,7 +197,7 @@ export async function crystallize(input: CrystallizeInput): Promise<CrystallizeR
         .insert(nodeCopies)
 
       if (insertError) throw new Error(`Failed to copy nodes: ${insertError.message}`)
-      
+
       console.log('Crystallize: nodes copied successfully')
     }
   }

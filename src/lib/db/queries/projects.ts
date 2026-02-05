@@ -1,121 +1,58 @@
 import { createClient } from '@/lib/supabase/server'
-import type { Database } from '@/lib/db/schema'
+import { Database } from '@/lib/db/schema'
 
-// ============================================
-// TYPES (DERIVED FROM SUPABASE SCHEMA)
-// ============================================
-
-type ProjectRow = Database['public']['Tables']['projects']['Row']
-type ProjectInsert = Database['public']['Tables']['projects']['Insert']
-type ProjectUpdate = Database['public']['Tables']['projects']['Update']
-
-// ============================================
-// QUERIES
-// ============================================
+type Project = Database['public']['Tables']['projects']['Row']
 
 /**
- * Get all projects
- * TODO: Add pagination when project count grows
+ * Get project by ID
+ * Usato dal layout per risoluzione canonica del Project
  */
-export async function getProjects(): Promise<ProjectRow[]> {
-    const supabase = await createClient()
+export async function getProject(projectId: string): Promise<Project | null> {
+  console.log('🔍 getProject called with ID:', projectId)
 
-    const { data, error } = await supabase
-        .from('projects')
-        .select('*')
-        .order('created_at', { ascending: false })
+  const supabase = await createClient()
+  console.log('✅ Supabase client created')
 
-    if (error) {
-        console.error('Error fetching projects:', error)
-        throw new Error('Failed to fetch projects')
+  const { data, error } = await supabase
+    .from('projects')
+    .select('*')
+    .eq('id', projectId)
+    .single()
+
+  console.log('📊 Query result:', {
+    found: !!data,
+    error: error?.message,
+    errorCode: error?.code,
+    data: data
+  })
+
+  if (error) {
+    if (error.code === 'PGRST116') {
+      console.log('❌ Project not found in DB')
+      return null
     }
+    console.error('🚨 Supabase error:', error)
+    throw new Error(`Failed to fetch project: ${error.message}`)
+  }
 
-    return data ?? []
+  console.log('✅ Project found:', data?.id)
+  return data
 }
 
 /**
- * Get single project by ID
+ * List all projects for current user
  */
-export async function getProject(id: string): Promise<ProjectRow | null> {
-    const supabase = await createClient()
+export async function listProjects(): Promise<Project[]> {
+  const supabase = await createClient()
 
-    const { data, error } = await supabase
-        .from('projects')
-        .select('*')
-        .eq('id', id)
-        .single()
+  const { data, error } = await supabase
+    .from('projects')
+    .select('*')
+    .order('created_at', { ascending: false })
 
-    if (error) {
-        if (error.code === 'PGRST116') {
-            // Not found
-            return null
-        }
-        console.error('Error fetching project:', error)
-        throw new Error('Failed to fetch project')
-    }
+  if (error) {
+    throw new Error(`Failed to list projects: ${error.message}`)
+  }
 
-    return data
-}
-
-/**
- * Create new project
- */
-export async function createProject(
-    input: ProjectInsert
-): Promise<ProjectRow> {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-        .from('projects')
-        .insert(input)
-        .select()
-        .single()
-
-    if (error) {
-        console.error('Error creating project:', error)
-        throw new Error('Failed to create project')
-    }
-
-    return data
-}
-
-/**
- * Update existing project
- */
-export async function updateProject(
-    id: string,
-    input: ProjectUpdate
-): Promise<ProjectRow> {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-        .from('projects')
-        .update(input)
-        .eq('id', id)
-        .select()
-        .single()
-
-    if (error) {
-        console.error('Error updating project:', error)
-        throw new Error('Failed to update project')
-    }
-
-    return data
-}
-
-/**
- * Delete project
- */
-export async function deleteProject(id: string): Promise<void> {
-    const supabase = await createClient()
-
-    const { error } = await supabase
-        .from('projects')
-        .delete()
-        .eq('id', id)
-
-    if (error) {
-        console.error('Error deleting project:', error)
-        throw new Error('Failed to delete project')
-    }
+  return data ?? []
 }

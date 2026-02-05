@@ -28,8 +28,8 @@ interface EntityOption {
 
 interface ShotOption {
   id: string
-  title: string
-  shot_number: string
+  title: string  // Da board-links action (visual_description)
+  shot_number: string  // Da board-links action (order_index come string)
   has_workspace: boolean
 }
 
@@ -229,8 +229,11 @@ export function SetWorkspaceDialog({
                         <div className="flex items-center gap-3">
                           <span>🎬</span>
                           <div className="flex-1 min-w-0">
-                            <p className="font-medium truncate">{shot.title}</p>
-                            <p className="text-xs text-gray-500">Shot {shot.shot_number}</p>
+                            <p className="font-medium truncate">
+                              {shot.title.slice(0, 50) || 'Untitled'}
+                              {shot.title.length > 50 && '...'}
+                            </p>
+                            <p className="text-xs text-gray-500">Shot #{shot.shot_number}</p>
                           </div>
                           {shot.has_workspace && (
                             <span className="text-xs text-gray-400">has workspace</span>
