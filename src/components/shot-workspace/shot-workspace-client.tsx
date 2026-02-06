@@ -19,14 +19,12 @@ import { createTakeAction } from '@/app/actions/takes'
 
 interface Shot {
   id: string
-  shot_number: string
-  title: string | null
-  description: string | null
-  status: string | null
-  shotlist_id: string
-  shot_type: string | null
-  entity_references: unknown
   order_index: number
+  project_id: string
+  scene_id: string
+  status: string
+  technical_notes: string | null
+  visual_description: string
   created_at: string
   updated_at: string
 }
@@ -163,15 +161,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     try {
       const result = await createTakeFromSnapshotAction(pendingRestoreSnapshotId)
 
+      // ADAPTER: DB take → component Take interface
       const newTake: Take = {
         id: result.take.id,
-        shot_id: result.take.shot_id,
-        name: result.take.name,
+        shot_id: result.take.shot_id ?? shot.id,
+        name: `Take ${takes.length + 1}`,
         description: null,
-        status: result.take.status as any,
-        order_index: result.take.order_index,
+        status: result.take.status,
+        order_index: takes.length,
         created_at: result.take.created_at,
-        updated_at: result.take.updated_at,
+        updated_at: result.take.created_at,
       }
 
       setTakes(prev => [...prev, newTake])
@@ -212,7 +211,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
   if (takes.length === 0) {
     return (
       <div className="flex-1 flex flex-col">
-        <ShotHeader shot={shot} />
+        <ShotHeader shot={shot} projectId={projectId} />
 
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
           <div className="text-center">

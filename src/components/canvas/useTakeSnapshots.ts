@@ -71,7 +71,7 @@ interface TakeSnapshot {
  *
  *   // Per resettare un Take al checkpoint di ingresso:
  *   const saved = restoreSnapshot(takeId)
- *   if (saved) { /* remount TakeCanvas con saved come initialNodes */ }
+ *   if (saved) { // remount TakeCanvas con saved come initialNodes }
  *
  *   // Al cleanup dello Shot:
  *   clearSnapshots()

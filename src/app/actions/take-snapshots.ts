@@ -171,25 +171,25 @@ export async function createTakeFromSnapshotAction(
         .eq('shot_id', snapshot.shot_id)
         .order('order_index', { ascending: false })
         .limit(1)
-    
-    const nextOrderIndex = existingTakes && existingTakes.length > 0 
-        ? existingTakes[0].order_index + 1 
+
+    const nextOrderIndex = existingTakes && existingTakes.length > 0
+        ? existingTakes[0].order_index + 1
         : 0
 
     // 4. Crea nuovo Take (query atomica)
-    const newTake = await createTake({
-        shot_id: snapshot.shot_id,
-        name: takeName,
-        description: `Restored from snapshot ${snapshot.id}`,
-        status: 'draft',
-        order_index: nextOrderIndex,
-    })
+    const newTake = await createTake(
+        snapshot.project_id,
+        snapshot.shot_id,
+        {
+            status: 'draft',
+        }
+    )
 
     // 5. Salva snapshot iniziale per il nuovo Take
     //    Tentativo reason = 'restore_from_snapshot'
     //    Fallback = 'manual_save' se ENUM non supporta
     let snapshotReason: 'restore_from_snapshot' | 'manual_save' = 'restore_from_snapshot'
-    
+
     try {
         await saveTakeSnapshot({
             project_id: snapshot.project_id,
@@ -217,12 +217,9 @@ export async function createTakeFromSnapshotAction(
     return {
         take: {
             id: newTake.id,
-            name: newTake.name,
             shot_id: newTake.shot_id,
             status: newTake.status,
-            order_index: newTake.order_index,
             created_at: newTake.created_at,
-            updated_at: newTake.updated_at,
         },
         snapshot: {
             id: snapshot.id,
