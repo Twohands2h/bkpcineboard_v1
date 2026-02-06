@@ -37,7 +37,8 @@ export async function saveTakeSnapshotAction(params: {
     shot_id: string
     take_id: string
     payload: unknown
-    reason: 'manual_save' | 'publish' | 'checkpoint'
+    reason: 'manual_save' | 'publish' | 'checkpoint' | 'duplicate_take_seed'
+
 }) {
     if (!params.project_id || !params.scene_id || !params.shot_id || !params.take_id) {
         throw new Error('All IDs (project, scene, shot, take) are required')
