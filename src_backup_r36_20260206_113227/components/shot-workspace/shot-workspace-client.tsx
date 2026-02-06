@@ -1,34 +1,37 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { ShotHeader } from './shot-header'
 import { TakeTabs } from './take-tabs'
 import { TakeCanvas, type TakeCanvasHandle } from '@/components/canvas/TakeCanvas'
 import { RestoreConfirmModal } from './restore-confirm-modal'
-import type { CanvasNode } from '@/components/canvas/types'
 import {
   saveTakeSnapshotAction,
   loadAllTakeSnapshotsAction,
   createTakeFromSnapshotAction
 } from '@/app/actions/take-snapshots'
-import type { Shot } from '@/lib/db/queries/shots'
+import { createTakeAction } from '@/app/actions/takes'
 
 // ===================================================
 // SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.3 + R3.4 + R3.5 + R3.6)
 // ===================================================
 
-type TakeDB = {
+interface Shot {
   id: string
-  shot_id: string | null
-  project_id: string
-  media_type: string
-  source: string | null
-  status: string
+  shot_number: string
+  title: string | null
+  description: string | null
+  status: string | null
+  shotlist_id: string
+  shot_type: string | null
+  entity_references: unknown
+  order_index: number
   created_at: string
+  updated_at: string
 }
 
-// UI-only type: mappa Take DB → interfaccia workspace
-interface WorkspaceTake {
+interface Take {
   id: string
   shot_id: string
   name: string
@@ -49,26 +52,14 @@ type SaveStatus = 'idle' | 'saving' | 'success'
 
 interface ShotWorkspaceClientProps {
   shot: Shot
-  takes: TakeDB[]
+  takes: Take[]
   projectId: string
 }
 
-// Helper: mappa Take DB → WorkspaceTake UI
-function mapToWorkspaceTakes(dbTakes: TakeDB[]): WorkspaceTake[] {
-  return dbTakes.map((t, index) => ({
-    id: t.id,
-    shot_id: t.shot_id || '',
-    name: `Take ${index + 1}`,
-    description: null,
-    status: t.status,
-    order_index: index + 1,
-    created_at: t.created_at,
-    updated_at: t.created_at,
-  }))
-}
+export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: ShotWorkspaceClientProps) {
+  const router = useRouter()
 
-export function ShotWorkspaceClient({ shot, takes: dbTakes, projectId }: ShotWorkspaceClientProps) {
-  const [takes, setTakes] = useState<WorkspaceTake[]>(mapToWorkspaceTakes(dbTakes))
+  const [takes, setTakes] = useState<Take[]>(initialTakes)
 
   const defaultTakeId = takes.length > 0 ? takes[0].id : null
   const [currentTakeId, setCurrentTakeId] = useState<string | null>(defaultTakeId)
@@ -81,7 +72,7 @@ export function ShotWorkspaceClient({ shot, takes: dbTakes, projectId }: ShotWor
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [showHistory, setShowHistory] = useState(false)
 
-  const [restoredSnapshot, setRestoredSnapshot] = useState<CanvasNode[] | null>(null)
+  const [restoredSnapshot, setRestoredSnapshot] = useState<unknown | null>(null)
   const [showRestoreModal, setShowRestoreModal] = useState(false)
   const [pendingRestoreSnapshotId, setPendingRestoreSnapshotId] = useState<string | null>(null)
 
@@ -133,7 +124,7 @@ export function ShotWorkspaceClient({ shot, takes: dbTakes, projectId }: ShotWor
 
       await saveTakeSnapshotAction({
         project_id: projectId,
-        scene_id: shot.scene_id,
+        scene_id: shot.scene_id,  // ✅ CAMBIATO: shotlist_id → scene_id
         shot_id: shot.id,
         take_id: currentTakeId,
         payload: nodes,
@@ -172,20 +163,23 @@ export function ShotWorkspaceClient({ shot, takes: dbTakes, projectId }: ShotWor
     try {
       const result = await createTakeFromSnapshotAction(pendingRestoreSnapshotId)
 
-      const newWorkspaceTake: WorkspaceTake = {
+      const newTake: Take = {
         id: result.take.id,
-        shot_id: result.take.shot_id || '',
-        name: `Take ${takes.length + 1}`,
+        shot_id: result.take.shot_id,
+        name: result.take.name,
         description: null,
-        status: result.take.status,
-        order_index: takes.length + 1,
+        status: result.take.status as any,
+        order_index: result.take.order_index,
         created_at: result.take.created_at,
-        updated_at: result.take.created_at,
+        updated_at: result.take.updated_at,
       }
 
-      setTakes(prev => [...prev, newWorkspaceTake])
+      setTakes(prev => [...prev, newTake])
+
       setCurrentTakeId(result.take.id)
-      setRestoredSnapshot(result.snapshot.payload as CanvasNode[])
+
+      setRestoredSnapshot(result.snapshot.payload)
+
       setIsDirty(false)
       setSaveStatus('idle')
 
@@ -201,6 +195,20 @@ export function ShotWorkspaceClient({ shot, takes: dbTakes, projectId }: ShotWor
     setPendingRestoreSnapshotId(null)
   }
 
+  // R3.6: New Take handler
+  const handleNewTake = async () => {
+    try {
+      await createTakeAction({
+        projectId,
+        shotId: shot.id
+      })
+
+      router.refresh()
+    } catch (error) {
+      console.error('Failed to create take:', error)
+    }
+  }
+
   if (takes.length === 0) {
     return (
       <div className="flex-1 flex flex-col">
@@ -213,9 +221,7 @@ export function ShotWorkspaceClient({ shot, takes: dbTakes, projectId }: ShotWor
             </p>
             <button
               className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 rounded text-sm transition-colors"
-              onClick={() => {
-                console.log('Create first Take - not implemented')
-              }}
+              onClick={handleNewTake}
             >
               Crea il primo Take
             </button>
@@ -226,8 +232,7 @@ export function ShotWorkspaceClient({ shot, takes: dbTakes, projectId }: ShotWor
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-
+    <div className="flex-1 flex flex-col">
       <ShotHeader shot={shot} />
 
       <TakeTabs
@@ -239,6 +244,7 @@ export function ShotWorkspaceClient({ shot, takes: dbTakes, projectId }: ShotWor
         showHistory={showHistory}
         onToggleHistory={() => setShowHistory(!showHistory)}
         onRestore={handleRestoreRequest}
+        onNewTake={handleNewTake}
       />
 
       <div className="h-12 bg-zinc-900 border-b border-zinc-800 flex items-center px-4 gap-3 shrink-0">
@@ -268,17 +274,15 @@ export function ShotWorkspaceClient({ shot, takes: dbTakes, projectId }: ShotWor
         )}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-hidden">
-        {currentTakeId && (
-          <TakeCanvas
-            ref={canvasRef}
-            key={currentTakeId}
-            takeId={currentTakeId}
-            initialNodes={restoredSnapshot ?? undefined}
-            onDirty={() => setIsDirty(true)}
-          />
-        )}
-      </div>
+      {currentTakeId && (
+        <TakeCanvas
+          ref={canvasRef}
+          key={currentTakeId}
+          takeId={currentTakeId}
+          initialNodes={restoredSnapshot as any}
+          onDirty={() => setIsDirty(true)}
+        />
+      )}
 
       {showRestoreModal && (
         <RestoreConfirmModal
