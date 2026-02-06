@@ -28,7 +28,8 @@ interface TakeSnapshotRow {
     shot_id: string
     take_id: string
     payload: unknown  // JSONB — i nodes[] serializzati
-    reason: 'manual_save' | 'publish' | 'checkpoint'
+    reason: 'manual_save' | 'publish' | 'checkpoint' | 'duplicate_take_seed'
+
     created_at: string
     created_by: string
 }

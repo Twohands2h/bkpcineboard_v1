@@ -3,8 +3,8 @@
 // ===================================================
 // TAKE TABS — NAVIGAZIONE TRA TAKES (R3.7 v2.0)
 // ===================================================
-// R3.7 v2.0: Rimossi dirty indicator, history button,
-// snapshot history dropdown, restore handler.
+// R3.7 v2.0: Rimossi dirty/history/restore.
+// R3.7-005: Aggiunto Duplica Take.
 
 interface Take {
   id: string
@@ -22,13 +22,15 @@ interface TakeTabsProps {
   currentTakeId: string | null
   onTakeChange: (takeId: string) => void
   onNewTake: () => void
+  onDuplicate: () => void  // R3.7-005
 }
 
 export function TakeTabs({
   takes,
   currentTakeId,
   onTakeChange,
-  onNewTake
+  onNewTake,
+  onDuplicate
 }: TakeTabsProps) {
   return (
     <nav className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center px-4 gap-1 shrink-0 overflow-x-auto">
@@ -52,12 +54,23 @@ export function TakeTabs({
         )
       })}
 
+      {/* New Take */}
       <button
         onClick={onNewTake}
         className="px-3 py-1.5 rounded text-sm transition-colors shrink-0 bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
       >
-        + New Take
+        + New
       </button>
+
+      {/* R3.7-005: Duplica Take */}
+      {currentTakeId && (
+        <button
+          onClick={onDuplicate}
+          className="px-3 py-1.5 rounded text-sm transition-colors shrink-0 bg-zinc-800 hover:bg-zinc-700 text-amber-400"
+        >
+          Duplica
+        </button>
+      )}
     </nav>
   )
 }

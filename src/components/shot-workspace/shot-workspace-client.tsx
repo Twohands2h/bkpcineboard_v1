@@ -12,10 +12,11 @@ import {
 import { createTakeAction } from '@/app/actions/takes'
 
 // ===================================================
-// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.7 v2.0 + 004A)
+// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.7 v2.0 + 004A + 005)
 // ===================================================
 // R3.7 v2.0: Auto-Persist via onNodesChange + debounce.
 // R3.7-004A: Workspace owns undo history per Take (Map).
+// R3.7-005: Duplica Take — clone nodes, create new Take.
 
 interface Shot {
   id: string
@@ -63,7 +64,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // ── R3.7-004A: Undo history per Take ──
-  // Workspace = owner della memoria. Canvas = operatore.
   const undoHistoryByTakeRef = useRef<Map<string, UndoHistory>>(new Map())
 
   // ── R3.7 v2.0: Persist function ──
@@ -147,6 +147,52 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }
 
+  // ── R3.7-005: Duplica Take handler ──
+  const handleDuplicateTake = async () => {
+    if (!currentTakeId || !canvasRef.current) return
+
+    // 1. Clone nodes da memoria PRIMA di qualsiasi write DB
+    const clonedNodes = structuredClone(canvasRef.current.getSnapshot())
+
+    try {
+      // 2. Crea nuovo Take nel DB
+      const newTake = await createTakeAction({
+        projectId,
+        shotId: shot.id
+      })
+
+      // 3. Persiste nodes clonati nel nuovo Take
+      await saveTakeSnapshotAction({
+        project_id: projectId,
+        scene_id: shot.scene_id,
+        shot_id: shot.id,
+        take_id: newTake.id,
+        payload: clonedNodes,
+        reason: 'duplicate_take_seed',
+      })
+
+      // 4. Aggiorna lista Takes locale con adapter
+      const localTake: Take = {
+        id: newTake.id,
+        shot_id: newTake.shot_id ?? shot.id,
+        name: `Take ${takes.length + 1}`,
+        description: null,
+        status: newTake.status,
+        order_index: takes.length,
+        created_at: newTake.created_at,
+        updated_at: newTake.created_at,
+      }
+
+      setTakes(prev => [...prev, localTake])
+
+      // 5. Switch al nuovo Take (undo stack vuoto — nuovo contesto creativo)
+      setCurrentTakeId(newTake.id)
+
+    } catch (error) {
+      console.error('Failed to duplicate take:', error)
+    }
+  }
+
   if (takes.length === 0) {
     return (
       <div className="flex-1 flex flex-col">
@@ -169,7 +215,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     )
   }
 
-  // ── R3.7-004A: Get stored history for current Take (if any) ──
+  // ── R3.7-004A: Get stored history for current Take ──
   const currentUndoHistory = currentTakeId
     ? undoHistoryByTakeRef.current.get(currentTakeId)
     : undefined
@@ -183,6 +229,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         currentTakeId={currentTakeId}
         onTakeChange={setCurrentTakeId}
         onNewTake={handleNewTake}
+        onDuplicate={handleDuplicateTake}
       />
 
       {/* R3.7 v2.0: Canvas gated */}
