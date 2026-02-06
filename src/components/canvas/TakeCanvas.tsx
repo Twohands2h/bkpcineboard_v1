@@ -5,11 +5,11 @@ import { NodeShell } from './NodeShell'
 import { NoteContent, type NoteData } from './NodeContent'
 
 // ===================================================
-// TAKE CANVAS — CONTAINER (R3.8-001C)
+// TAKE CANVAS — PURE WORK AREA (R3.8-001A)
 // ===================================================
-// R3.7 v2.0: onNodesChange per auto-persist
-// R3.7-004A: Undo/Redo con history dal Workspace
-// R3.8-001C: Drag dalla sidebar → drop sul canvas con ghost preview
+// Nessuna UI strutturale. Solo nodi e interazioni.
+// La sidebar vive nel Workspace.
+// createNodeAt esposto via ref per creazione esterna.
 
 export interface UndoHistory {
     stack: CanvasNode[][]
@@ -39,6 +39,8 @@ export interface CanvasNode {
 
 export interface TakeCanvasHandle {
     getSnapshot: () => CanvasNode[]
+    createNodeAt: (x: number, y: number) => void
+    getCanvasRect: () => DOMRect | null
 }
 
 type InteractionMode = 'idle' | 'dragging' | 'editing'
@@ -53,9 +55,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
         const [interactionMode, setInteractionMode] = useState<InteractionMode>('idle')
         const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
-
-        // R3.8-001C: Ghost node position during sidebar drag
-        const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
 
         const canvasRef = useRef<HTMLDivElement>(null)
 
@@ -73,7 +72,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             nodesRef.current = nodes
         }, [nodes])
 
-        // ── R3.7-004A: History from Workspace or fresh ──
+        // ── History from Workspace or fresh ──
         const historyRef = useRef<UndoHistory>(
             initialUndoHistory
                 ? structuredClone(initialUndoHistory)
@@ -147,9 +146,30 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             return () => window.removeEventListener('keydown', handleKeyDown)
         }, [undo, redo])
 
+        // ── R3.8-001A: createNodeAt — invocabile dall'esterno via ref ──
+        const createNodeAt = useCallback((x: number, y: number) => {
+            const newNode: CanvasNode = {
+                id: crypto.randomUUID(),
+                type: 'note',
+                x: Math.round(x - 100),
+                y: Math.round(y - 60),
+                width: 200,
+                height: 120,
+                zIndex: nodesRef.current.length + 1,
+                data: {},
+            }
+
+            setNodes((prev) => [...prev, newNode])
+            setSelectedNodeId(newNode.id)
+            setInteractionMode('idle')
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
+
         useImperativeHandle(ref, () => ({
-            getSnapshot: () => structuredClone(nodes)
-        }), [nodes])
+            getSnapshot: () => structuredClone(nodes),
+            createNodeAt,
+            getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
+        }), [nodes, createNodeAt])
 
         useEffect(() => {
             setSelectedNodeId(null)
@@ -208,60 +228,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 window.removeEventListener('mouseup', handleWindowMouseUp)
             }
         }, [handleWindowMouseMove, handleWindowMouseUp])
-
-        // ============================================
-        // R3.8-001C: DRAG FROM SIDEBAR → DROP ON CANVAS
-        // ============================================
-
-        const handleSidebarNoteMouseDown = useCallback((e: React.MouseEvent) => {
-            e.preventDefault()
-
-            // Mostra ghost alla posizione iniziale
-            setGhostPos({ x: e.clientX, y: e.clientY })
-
-            const handleMouseMove = (moveEvent: MouseEvent) => {
-                setGhostPos({ x: moveEvent.clientX, y: moveEvent.clientY })
-            }
-
-            const handleMouseUp = (upEvent: MouseEvent) => {
-                window.removeEventListener('mousemove', handleMouseMove)
-                window.removeEventListener('mouseup', handleMouseUp)
-                setGhostPos(null)
-
-                const canvas = canvasRef.current
-                if (!canvas) return
-
-                const rect = canvas.getBoundingClientRect()
-                const x = upEvent.clientX - rect.left
-                const y = upEvent.clientY - rect.top
-
-                // Drop solo se dentro il canvas
-                if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
-
-                // Centra il nodo sulla posizione del cursore
-                const nodeX = Math.round(x - 100)
-                const nodeY = Math.round(y - 60)
-
-                const newNode: CanvasNode = {
-                    id: crypto.randomUUID(),
-                    type: 'note',
-                    x: nodeX,
-                    y: nodeY,
-                    width: 200,
-                    height: 120,
-                    zIndex: nodesRef.current.length + 1,
-                    data: {},
-                }
-
-                setNodes((prev) => [...prev, newNode])
-                setSelectedNodeId(newNode.id)
-                setInteractionMode('idle')
-                setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
-            }
-
-            window.addEventListener('mousemove', handleMouseMove)
-            window.addEventListener('mouseup', handleMouseUp)
-        }, [pushHistory, emitNodesChange])
 
         // ============================================
         // NODE HANDLERS
@@ -323,10 +289,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
-        // ============================================
-        // CANVAS HANDLERS
-        // ============================================
-
         const handleCanvasMouseDown = useCallback(() => {
             if (interactionMode !== 'editing') {
                 setSelectedNodeId(null)
@@ -336,74 +298,42 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [interactionMode])
 
         return (
-            <div className="flex-1 flex">
-                {/* Tool Rail */}
-                <aside className="w-12 bg-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
-                    <button
-                        onMouseDown={handleSidebarNoteMouseDown}
-                        className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
-                        style={{ cursor: 'default !important' } as React.CSSProperties}
+            <div
+                ref={canvasRef}
+                className="flex-1 bg-zinc-950 relative overflow-hidden"
+                onMouseDown={handleCanvasMouseDown}
+            >
+                {nodes.map((node) => (
+                    <NodeShell
+                        key={node.id}
+                        nodeId={node.id}
+                        x={node.x}
+                        y={node.y}
+                        width={node.width}
+                        height={node.height}
+                        zIndex={node.zIndex}
+                        isSelected={node.id === selectedNodeId}
+                        isDragging={interactionMode === 'dragging' && dragRef.current?.nodeId === node.id}
+                        interactionMode={interactionMode}
+                        onSelect={handleSelect}
+                        onPotentialDragStart={handlePotentialDragStart}
+                        onDelete={handleDelete}
                     >
-                        <span className="text-xs text-zinc-400 pointer-events-none">Note</span>
-                    </button>
-                </aside>
+                        <NoteContent
+                            data={node.data}
+                            isEditing={interactionMode === 'editing' && node.id === selectedNodeId}
+                            editingField={node.id === selectedNodeId ? editingField : null}
+                            onDataChange={(data) => handleDataChange(node.id, data)}
+                            onFieldFocus={handleFieldFocus}
+                            onFieldBlur={handleFieldBlur}
+                            onStartEditing={(field) => handleStartEditing(node.id, field)}
+                        />
+                    </NodeShell>
+                ))}
 
-                {/* Canvas area */}
-                <div
-                    ref={canvasRef}
-                    className="flex-1 bg-zinc-950 relative overflow-hidden"
-                    onMouseDown={handleCanvasMouseDown}
-                >
-                    {nodes.map((node) => (
-                        <NodeShell
-                            key={node.id}
-                            nodeId={node.id}
-                            x={node.x}
-                            y={node.y}
-                            width={node.width}
-                            height={node.height}
-                            zIndex={node.zIndex}
-                            isSelected={node.id === selectedNodeId}
-                            isDragging={interactionMode === 'dragging' && dragRef.current?.nodeId === node.id}
-                            interactionMode={interactionMode}
-                            onSelect={handleSelect}
-                            onPotentialDragStart={handlePotentialDragStart}
-                            onDelete={handleDelete}
-                        >
-                            <NoteContent
-                                data={node.data}
-                                isEditing={interactionMode === 'editing' && node.id === selectedNodeId}
-                                editingField={node.id === selectedNodeId ? editingField : null}
-                                onDataChange={(data) => handleDataChange(node.id, data)}
-                                onFieldFocus={handleFieldFocus}
-                                onFieldBlur={handleFieldBlur}
-                                onStartEditing={(field) => handleStartEditing(node.id, field)}
-                            />
-                        </NodeShell>
-                    ))}
-
-                    {nodes.length === 0 && (
-                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                            <p className="text-zinc-600 text-sm">Drag "Note" from sidebar to canvas</p>
-                        </div>
-                    )}
-                </div>
-
-                {/* R3.8-001C: Ghost node during sidebar drag */}
-                {ghostPos && (
-                    <div
-                        className="fixed pointer-events-none z-[9999]"
-                        style={{
-                            left: ghostPos.x - 100,
-                            top: ghostPos.y - 60,
-                            width: 200,
-                            height: 120,
-                        }}
-                    >
-                        <div className="w-full h-full bg-zinc-800 border border-zinc-600 rounded-lg opacity-60 flex flex-col p-3">
-                            <span className="text-xs text-zinc-400">Untitled</span>
-                            <span className="text-[10px] text-zinc-600 mt-1">Double-click to edit</span>
-                        </div>
+                {nodes.length === 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <p className="text-zinc-600 text-sm">Drag "Note" from sidebar to canvas</p>
                     </div>
                 )}
             </div>

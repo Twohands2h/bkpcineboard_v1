@@ -12,12 +12,10 @@ import {
 import { createTakeAction } from '@/app/actions/takes'
 
 // ===================================================
-// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.8-001A)
+// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.8-001A final)
 // ===================================================
-// R3.7 v2.0: Auto-Persist via onNodesChange + debounce.
-// R3.7-004A: Workspace owns undo history per Take (Map).
-// R3.7-005: Duplica Take — clone nodes, create new Take.
-// R3.8-001A: URL ?take= sync per continuità di contesto.
+// Sidebar always mounted (no flash on Take switch).
+// Canvas = pure work area, created via canvasRef.createNodeAt.
 
 interface Shot {
   id: string
@@ -61,7 +59,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     : (takes.length > 0 ? takes[0].id : null)
   const [currentTakeId, setCurrentTakeId] = useState<string | null>(defaultTakeId)
 
-  // R3.8-001A: Sync state → URL (replace, no push)
+  // R3.8-001A: Sync state → URL
   useEffect(() => {
     if (!currentTakeId) return
     const current = searchParams.get('take')
@@ -72,16 +70,21 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
   const canvasRef = useRef<TakeCanvasHandle>(null)
 
-  // ── R3.7 v2.0: Rehydration state ──
-  const [initialPayload, setInitialPayload] = useState<CanvasNode[] | null | undefined>(undefined)
+  // ── R3.8-001A: Smooth transition ──
+  const [readyTakeId, setReadyTakeId] = useState<string | null>(null)
+  const [readyPayload, setReadyPayload] = useState<CanvasNode[] | undefined>(undefined)
+  const [isLoading, setIsLoading] = useState(true)
 
-  // ── R3.7 v2.0: Debounce timer ref ──
+  // ── Ghost drag state ──
+  const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
+
+  // ── Debounce timer ──
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // ── R3.7-004A: Undo history per Take ──
+  // ── Undo history per Take ──
   const undoHistoryByTakeRef = useRef<Map<string, UndoHistory>>(new Map())
 
-  // ── R3.7 v2.0: Persist function ──
+  // ── Persist function ──
   const persistNodes = useCallback(async (nodes: CanvasNode[]) => {
     if (!currentTakeId) return
     try {
@@ -98,7 +101,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }, [projectId, shot.scene_id, shot.id, currentTakeId])
 
-  // ── R3.7 v2.0: Debounced handler ──
+  // ── Debounced handler ──
   const handleNodesChange = useCallback((nodes: CanvasNode[]) => {
     if (persistTimerRef.current) {
       clearTimeout(persistTimerRef.current)
@@ -108,38 +111,42 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }, 800)
   }, [persistNodes])
 
-  // ── R3.7-004A: Handle undo history updates from canvas ──
+  // ── Undo history updates ──
   const handleUndoHistoryChange = useCallback((history: UndoHistory) => {
     if (currentTakeId) {
       undoHistoryByTakeRef.current.set(currentTakeId, history)
     }
   }, [currentTakeId])
 
-  // ── R3.7 v2.0: Rehydration al mount / cambio Take ──
+  // ── R3.8-001A: Load snapshot, swap atomically ──
   useEffect(() => {
     if (!currentTakeId) return
-
-    setInitialPayload(undefined)
 
     if (persistTimerRef.current) {
       clearTimeout(persistTimerRef.current)
       persistTimerRef.current = null
     }
 
+    setIsLoading(true)
+
     loadLatestTakeSnapshotAction(currentTakeId)
       .then(snapshot => {
-        if (snapshot?.payload) {
-          setInitialPayload(snapshot.payload as CanvasNode[])
-        } else {
-          setInitialPayload(null)
-        }
+        const payload = snapshot?.payload
+          ? (snapshot.payload as CanvasNode[])
+          : undefined
+
+        setReadyTakeId(currentTakeId)
+        setReadyPayload(payload)
+        setIsLoading(false)
       })
       .catch(() => {
-        setInitialPayload(null)
+        setReadyTakeId(currentTakeId)
+        setReadyPayload(undefined)
+        setIsLoading(false)
       })
   }, [currentTakeId])
 
-  // ── Cleanup timer on unmount ──
+  // ── Cleanup on unmount ──
   useEffect(() => {
     return () => {
       if (persistTimerRef.current) {
@@ -148,7 +155,40 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }, [])
 
-  // R3.8: New Take handler (optimistic, no refresh)
+  // ── R3.8-001A: Drag from sidebar → drop on canvas ──
+  const handleSidebarNoteMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setGhostPos({ x: e.clientX, y: e.clientY })
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      setGhostPos({ x: moveEvent.clientX, y: moveEvent.clientY })
+    }
+
+    const handleMouseUp = (upEvent: MouseEvent) => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+      setGhostPos(null)
+
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      const rect = canvas.getCanvasRect()
+      if (!rect) return
+
+      const x = upEvent.clientX - rect.left
+      const y = upEvent.clientY - rect.top
+
+      // Drop solo se dentro il canvas
+      if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
+
+      canvas.createNodeAt(x, y)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+  }, [])
+
+  // ── New Take ──
   const handleNewTake = async () => {
     try {
       const newTake = await createTakeAction({
@@ -177,21 +217,18 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }
 
-  // ── R3.7-005: Duplica Take handler ──
+  // ── Duplica Take ──
   const handleDuplicateTake = async () => {
     if (!currentTakeId || !canvasRef.current) return
 
-    // 1. Clone nodes da memoria PRIMA di qualsiasi write DB
     const clonedNodes = structuredClone(canvasRef.current.getSnapshot())
 
     try {
-      // 2. Crea nuovo Take nel DB
       const newTake = await createTakeAction({
         projectId,
         shotId: shot.id
       })
 
-      // 3. Persiste nodes clonati nel nuovo Take
       await saveTakeSnapshotAction({
         project_id: projectId,
         scene_id: shot.scene_id,
@@ -201,7 +238,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         reason: 'duplicate_take_seed',
       })
 
-      // 4. Aggiorna lista Takes locale con adapter
       setTakes(prev => {
         const nextIndex = prev.length
         const localTake: Take = {
@@ -217,7 +253,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         return [...prev, localTake]
       })
 
-      // 5. Switch al nuovo Take (undo stack vuoto — nuovo contesto creativo)
       setCurrentTakeId(newTake.id)
 
     } catch (error) {
@@ -247,9 +282,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     )
   }
 
-  // ── R3.7-004A: Get stored history for current Take ──
-  const currentUndoHistory = currentTakeId
-    ? undoHistoryByTakeRef.current.get(currentTakeId)
+  const currentUndoHistory = readyTakeId
+    ? undoHistoryByTakeRef.current.get(readyTakeId)
     : undefined
 
   return (
@@ -264,23 +298,57 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         onDuplicate={handleDuplicateTake}
       />
 
-      {/* R3.7 v2.0: Canvas gated */}
-      {currentTakeId && initialPayload !== undefined && (
-        <TakeCanvas
-          ref={canvasRef}
-          key={currentTakeId}
-          takeId={currentTakeId}
-          initialNodes={initialPayload ?? undefined}
-          onNodesChange={handleNodesChange}
-          initialUndoHistory={currentUndoHistory}
-          onUndoHistoryChange={handleUndoHistoryChange}
-        />
-      )}
+      {/* R3.8-001A: Sidebar + Canvas area — sidebar always mounted */}
+      <div className="flex-1 flex">
+        {/* Tool Rail — always visible */}
+        <aside className="w-12 bg-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
+          <button
+            onMouseDown={handleSidebarNoteMouseDown}
+            className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
+            title="Drag to canvas to create Note"
+          >
+            <span className="text-xs text-zinc-400 pointer-events-none">Note</span>
+          </button>
+        </aside>
 
-      {/* R3.7 v2.0: Loading state */}
-      {currentTakeId && initialPayload === undefined && (
-        <div className="flex-1 flex items-center justify-center bg-zinc-950">
-          <p className="text-zinc-600 text-sm">Loading...</p>
+        {/* Canvas area */}
+        <div className="flex-1 flex relative">
+          {readyTakeId && (
+            <TakeCanvas
+              ref={canvasRef}
+              key={readyTakeId}
+              takeId={readyTakeId}
+              initialNodes={readyPayload}
+              onNodesChange={handleNodesChange}
+              initialUndoHistory={currentUndoHistory}
+              onUndoHistoryChange={handleUndoHistoryChange}
+            />
+          )}
+
+          {/* Loading overlay — only over canvas area */}
+          {isLoading && (
+            <div className="absolute inset-0 bg-zinc-950 flex items-center justify-center z-10">
+              <p className="text-zinc-600 text-sm">Loading...</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Ghost node during sidebar drag */}
+      {ghostPos && (
+        <div
+          className="fixed pointer-events-none z-[9999]"
+          style={{
+            left: ghostPos.x - 100,
+            top: ghostPos.y - 60,
+            width: 200,
+            height: 120,
+          }}
+        >
+          <div className="w-full h-full bg-zinc-800 border border-zinc-600 rounded-lg opacity-60 flex flex-col p-3">
+            <span className="text-xs text-zinc-400">Untitled</span>
+            <span className="text-[10px] text-zinc-600 mt-1">Double-click to edit</span>
+          </div>
         </div>
       )}
     </div>
