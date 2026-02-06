@@ -133,15 +133,30 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }, [])
 
-  // R3.6: New Take handler
+  // R3.8: New Take handler (optimistic, no refresh)
   const handleNewTake = async () => {
     try {
-      await createTakeAction({
+      const newTake = await createTakeAction({
         projectId,
         shotId: shot.id
       })
 
-      router.refresh()
+      setTakes(prev => {
+        const nextIndex = prev.length
+        const localTake: Take = {
+          id: newTake.id,
+          shot_id: newTake.shot_id ?? shot.id,
+          name: `Take ${nextIndex + 1}`,
+          description: null,
+          status: newTake.status,
+          order_index: nextIndex,
+          created_at: newTake.created_at,
+          updated_at: newTake.created_at,
+        }
+        return [...prev, localTake]
+      })
+
+      setCurrentTakeId(newTake.id)
     } catch (error) {
       console.error('Failed to create take:', error)
     }
@@ -172,18 +187,20 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
       })
 
       // 4. Aggiorna lista Takes locale con adapter
-      const localTake: Take = {
-        id: newTake.id,
-        shot_id: newTake.shot_id ?? shot.id,
-        name: `Take ${takes.length + 1}`,
-        description: null,
-        status: newTake.status,
-        order_index: takes.length,
-        created_at: newTake.created_at,
-        updated_at: newTake.created_at,
-      }
-
-      setTakes(prev => [...prev, localTake])
+      setTakes(prev => {
+        const nextIndex = prev.length
+        const localTake: Take = {
+          id: newTake.id,
+          shot_id: newTake.shot_id ?? shot.id,
+          name: `Take ${nextIndex + 1}`,
+          description: null,
+          status: newTake.status,
+          order_index: nextIndex,
+          created_at: newTake.created_at,
+          updated_at: newTake.created_at,
+        }
+        return [...prev, localTake]
+      })
 
       // 5. Switch al nuovo Take (undo stack vuoto — nuovo contesto creativo)
       setCurrentTakeId(newTake.id)
