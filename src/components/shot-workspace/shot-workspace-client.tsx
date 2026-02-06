@@ -9,13 +9,12 @@ import {
   saveTakeSnapshotAction,
   loadLatestTakeSnapshotAction,
 } from '@/app/actions/take-snapshots'
-import { createTakeAction } from '@/app/actions/takes'
+import { createTakeAction, deleteTakeAction } from '@/app/actions/takes'
 
 // ===================================================
-// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.8-001A final)
+// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.8-002)
 // ===================================================
-// Sidebar always mounted (no flash on Take switch).
-// Canvas = pure work area, created via canvasRef.createNodeAt.
+// R3.8-002: Delete Take with confirmation.
 
 interface Shot {
   id: string
@@ -70,12 +69,12 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
   const canvasRef = useRef<TakeCanvasHandle>(null)
 
-  // ── R3.8-001A: Smooth transition ──
+  // ── Smooth transition ──
   const [readyTakeId, setReadyTakeId] = useState<string | null>(null)
   const [readyPayload, setReadyPayload] = useState<CanvasNode[] | undefined>(undefined)
   const [isLoading, setIsLoading] = useState(true)
 
-  // ── Ghost drag state ──
+  // ── Ghost drag ──
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
 
   // ── Debounce timer ──
@@ -118,7 +117,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }, [currentTakeId])
 
-  // ── R3.8-001A: Load snapshot, swap atomically ──
+  // ── Load snapshot, swap atomically ──
   useEffect(() => {
     if (!currentTakeId) return
 
@@ -155,7 +154,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }, [])
 
-  // ── R3.8-001A: Drag from sidebar → drop on canvas ──
+  // ── Drag from sidebar ──
   const handleSidebarNoteMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     setGhostPos({ x: e.clientX, y: e.clientY })
@@ -178,7 +177,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
       const x = upEvent.clientX - rect.left
       const y = upEvent.clientY - rect.top
 
-      // Drop solo se dentro il canvas
       if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
 
       canvas.createNodeAt(x, y)
@@ -260,6 +258,45 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }
 
+  // ── R3.8-002: Delete Take ──
+  const handleDeleteTake = async (takeId: string) => {
+    if (takes.length <= 1) return
+
+    const targetTake = takes.find(t => t.id === takeId)
+    const confirmed = window.confirm(
+      `Eliminare "${targetTake?.name ?? 'questo Take'}"?\n\nQuesta azione è irreversibile.`
+    )
+    if (!confirmed) return
+
+    const deletedId = takeId
+    const remainingTakes = takes.filter(t => t.id !== deletedId)
+
+    // 1. UI immediata: rimuovi dalla lista e switch
+    setTakes(remainingTakes)
+
+    // Switch al Take precedente o successivo
+    const deletedIndex = takes.findIndex(t => t.id === deletedId)
+    const nextTake = remainingTakes[Math.min(deletedIndex, remainingTakes.length - 1)]
+    setCurrentTakeId(nextTake.id)
+
+    // Cleanup undo history del Take eliminato
+    undoHistoryByTakeRef.current.delete(deletedId)
+
+    // 2. DB in background
+    try {
+      await deleteTakeAction({
+        projectId,
+        shotId: shot.id,
+        takeId: deletedId,
+      })
+    } catch (error) {
+      console.error('Failed to delete take:', error)
+      // Rollback: riaggiungi il Take alla lista
+      setTakes(takes)
+      setCurrentTakeId(deletedId)
+    }
+  }
+
   if (takes.length === 0) {
     return (
       <div className="flex-1 flex flex-col">
@@ -296,9 +333,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         onTakeChange={setCurrentTakeId}
         onNewTake={handleNewTake}
         onDuplicate={handleDuplicateTake}
+        onDelete={handleDeleteTake}
       />
 
-      {/* R3.8-001A: Sidebar + Canvas area — sidebar always mounted */}
+      {/* Sidebar + Canvas */}
       <div className="flex-1 flex">
         {/* Tool Rail — always visible */}
         <aside className="w-12 bg-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
@@ -325,7 +363,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
             />
           )}
 
-          {/* Loading overlay — only over canvas area */}
           {isLoading && (
             <div className="absolute inset-0 bg-zinc-950 flex items-center justify-center z-10">
               <p className="text-zinc-600 text-sm">Loading...</p>
