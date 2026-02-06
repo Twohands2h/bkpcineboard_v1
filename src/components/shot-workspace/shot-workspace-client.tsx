@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { ShotHeader } from './shot-header'
 import { TakeTabs } from './take-tabs'
 import { TakeCanvas, type TakeCanvasHandle, type CanvasNode, type UndoHistory } from '@/components/canvas/TakeCanvas'
@@ -12,11 +12,12 @@ import {
 import { createTakeAction } from '@/app/actions/takes'
 
 // ===================================================
-// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.7 v2.0 + 004A + 005)
+// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.8-001A)
 // ===================================================
 // R3.7 v2.0: Auto-Persist via onNodesChange + debounce.
 // R3.7-004A: Workspace owns undo history per Take (Map).
 // R3.7-005: Duplica Take — clone nodes, create new Take.
+// R3.8-001A: URL ?take= sync per continuità di contesto.
 
 interface Shot {
   id: string
@@ -49,11 +50,25 @@ interface ShotWorkspaceClientProps {
 
 export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: ShotWorkspaceClientProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
 
   const [takes, setTakes] = useState<Take[]>(initialTakes)
 
-  const defaultTakeId = takes.length > 0 ? takes[0].id : null
+  // R3.8-001A: Inizializza da URL con fallback
+  const takeFromUrl = searchParams.get('take')
+  const defaultTakeId = (takeFromUrl && takes.some(t => t.id === takeFromUrl))
+    ? takeFromUrl
+    : (takes.length > 0 ? takes[0].id : null)
   const [currentTakeId, setCurrentTakeId] = useState<string | null>(defaultTakeId)
+
+  // R3.8-001A: Sync state → URL (replace, no push)
+  useEffect(() => {
+    if (!currentTakeId) return
+    const current = searchParams.get('take')
+    if (current !== currentTakeId) {
+      router.replace(`?take=${currentTakeId}`, { scroll: false })
+    }
+  }, [currentTakeId, searchParams, router])
 
   const canvasRef = useRef<TakeCanvasHandle>(null)
 
