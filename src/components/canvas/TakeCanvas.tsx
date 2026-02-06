@@ -5,23 +5,27 @@ import { NodeShell } from './NodeShell'
 import { NoteContent, type NoteData } from './NodeContent'
 
 // ===================================================
-// TAKE CANVAS — CONTAINER (R3.7 v2.0 Auto-Persist)
+// TAKE CANVAS — CONTAINER (R3.7 v2.0 + R3.7-004A)
 // ===================================================
-// R3.7 v2.0: onDirty rimossa, sostituita da onNodesChange.
-// Il canvas emette l'intero stato nodes dopo ogni mutazione.
-// Il Workspace decide quando e come persistere.
+// Step 1: onNodesChange per auto-persist
+// Step 2: Undo/Redo (R3.7-004)
+// 004A: Workspace = memoria undo, Canvas = operatore
+
+// ── Undo history type (shared with Workspace) ──
+export interface UndoHistory {
+    stack: CanvasNode[][]
+    cursor: number
+}
+
+const HISTORY_MAX = 50
 
 interface TakeCanvasProps {
     takeId: string
-    // ── R3.7 v2.0: initialNodes seed-only ──
-    // Usato SOLO per inizializzare useState al mount.
-    // NON è una prop reattiva. NON genera useEffect.
     initialNodes?: CanvasNode[]
-    // ── R3.7 v2.0: onNodesChange ──
-    // Emesso dopo ogni mutazione completata (create/move/edit/delete).
-    // Passa una copia immutabile dello stato corrente dei nodes.
-    // Il Workspace gestisce debounce e persist.
     onNodesChange?: (nodes: CanvasNode[]) => void
+    // ── R3.7-004A: Undo history owned by Workspace ──
+    initialUndoHistory?: UndoHistory
+    onUndoHistoryChange?: (history: UndoHistory) => void
 }
 
 export interface CanvasNode {
@@ -35,8 +39,6 @@ export interface CanvasNode {
     data: NoteData
 }
 
-// ── R3.4: Ref imperativo per lettura snapshot on-demand ──
-// Mantenuto per Duplica Take (Step 3)
 export interface TakeCanvasHandle {
     getSnapshot: () => CanvasNode[]
 }
@@ -46,8 +48,7 @@ type InteractionMode = 'idle' | 'dragging' | 'editing'
 const DRAG_THRESHOLD = 3
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, onNodesChange }, ref) {
-        // ── nodes inizializzati da initialNodes (seed-only) ──
+    function TakeCanvas({ takeId, initialNodes, onNodesChange, initialUndoHistory, onUndoHistoryChange }, ref) {
         const [nodes, setNodes] = useState<CanvasNode[]>(
             () => initialNodes ?? []
         )
@@ -57,7 +58,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
         const canvasRef = useRef<HTMLDivElement>(null)
 
-        // Drag state (ref per evitare stale closures)
         const dragRef = useRef<{
             nodeId: string
             startNodeX: number
@@ -67,21 +67,91 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             hasMoved: boolean
         } | null>(null)
 
-        // Ref per accesso a nodes aggiornato nei listener
         const nodesRef = useRef<CanvasNode[]>(nodes)
         useEffect(() => {
             nodesRef.current = nodes
         }, [nodes])
 
-        // ── R3.7 v2.0: emitNodesChange ──
-        // Sostituisce markDirty. Emette copia immutabile dei nodes.
+        // ── R3.7-004A: History from Workspace or fresh ──
+        const historyRef = useRef<UndoHistory>(
+            initialUndoHistory
+                ? structuredClone(initialUndoHistory)
+                : { stack: [structuredClone(initialNodes ?? [])], cursor: 0 }
+        )
+
+        // ── emitNodesChange ──
         const emitNodesChange = useCallback(() => {
             if (onNodesChange) {
                 onNodesChange(structuredClone(nodesRef.current))
             }
         }, [onNodesChange])
 
-        // ── R3.4: Esponi metodo imperativo per lettura snapshot ──
+        // ── R3.7-004A: Notify Workspace of history change ──
+        const emitHistoryChange = useCallback(() => {
+            if (onUndoHistoryChange) {
+                onUndoHistoryChange(structuredClone(historyRef.current))
+            }
+        }, [onUndoHistoryChange])
+
+        // ── pushHistory ──
+        const pushHistory = useCallback(() => {
+            const current = structuredClone(nodesRef.current)
+            const h = historyRef.current
+
+            h.stack = h.stack.slice(0, h.cursor + 1)
+            h.stack.push(current)
+
+            if (h.stack.length > HISTORY_MAX) {
+                h.stack.shift()
+            } else {
+                h.cursor++
+            }
+
+            emitHistoryChange()
+        }, [emitHistoryChange])
+
+        // ── Undo ──
+        const undo = useCallback(() => {
+            const h = historyRef.current
+            if (h.cursor <= 0) return
+
+            h.cursor--
+            const prevState = structuredClone(h.stack[h.cursor])
+            setNodes(prevState)
+            emitHistoryChange()
+            setTimeout(() => emitNodesChange(), 0)
+        }, [emitNodesChange, emitHistoryChange])
+
+        // ── Redo ──
+        const redo = useCallback(() => {
+            const h = historyRef.current
+            if (h.cursor >= h.stack.length - 1) return
+
+            h.cursor++
+            const nextState = structuredClone(h.stack[h.cursor])
+            setNodes(nextState)
+            emitHistoryChange()
+            setTimeout(() => emitNodesChange(), 0)
+        }, [emitNodesChange, emitHistoryChange])
+
+        // ── Keyboard shortcuts ──
+        useEffect(() => {
+            const handleKeyDown = (e: KeyboardEvent) => {
+                const mod = e.metaKey || e.ctrlKey
+                if (mod && e.key === 'z' && !e.shiftKey) {
+                    e.preventDefault()
+                    undo()
+                }
+                if (mod && e.key === 'z' && e.shiftKey) {
+                    e.preventDefault()
+                    redo()
+                }
+            }
+
+            window.addEventListener('keydown', handleKeyDown)
+            return () => window.removeEventListener('keydown', handleKeyDown)
+        }, [undo, redo])
+
         useImperativeHandle(ref, () => ({
             getSnapshot: () => structuredClone(nodes)
         }), [nodes])
@@ -105,7 +175,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const deltaY = e.clientY - dragRef.current.startMouseY
             const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY)
 
-            // Attiva drag solo se supera threshold
             if (!dragRef.current.hasMoved && distance > DRAG_THRESHOLD) {
                 dragRef.current.hasMoved = true
                 setInteractionMode('dragging')
@@ -130,16 +199,15 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             window.removeEventListener('mousemove', handleWindowMouseMove)
             window.removeEventListener('mouseup', handleWindowMouseUp)
 
-            // Torna a idle solo se eravamo in dragging
             if (dragRef.current?.hasMoved) {
                 setInteractionMode('idle')
-                emitNodesChange()  // R3.7: posizione nodo cambiata
+                pushHistory()
+                emitNodesChange()
             }
 
             dragRef.current = null
-        }, [handleWindowMouseMove, emitNodesChange])
+        }, [handleWindowMouseMove, pushHistory, emitNodesChange])
 
-        // Cleanup on unmount
         useEffect(() => {
             return () => {
                 window.removeEventListener('mousemove', handleWindowMouseMove)
@@ -180,8 +248,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setSelectedNodeId(null)
             setInteractionMode('idle')
             setEditingField(null)
-            emitNodesChange()  // R3.7: nodo eliminato
-        }, [emitNodesChange])
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
 
         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => {
             setSelectedNodeId(nodeId)
@@ -204,15 +272,14 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     node.id === nodeId ? { ...node, data } : node
                 )
             )
-            emitNodesChange()  // R3.7: contenuto nodo modificato
-        }, [emitNodesChange])
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
 
         // ============================================
         // CANVAS HANDLERS
         // ============================================
 
         const handleCanvasMouseDown = useCallback(() => {
-            // Deseleziona solo se non siamo in editing
             if (interactionMode !== 'editing') {
                 setSelectedNodeId(null)
                 setInteractionMode('idle')
@@ -242,12 +309,11 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setNodes((prev) => [...prev, newNode])
             setSelectedNodeId(newNode.id)
             setInteractionMode('idle')
-            emitNodesChange()  // R3.7: nodo creato
-        }, [nodes.length, emitNodesChange])
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [nodes.length, pushHistory, emitNodesChange])
 
         return (
             <div className="flex-1 flex">
-                {/* Tool Rail */}
                 <aside className="w-12 bg-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
                     <button
                         onClick={handleCreateNote}
@@ -258,7 +324,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     </button>
                 </aside>
 
-                {/* Canvas area */}
                 <div
                     ref={canvasRef}
                     className="flex-1 bg-zinc-950 relative overflow-hidden"
@@ -279,7 +344,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                             onSelect={handleSelect}
                             onPotentialDragStart={handlePotentialDragStart}
                             onDelete={handleDelete}
-
                         >
                             <NoteContent
                                 data={node.data}

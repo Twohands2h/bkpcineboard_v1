@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { ShotHeader } from './shot-header'
 import { TakeTabs } from './take-tabs'
-import { TakeCanvas, type TakeCanvasHandle, type CanvasNode } from '@/components/canvas/TakeCanvas'
+import { TakeCanvas, type TakeCanvasHandle, type CanvasNode, type UndoHistory } from '@/components/canvas/TakeCanvas'
 import {
   saveTakeSnapshotAction,
   loadLatestTakeSnapshotAction,
@@ -12,10 +12,10 @@ import {
 import { createTakeAction } from '@/app/actions/takes'
 
 // ===================================================
-// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.7 v2.0)
+// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.7 v2.0 + 004A)
 // ===================================================
 // R3.7 v2.0: Auto-Persist via onNodesChange + debounce.
-// DB = write-only dopo mount. Rehydration con stato ternario.
+// R3.7-004A: Workspace owns undo history per Take (Map).
 
 interface Shot {
   id: string
@@ -57,13 +57,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
   const canvasRef = useRef<TakeCanvasHandle>(null)
 
   // ── R3.7 v2.0: Rehydration state ──
-  // undefined = loading, null = loaded empty, CanvasNode[] = loaded with data
   const [initialPayload, setInitialPayload] = useState<CanvasNode[] | null | undefined>(undefined)
 
   // ── R3.7 v2.0: Debounce timer ref ──
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // ── R3.7 v2.0: Persist function (fire-and-forget) ──
+  // ── R3.7-004A: Undo history per Take ──
+  // Workspace = owner della memoria. Canvas = operatore.
+  const undoHistoryByTakeRef = useRef<Map<string, UndoHistory>>(new Map())
+
+  // ── R3.7 v2.0: Persist function ──
   const persistNodes = useCallback(async (nodes: CanvasNode[]) => {
     if (!currentTakeId) return
     try {
@@ -73,33 +76,36 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         shot_id: shot.id,
         take_id: currentTakeId,
         payload: nodes,
-        reason: 'manual_save',  // riusa reason esistente, auto_persist quando ENUM aggiornato
+        reason: 'manual_save',
       })
     } catch (err) {
       console.error('Auto-persist failed:', err)
     }
   }, [projectId, shot.scene_id, shot.id, currentTakeId])
 
-  // ── R3.7 v2.0: Debounced handler ricevuto dal canvas ──
+  // ── R3.7 v2.0: Debounced handler ──
   const handleNodesChange = useCallback((nodes: CanvasNode[]) => {
-    // Cancella timer precedente
     if (persistTimerRef.current) {
       clearTimeout(persistTimerRef.current)
     }
-    // Nuovo timer: persiste dopo 800ms di inattività
     persistTimerRef.current = setTimeout(() => {
       persistNodes(nodes)
     }, 800)
   }, [persistNodes])
 
+  // ── R3.7-004A: Handle undo history updates from canvas ──
+  const handleUndoHistoryChange = useCallback((history: UndoHistory) => {
+    if (currentTakeId) {
+      undoHistoryByTakeRef.current.set(currentTakeId, history)
+    }
+  }, [currentTakeId])
+
   // ── R3.7 v2.0: Rehydration al mount / cambio Take ──
   useEffect(() => {
     if (!currentTakeId) return
 
-    // Reset: canvas smontato durante il caricamento
     setInitialPayload(undefined)
 
-    // Cleanup timer precedente
     if (persistTimerRef.current) {
       clearTimeout(persistTimerRef.current)
       persistTimerRef.current = null
@@ -114,7 +120,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         }
       })
       .catch(() => {
-        setInitialPayload(null)  // errore → canvas vuoto
+        setInitialPayload(null)
       })
   }, [currentTakeId])
 
@@ -163,6 +169,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     )
   }
 
+  // ── R3.7-004A: Get stored history for current Take (if any) ──
+  const currentUndoHistory = currentTakeId
+    ? undoHistoryByTakeRef.current.get(currentTakeId)
+    : undefined
+
   return (
     <div className="flex-1 flex flex-col">
       <ShotHeader shot={shot} projectId={projectId} />
@@ -174,7 +185,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         onNewTake={handleNewTake}
       />
 
-      {/* R3.7 v2.0: Canvas gated — non montato finché rehydration non completa */}
+      {/* R3.7 v2.0: Canvas gated */}
       {currentTakeId && initialPayload !== undefined && (
         <TakeCanvas
           ref={canvasRef}
@@ -182,10 +193,12 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
           takeId={currentTakeId}
           initialNodes={initialPayload ?? undefined}
           onNodesChange={handleNodesChange}
+          initialUndoHistory={currentUndoHistory}
+          onUndoHistoryChange={handleUndoHistoryChange}
         />
       )}
 
-      {/* R3.7 v2.0: Loading state durante rehydration */}
+      {/* R3.7 v2.0: Loading state */}
       {currentTakeId && initialPayload === undefined && (
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
           <p className="text-zinc-600 text-sm">Loading...</p>
