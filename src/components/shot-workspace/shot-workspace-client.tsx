@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ShotHeader } from './shot-header'
 import { TakeTabs } from './take-tabs'
-import { TakeCanvas, type TakeCanvasHandle, type CanvasNode, type UndoHistory } from '@/components/canvas/TakeCanvas'
+import { TakeCanvas, type TakeCanvasHandle, type CanvasNode, type CanvasEdge, type UndoHistory } from '@/components/canvas/TakeCanvas'
 import type { ImageData } from '@/components/canvas/NodeContent'
 import {
   saveTakeSnapshotAction,
@@ -14,9 +14,8 @@ import { createTakeAction, deleteTakeAction } from '@/app/actions/takes'
 import { createClient } from '@/lib/supabase/client'
 
 // ===================================================
-// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R4-001b)
+// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R4-003)
 // ===================================================
-// R4-001b: Image upload to Supabase Storage, no base64.
 
 interface Shot {
   id: string
@@ -47,20 +46,23 @@ interface ShotWorkspaceClientProps {
   projectId: string
 }
 
+interface SnapshotPayload {
+  nodes: CanvasNode[]
+  edges: CanvasEdge[]
+}
+
 export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: ShotWorkspaceClientProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
 
   const [takes, setTakes] = useState<Take[]>(initialTakes)
 
-  // R3.8-001A: Inizializza da URL con fallback
   const takeFromUrl = searchParams.get('take')
   const defaultTakeId = (takeFromUrl && takes.some(t => t.id === takeFromUrl))
     ? takeFromUrl
     : (takes.length > 0 ? takes[0].id : null)
   const [currentTakeId, setCurrentTakeId] = useState<string | null>(defaultTakeId)
 
-  // R3.8-001A: Sync state → URL
   useEffect(() => {
     if (!currentTakeId) return
     const current = searchParams.get('take')
@@ -71,25 +73,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
   const canvasRef = useRef<TakeCanvasHandle>(null)
 
-  // ── Smooth transition ──
   const [readyTakeId, setReadyTakeId] = useState<string | null>(null)
-  const [readyPayload, setReadyPayload] = useState<CanvasNode[] | undefined>(undefined)
+  const [readyPayload, setReadyPayload] = useState<SnapshotPayload | undefined>(undefined)
   const [isLoading, setIsLoading] = useState(true)
 
-  // ── Ghost drag ──
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
-
-  // ── Debounce timer ──
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // ── Undo history per Take ──
   const undoHistoryByTakeRef = useRef<Map<string, UndoHistory>>(new Map())
-
-  // ── R4-001b: Image input ref ──
   const imageInputRef = useRef<HTMLInputElement>(null)
 
-  // ── Persist function ──
-  const persistNodes = useCallback(async (nodes: CanvasNode[]) => {
+  const persistSnapshot = useCallback(async (nodes: CanvasNode[], edges: CanvasEdge[]) => {
     if (!currentTakeId) return
     try {
       await saveTakeSnapshotAction({
@@ -97,7 +90,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         scene_id: shot.scene_id,
         shot_id: shot.id,
         take_id: currentTakeId,
-        payload: nodes,
+        payload: { nodes, edges },
         reason: 'manual_save',
       })
     } catch (err) {
@@ -105,24 +98,21 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }, [projectId, shot.scene_id, shot.id, currentTakeId])
 
-  // ── Debounced handler ──
-  const handleNodesChange = useCallback((nodes: CanvasNode[]) => {
+  const handleNodesChange = useCallback((nodes: CanvasNode[], edges: CanvasEdge[]) => {
     if (persistTimerRef.current) {
       clearTimeout(persistTimerRef.current)
     }
     persistTimerRef.current = setTimeout(() => {
-      persistNodes(nodes)
+      persistSnapshot(nodes, edges)
     }, 800)
-  }, [persistNodes])
+  }, [persistSnapshot])
 
-  // ── Undo history updates ──
   const handleUndoHistoryChange = useCallback((history: UndoHistory) => {
     if (currentTakeId) {
       undoHistoryByTakeRef.current.set(currentTakeId, history)
     }
   }, [currentTakeId])
 
-  // ── Load snapshot, swap atomically ──
   useEffect(() => {
     if (!currentTakeId) return
 
@@ -135,9 +125,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
     loadLatestTakeSnapshotAction(currentTakeId)
       .then(snapshot => {
-        const payload = snapshot?.payload
-          ? (snapshot.payload as CanvasNode[])
-          : undefined
+        let payload: SnapshotPayload | undefined
+
+        if (snapshot?.payload) {
+          const raw = snapshot.payload as any
+          if (Array.isArray(raw)) {
+            payload = { nodes: raw as CanvasNode[], edges: [] }
+          } else if (raw.nodes) {
+            payload = { nodes: raw.nodes as CanvasNode[], edges: (raw.edges ?? []) as CanvasEdge[] }
+          }
+        }
 
         setReadyTakeId(currentTakeId)
         setReadyPayload(payload)
@@ -150,7 +147,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
       })
   }, [currentTakeId])
 
-  // ── Cleanup on unmount ──
   useEffect(() => {
     return () => {
       if (persistTimerRef.current) {
@@ -159,7 +155,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }, [])
 
-  // ── Drag from sidebar ──
   const handleSidebarNoteMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     setGhostPos({ x: e.clientX, y: e.clientY })
@@ -191,16 +186,12 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     window.addEventListener('mouseup', handleMouseUp)
   }, [])
 
-  // ── R4-001b: Image upload to Supabase Storage ──
   const handleImageUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file || !canvasRef.current) return
-
-    // Reset input subito per permettere re-upload
     e.target.value = ''
 
     try {
-      // 1. Leggi dimensioni naturali
       const dimensions = await new Promise<{ w: number; h: number }>((resolve, reject) => {
         const img = new window.Image()
         img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
@@ -208,24 +199,19 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         img.src = URL.createObjectURL(file)
       })
 
-      // 2. Upload su Supabase Storage
       const supabase = createClient()
       const ext = file.name.split('.').pop() || 'png'
       const storagePath = `${projectId}/${shot.id}/${crypto.randomUUID()}.${ext}`
 
       const { error: uploadError } = await supabase.storage
         .from('take-images')
-        .upload(storagePath, file, {
-          cacheControl: '3600',
-          upsert: false,
-        })
+        .upload(storagePath, file, { cacheControl: '3600', upsert: false })
 
       if (uploadError) {
         console.error('Upload failed:', uploadError)
         return
       }
 
-      // 3. Ottieni public URL
       const { data: urlData } = supabase.storage
         .from('take-images')
         .getPublicUrl(storagePath)
@@ -235,7 +221,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         return
       }
 
-      // 4. Crea nodo immagine
       const canvas = canvasRef.current
       if (!canvas) return
 
@@ -251,21 +236,15 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
       const cx = rect.width / 2
       const cy = rect.height / 2
-
       canvas.createImageNodeAt(cx, cy, imageData)
-
     } catch (err) {
       console.error('Image upload failed:', err)
     }
   }, [projectId, shot.id])
 
-  // ── New Take ──
   const handleNewTake = async () => {
     try {
-      const newTake = await createTakeAction({
-        projectId,
-        shotId: shot.id
-      })
+      const newTake = await createTakeAction({ projectId, shotId: shot.id })
 
       setTakes(prev => {
         const nextIndex = prev.length
@@ -281,31 +260,27 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         }
         return [...prev, localTake]
       })
-
       setCurrentTakeId(newTake.id)
     } catch (error) {
       console.error('Failed to create take:', error)
     }
   }
 
-  // ── Duplica Take ──
   const handleDuplicateTake = async () => {
     if (!currentTakeId || !canvasRef.current) return
 
-    const clonedNodes = structuredClone(canvasRef.current.getSnapshot())
+    const snapshot = canvasRef.current.getSnapshot()
+    const clonedPayload = structuredClone(snapshot)
 
     try {
-      const newTake = await createTakeAction({
-        projectId,
-        shotId: shot.id
-      })
+      const newTake = await createTakeAction({ projectId, shotId: shot.id })
 
       await saveTakeSnapshotAction({
         project_id: projectId,
         scene_id: shot.scene_id,
         shot_id: shot.id,
         take_id: newTake.id,
-        payload: clonedNodes,
+        payload: clonedPayload,
         reason: 'duplicate_take_seed',
       })
 
@@ -323,15 +298,12 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         }
         return [...prev, localTake]
       })
-
       setCurrentTakeId(newTake.id)
-
     } catch (error) {
       console.error('Failed to duplicate take:', error)
     }
   }
 
-  // ── R3.8-002: Delete Take ──
   const handleDeleteTake = async (takeId: string) => {
     if (takes.length <= 1) return
 
@@ -353,11 +325,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     undoHistoryByTakeRef.current.delete(deletedId)
 
     try {
-      await deleteTakeAction({
-        projectId,
-        shotId: shot.id,
-        takeId: deletedId,
-      })
+      await deleteTakeAction({ projectId, shotId: shot.id, takeId: deletedId })
     } catch (error) {
       console.error('Failed to delete take:', error)
       setTakes(takes)
@@ -369,12 +337,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     return (
       <div className="flex-1 flex flex-col">
         <ShotHeader shot={shot} projectId={projectId} />
-
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
           <div className="text-center">
-            <p className="text-zinc-500 text-sm mb-4">
-              Nessun Take presente per questo Shot
-            </p>
+            <p className="text-zinc-500 text-sm mb-4">Nessun Take presente per questo Shot</p>
             <button
               className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 rounded text-sm transition-colors"
               onClick={handleNewTake}
@@ -404,9 +369,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         onDelete={handleDeleteTake}
       />
 
-      {/* Sidebar + Canvas */}
       <div className="flex-1 flex">
-        {/* Tool Rail — always visible */}
         <aside className="w-12 bg-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
           <button
             onMouseDown={handleSidebarNoteMouseDown}
@@ -416,7 +379,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
             <span className="text-xs text-zinc-400 pointer-events-none">Note</span>
           </button>
 
-          {/* R4-001b: Image upload */}
           <button
             onClick={() => imageInputRef.current?.click()}
             className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
@@ -433,14 +395,14 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
           />
         </aside>
 
-        {/* Canvas area */}
         <div className="flex-1 flex relative">
           {readyTakeId && (
             <TakeCanvas
               ref={canvasRef}
               key={readyTakeId}
               takeId={readyTakeId}
-              initialNodes={readyPayload}
+              initialNodes={readyPayload?.nodes}
+              initialEdges={readyPayload?.edges}
               onNodesChange={handleNodesChange}
               initialUndoHistory={currentUndoHistory}
               onUndoHistoryChange={handleUndoHistoryChange}
@@ -455,16 +417,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         </div>
       </div>
 
-      {/* Ghost node during sidebar drag */}
       {ghostPos && (
         <div
           className="fixed pointer-events-none z-[9999]"
-          style={{
-            left: ghostPos.x - 100,
-            top: ghostPos.y - 60,
-            width: 200,
-            height: 120,
-          }}
+          style={{ left: ghostPos.x - 100, top: ghostPos.y - 60, width: 200, height: 120 }}
         >
           <div className="w-full h-full bg-zinc-800 border border-zinc-600 rounded-lg opacity-60 flex flex-col p-3">
             <span className="text-xs text-zinc-400">Untitled</span>

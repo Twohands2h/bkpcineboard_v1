@@ -5,12 +5,18 @@ import { NodeShell } from './NodeShell'
 import { NoteContent, ImageContent, type NoteData, type ImageData } from './NodeContent'
 
 // ===================================================
-// TAKE CANVAS — PURE WORK AREA (R4-002)
+// TAKE CANVAS — PURE WORK AREA (R4-003)
 // ===================================================
 
 export interface UndoHistory {
-    stack: CanvasNode[][]
+    stack: CanvasSnapshot[]
     cursor: number
+}
+
+// R4-003: Snapshot now includes edges
+interface CanvasSnapshot {
+    nodes: CanvasNode[]
+    edges: CanvasEdge[]
 }
 
 const HISTORY_MAX = 50
@@ -21,7 +27,8 @@ const MIN_IMAGE_SIZE = 32
 interface TakeCanvasProps {
     takeId: string
     initialNodes?: CanvasNode[]
-    onNodesChange?: (nodes: CanvasNode[]) => void
+    initialEdges?: CanvasEdge[]
+    onNodesChange?: (nodes: CanvasNode[], edges: CanvasEdge[]) => void
     initialUndoHistory?: UndoHistory
     onUndoHistoryChange?: (history: UndoHistory) => void
 }
@@ -50,18 +57,69 @@ interface ImageNode {
     data: ImageData
 }
 
+// R4-003: Edge type
+export interface CanvasEdge {
+    id: string
+    from: string
+    to: string
+    label?: string
+}
+
 export interface TakeCanvasHandle {
-    getSnapshot: () => CanvasNode[]
+    getSnapshot: () => { nodes: CanvasNode[]; edges: CanvasEdge[] }
     createNodeAt: (x: number, y: number) => void
     createImageNodeAt: (x: number, y: number, imageData: ImageData) => void
     getCanvasRect: () => DOMRect | null
 }
 
-type InteractionMode = 'idle' | 'dragging' | 'editing' | 'resizing' | 'selecting'
+type InteractionMode = 'idle' | 'dragging' | 'editing' | 'resizing' | 'selecting' | 'connecting'
 
 const DRAG_THRESHOLD = 3
 const MAX_INITIAL_IMAGE_WIDTH = 400
 const MAX_INITIAL_IMAGE_HEIGHT = 300
+const EDGE_HIT_DISTANCE = 8
+
+// Helper: get center of a node
+function nodeCenter(node: CanvasNode): { x: number; y: number } {
+    return { x: node.x + node.width / 2, y: node.y + node.height / 2 }
+}
+
+// Helper: get edge anchor point on node border (from center toward target)
+function edgeAnchor(node: CanvasNode, targetX: number, targetY: number): { x: number; y: number } {
+    const cx = node.x + node.width / 2
+    const cy = node.y + node.height / 2
+    const dx = targetX - cx
+    const dy = targetY - cy
+
+    if (dx === 0 && dy === 0) return { x: cx, y: cy }
+
+    const absDx = Math.abs(dx)
+    const absDy = Math.abs(dy)
+    const hw = node.width / 2
+    const hh = node.height / 2
+
+    let scale: number
+    if (absDx / hw > absDy / hh) {
+        scale = hw / absDx
+    } else {
+        scale = hh / absDy
+    }
+
+    return { x: cx + dx * scale, y: cy + dy * scale }
+}
+
+// Helper: distance from point to line segment
+function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+    const dx = x2 - x1
+    const dy = y2 - y1
+    const lenSq = dx * dx + dy * dy
+    if (lenSq === 0) return Math.sqrt((px - x1) ** 2 + (py - y1) ** 2)
+    let t = ((px - x1) * dx + (py - y1) * dy) / lenSq
+    t = Math.max(0, Math.min(1, t))
+    const projX = x1 + t * dx
+    const projY = y1 + t * dy
+    return Math.sqrt((px - projX) ** 2 + (py - projY) ** 2)
+}
 
 interface SelectionBoxRect {
     left: number
@@ -71,15 +129,20 @@ interface SelectionBoxRect {
 }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, onNodesChange, initialUndoHistory, onUndoHistoryChange }, ref) {
-        const [nodes, setNodes] = useState<CanvasNode[]>(
-            () => initialNodes ?? []
-        )
+    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange }, ref) {
+        const [nodes, setNodes] = useState<CanvasNode[]>(() => initialNodes ?? [])
+        const [edges, setEdges] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
+        const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
+        const [editingEdgeLabel, setEditingEdgeLabel] = useState<string | null>(null)
         const [interactionMode, setInteractionMode] = useState<InteractionMode>('idle')
         const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
-        // R4-002: visual selection box (for rendering only)
         const [selectionBoxRect, setSelectionBoxRect] = useState<SelectionBoxRect | null>(null)
+
+        // R4-003: ghost connection line
+        const [connectionGhost, setConnectionGhost] = useState<{
+            fromX: number; fromY: number; toX: number; toY: number
+        } | null>(null)
 
         const canvasRef = useRef<HTMLDivElement>(null)
 
@@ -100,37 +163,43 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             aspectRatio: number | null
         } | null>(null)
 
-        // R4-002: selection box ref (source of truth during drag)
         const selBoxRef = useRef<{
-            startX: number  // canvas-relative
+            startX: number
+            startY: number
+            canvasRect: DOMRect
+        } | null>(null)
+
+        // R4-003: connection drag ref
+        const connectionRef = useRef<{
+            fromNodeId: string
+            startX: number
             startY: number
             canvasRect: DOMRect
         } | null>(null)
 
         const nodesRef = useRef<CanvasNode[]>(nodes)
-        useEffect(() => {
-            nodesRef.current = nodes
-        }, [nodes])
+        useEffect(() => { nodesRef.current = nodes }, [nodes])
+
+        const edgesRef = useRef<CanvasEdge[]>(edges)
+        useEffect(() => { edgesRef.current = edges }, [edges])
 
         const selectedNodeIdsRef = useRef<Set<string>>(selectedNodeIds)
-        useEffect(() => {
-            selectedNodeIdsRef.current = selectedNodeIds
-        }, [selectedNodeIds])
+        useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds }, [selectedNodeIds])
 
         const primarySelectedId = selectedNodeIds.size === 1
             ? Array.from(selectedNodeIds)[0]
             : null
 
-        // ── History ──
+        // ── History (R4-003: includes edges) ──
         const historyRef = useRef<UndoHistory>(
             initialUndoHistory
                 ? structuredClone(initialUndoHistory)
-                : { stack: [structuredClone(initialNodes ?? [])], cursor: 0 }
+                : { stack: [{ nodes: structuredClone(initialNodes ?? []), edges: structuredClone(initialEdges ?? []) }], cursor: 0 }
         )
 
         const emitNodesChange = useCallback(() => {
             if (onNodesChange) {
-                onNodesChange(structuredClone(nodesRef.current))
+                onNodesChange(structuredClone(nodesRef.current), structuredClone(edgesRef.current))
             }
         }, [onNodesChange])
 
@@ -141,7 +210,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [onUndoHistoryChange])
 
         const pushHistory = useCallback(() => {
-            const current = structuredClone(nodesRef.current)
+            const current: CanvasSnapshot = {
+                nodes: structuredClone(nodesRef.current),
+                edges: structuredClone(edgesRef.current),
+            }
             const h = historyRef.current
             h.stack = h.stack.slice(0, h.cursor + 1)
             h.stack.push(current)
@@ -157,8 +229,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const h = historyRef.current
             if (h.cursor <= 0) return
             h.cursor--
-            const prevState = structuredClone(h.stack[h.cursor])
-            setNodes(prevState)
+            const prev = structuredClone(h.stack[h.cursor])
+            setNodes(prev.nodes)
+            setEdges(prev.edges)
             emitHistoryChange()
             setTimeout(() => emitNodesChange(), 0)
         }, [emitNodesChange, emitHistoryChange])
@@ -167,8 +240,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const h = historyRef.current
             if (h.cursor >= h.stack.length - 1) return
             h.cursor++
-            const nextState = structuredClone(h.stack[h.cursor])
-            setNodes(nextState)
+            const next = structuredClone(h.stack[h.cursor])
+            setNodes(next.nodes)
+            setEdges(next.edges)
             emitHistoryChange()
             setTimeout(() => emitNodesChange(), 0)
         }, [emitNodesChange, emitHistoryChange])
@@ -186,13 +260,26 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 }
                 if (e.key === 'Escape') {
                     setSelectedNodeIds(new Set())
+                    setSelectedEdgeId(null)
+                    setEditingEdgeLabel(null)
                     setInteractionMode('idle')
                     setEditingField(null)
+                }
+                // R4-003: Delete/Backspace deletes selected edge
+                if ((e.key === 'Delete' || e.key === 'Backspace') && selectedEdgeId && interactionMode === 'idle') {
+                    // Don't delete if editing text or label
+                    const active = document.activeElement
+                    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return
+                    e.preventDefault()
+                    setEdges(prev => prev.filter(edge => edge.id !== selectedEdgeId))
+                    setSelectedEdgeId(null)
+                    setEditingEdgeLabel(null)
+                    setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
                 }
             }
             window.addEventListener('keydown', handleKeyDown)
             return () => window.removeEventListener('keydown', handleKeyDown)
-        }, [undo, redo])
+        }, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange])
 
         // ── Create note node ──
         const createNodeAt = useCallback((x: number, y: number) => {
@@ -208,6 +295,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             }
             setNodes((prev) => [...prev, newNode])
             setSelectedNodeIds(new Set([newNode.id]))
+            setSelectedEdgeId(null)
+            setEditingEdgeLabel(null)
             setInteractionMode('idle')
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
@@ -241,29 +330,38 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             }
             setNodes((prev) => [...prev, newNode])
             setSelectedNodeIds(new Set([newNode.id]))
+            setSelectedEdgeId(null)
+            setEditingEdgeLabel(null)
             setInteractionMode('idle')
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
         useImperativeHandle(ref, () => ({
-            getSnapshot: () => structuredClone(nodes),
+            getSnapshot: () => ({
+                nodes: structuredClone(nodes),
+                edges: structuredClone(edges),
+            }),
             createNodeAt,
             createImageNodeAt,
             getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
-        }), [nodes, createNodeAt, createImageNodeAt])
+        }), [nodes, edges, createNodeAt, createImageNodeAt])
 
         useEffect(() => {
             setSelectedNodeIds(new Set())
+            setSelectedEdgeId(null)
+            setEditingEdgeLabel(null)
             setInteractionMode('idle')
             setEditingField(null)
             dragRef.current = null
             resizeRef.current = null
             selBoxRef.current = null
+            connectionRef.current = null
             setSelectionBoxRect(null)
+            setConnectionGhost(null)
         }, [takeId])
 
         // ============================================
-        // DRAG HANDLERS (R4-002: group move)
+        // DRAG HANDLERS (group move)
         // ============================================
 
         const handleWindowMouseMove = useCallback((e: MouseEvent) => {
@@ -271,12 +369,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const deltaX = e.clientX - dragRef.current.startMouseX
             const deltaY = e.clientY - dragRef.current.startMouseY
             const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY)
-
             if (!dragRef.current.hasMoved && distance > DRAG_THRESHOLD) {
                 dragRef.current.hasMoved = true
                 setInteractionMode('dragging')
             }
-
             if (dragRef.current.hasMoved) {
                 e.preventDefault()
                 const offsets = dragRef.current.offsets
@@ -309,23 +405,19 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [handleWindowMouseMove, handleWindowMouseUp])
 
         // ============================================
-        // SELECTION BOX HANDLERS (R4-002)
-        // All via refs — no stale closure issues
+        // SELECTION BOX HANDLERS
         // ============================================
 
         const handleSelBoxMouseMove = useCallback((e: MouseEvent) => {
             const sb = selBoxRef.current
             if (!sb) return
             e.preventDefault()
-
             const currentX = e.clientX - sb.canvasRect.left
             const currentY = e.clientY - sb.canvasRect.top
-
             const left = Math.min(sb.startX, currentX)
             const top = Math.min(sb.startY, currentY)
             const width = Math.abs(currentX - sb.startX)
             const height = Math.abs(currentY - sb.startY)
-
             setSelectionBoxRect({ left, top, width, height })
         }, [])
 
@@ -333,17 +425,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             window.removeEventListener('mousemove', handleSelBoxMouseMove)
             window.removeEventListener('mouseup', handleSelBoxMouseUp)
 
-            const sb = selBoxRef.current
-            if (sb) {
-                // Read final rect from DOM state via ref
-                // We need to recalculate from the last known mouse position
-                // But we can just use the current selectionBoxRect... which is stale.
-                // Instead, let's compute selection from what we have:
-            }
-
-            // Use a microtask to read the latest selectionBoxRect
             setTimeout(() => {
-                // Find nodes inside the box using the ref
                 const boxEl = document.querySelector('[data-selection-box]')
                 if (boxEl) {
                     const boxRect = boxEl.getBoundingClientRect()
@@ -353,7 +435,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         const top = boxRect.top - canvasRect.top
                         const right = left + boxRect.width
                         const bottom = top + boxRect.height
-
                         const selected = new Set<string>()
                         nodesRef.current.forEach((node) => {
                             const nodeRight = node.x + node.width
@@ -365,7 +446,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         setSelectedNodeIds(selected)
                     }
                 }
-
                 setSelectionBoxRect(null)
                 selBoxRef.current = null
                 setInteractionMode('idle')
@@ -380,6 +460,92 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [handleSelBoxMouseMove, handleSelBoxMouseUp])
 
         // ============================================
+        // CONNECTION HANDLERS (R4-003)
+        // ============================================
+
+        const handleConnectionMouseMove = useCallback((e: MouseEvent) => {
+            const conn = connectionRef.current
+            if (!conn) return
+            e.preventDefault()
+
+            const fromNode = nodesRef.current.find(n => n.id === conn.fromNodeId)
+            if (!fromNode) return
+
+            const toX = e.clientX - conn.canvasRect.left
+            const toY = e.clientY - conn.canvasRect.top
+            const from = edgeAnchor(fromNode, toX, toY)
+
+            setConnectionGhost({ fromX: from.x, fromY: from.y, toX: toX, toY: toY })
+        }, [])
+
+        const handleConnectionMouseUp = useCallback((e: MouseEvent) => {
+            window.removeEventListener('mousemove', handleConnectionMouseMove)
+            window.removeEventListener('mouseup', handleConnectionMouseUp)
+
+            const conn = connectionRef.current
+            if (conn) {
+                const canvasRect = conn.canvasRect
+                const mouseX = e.clientX - canvasRect.left
+                const mouseY = e.clientY - canvasRect.top
+
+                // Find target node under mouse
+                const targetNode = nodesRef.current.find(node => {
+                    if (node.id === conn.fromNodeId) return false
+                    return mouseX >= node.x && mouseX <= node.x + node.width &&
+                        mouseY >= node.y && mouseY <= node.y + node.height
+                })
+
+                if (targetNode) {
+                    // Check for duplicate edge
+                    const duplicate = edgesRef.current.some(
+                        e => (e.from === conn.fromNodeId && e.to === targetNode.id) ||
+                            (e.from === targetNode.id && e.to === conn.fromNodeId)
+                    )
+
+                    if (!duplicate) {
+                        const newEdge: CanvasEdge = {
+                            id: crypto.randomUUID(),
+                            from: conn.fromNodeId,
+                            to: targetNode.id,
+                        }
+                        setEdges(prev => [...prev, newEdge])
+                        setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                    }
+                }
+            }
+
+            connectionRef.current = null
+            setConnectionGhost(null)
+            setInteractionMode('idle')
+        }, [handleConnectionMouseMove, pushHistory, emitNodesChange])
+
+        const handleConnectionStart = useCallback((nodeId: string, mouseX: number, mouseY: number) => {
+            const canvasRect = canvasRef.current?.getBoundingClientRect()
+            if (!canvasRect) return
+
+            connectionRef.current = {
+                fromNodeId: nodeId,
+                startX: mouseX - canvasRect.left,
+                startY: mouseY - canvasRect.top,
+                canvasRect,
+            }
+
+            setInteractionMode('connecting')
+            setSelectedEdgeId(null)
+            setEditingEdgeLabel(null)
+
+            window.addEventListener('mousemove', handleConnectionMouseMove)
+            window.addEventListener('mouseup', handleConnectionMouseUp)
+        }, [handleConnectionMouseMove, handleConnectionMouseUp])
+
+        useEffect(() => {
+            return () => {
+                window.removeEventListener('mousemove', handleConnectionMouseMove)
+                window.removeEventListener('mouseup', handleConnectionMouseUp)
+            }
+        }, [handleConnectionMouseMove, handleConnectionMouseUp])
+
+        // ============================================
         // RESIZE HANDLERS
         // ============================================
 
@@ -390,7 +556,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const deltaY = e.clientY - resizeRef.current.startMouseY
             let newWidth: number
             let newHeight: number
-
             if (resizeRef.current.aspectRatio !== null) {
                 newWidth = Math.max(MIN_IMAGE_SIZE, resizeRef.current.startWidth + deltaX)
                 newHeight = newWidth / resizeRef.current.aspectRatio
@@ -402,7 +567,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 newWidth = Math.max(MIN_WIDTH, resizeRef.current.startWidth + deltaX)
                 newHeight = Math.max(MIN_HEIGHT, resizeRef.current.startHeight + deltaY)
             }
-
             setNodes((prev) =>
                 prev.map((node) =>
                     node.id === resizeRef.current!.nodeId
@@ -467,24 +631,23 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         // ============================================
 
         const handleSelect = useCallback((nodeId: string) => {
-            // Se il nodo è già nella multi-selezione, mantienila
-            if (selectedNodeIds.has(nodeId) && selectedNodeIds.size > 1) return
+            if (selectedNodeIdsRef.current.has(nodeId) && selectedNodeIdsRef.current.size > 1) return
             setSelectedNodeIds(new Set([nodeId]))
-        }, [selectedNodeIds])
+            setSelectedEdgeId(null)
+            setEditingEdgeLabel(null)
+        }, [])
 
         const handlePotentialDragStart = useCallback(
             (nodeId: string, mouseX: number, mouseY: number) => {
                 const currentSelected = selectedNodeIdsRef.current.has(nodeId)
                     ? selectedNodeIdsRef.current
                     : new Set([nodeId])
-
                 const offsets = new Map<string, { startX: number; startY: number }>()
                 nodesRef.current.forEach((node) => {
                     if (currentSelected.has(node.id)) {
                         offsets.set(node.id, { startX: node.x, startY: node.y })
                     }
                 })
-
                 dragRef.current = {
                     nodeId,
                     offsets,
@@ -492,11 +655,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     startMouseY: mouseY,
                     hasMoved: false,
                 }
-
                 if (!selectedNodeIdsRef.current.has(nodeId)) {
                     setSelectedNodeIds(new Set([nodeId]))
                 }
-
                 window.addEventListener('mousemove', handleWindowMouseMove)
                 window.addEventListener('mouseup', handleWindowMouseUp)
             },
@@ -505,7 +666,11 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
         const handleDelete = useCallback((nodeId: string) => {
             setNodes((prev) => prev.filter((n) => n.id !== nodeId))
+            // R4-003: also remove edges connected to deleted node
+            setEdges((prev) => prev.filter((e) => e.from !== nodeId && e.to !== nodeId))
             setSelectedNodeIds(new Set())
+            setSelectedEdgeId(null)
+            setEditingEdgeLabel(null)
             setInteractionMode('idle')
             setEditingField(null)
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
@@ -513,6 +678,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => {
             setSelectedNodeIds(new Set([nodeId]))
+            setSelectedEdgeId(null)
+            setEditingEdgeLabel(null)
             setInteractionMode('editing')
             setEditingField(field)
         }, [])
@@ -535,7 +702,44 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
-        // R4-002: Canvas mousedown — start selection box or clear
+        // R4-003: Click on SVG layer to select/deselect edges
+        const handleSvgClick = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+            const canvasRect = canvasRef.current?.getBoundingClientRect()
+            if (!canvasRect) return
+
+            const mouseX = e.clientX - canvasRect.left
+            const mouseY = e.clientY - canvasRect.top
+
+            // Find closest edge
+            let closestEdge: CanvasEdge | null = null
+            let closestDist = EDGE_HIT_DISTANCE
+
+            edgesRef.current.forEach((edge) => {
+                const fromNode = nodesRef.current.find(n => n.id === edge.from)
+                const toNode = nodesRef.current.find(n => n.id === edge.to)
+                if (!fromNode || !toNode) return
+
+                const fromCenter = nodeCenter(fromNode)
+                const toCenter = nodeCenter(toNode)
+                const from = edgeAnchor(fromNode, toCenter.x, toCenter.y)
+                const to = edgeAnchor(toNode, fromCenter.x, fromCenter.y)
+
+                const dist = distToSegment(mouseX, mouseY, from.x, from.y, to.x, to.y)
+                if (dist < closestDist) {
+                    closestDist = dist
+                    closestEdge = edge
+                }
+            })
+
+            if (closestEdge) {
+                e.stopPropagation()
+                setSelectedEdgeId(closestEdge.id)
+                setEditingEdgeLabel(null)
+                setSelectedNodeIds(new Set())
+            }
+        }, [])
+
+        // Canvas mousedown — start selection box or clear
         const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
             if (interactionMode === 'editing') return
 
@@ -549,11 +753,27 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setSelectionBoxRect({ left: startX, top: startY, width: 0, height: 0 })
             setInteractionMode('selecting')
             setSelectedNodeIds(new Set())
+            setSelectedEdgeId(null)
+            setEditingEdgeLabel(null)
             setEditingField(null)
 
             window.addEventListener('mousemove', handleSelBoxMouseMove)
             window.addEventListener('mouseup', handleSelBoxMouseUp)
         }, [interactionMode, handleSelBoxMouseMove, handleSelBoxMouseUp])
+
+        // ── Compute edge lines for rendering ──
+        const edgeLines = edges.map((edge) => {
+            const fromNode = nodes.find(n => n.id === edge.from)
+            const toNode = nodes.find(n => n.id === edge.to)
+            if (!fromNode || !toNode) return null
+
+            const fromCenter = nodeCenter(fromNode)
+            const toCenter = nodeCenter(toNode)
+            const from = edgeAnchor(fromNode, toCenter.x, toCenter.y)
+            const to = edgeAnchor(toNode, fromCenter.x, fromCenter.y)
+
+            return { edge, from, to }
+        }).filter(Boolean) as { edge: CanvasEdge; from: { x: number; y: number }; to: { x: number; y: number } }[]
 
         return (
             <div
@@ -561,6 +781,131 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 className="flex-1 bg-zinc-950 relative overflow-hidden"
                 onMouseDown={handleCanvasMouseDown}
             >
+                {/* R4-003: SVG edge layer — UNDER nodes */}
+                <svg
+                    className="absolute inset-0 w-full h-full pointer-events-none"
+                    style={{ zIndex: 0 }}
+                >
+                    <defs>
+                        <marker
+                            id="arrowhead"
+                            markerWidth="8"
+                            markerHeight="6"
+                            refX="7"
+                            refY="3"
+                            orient="auto"
+                        >
+                            <polygon points="0 0, 8 3, 0 6" fill="#71717a" />
+                        </marker>
+                        <marker
+                            id="arrowhead-selected"
+                            markerWidth="8"
+                            markerHeight="6"
+                            refX="7"
+                            refY="3"
+                            orient="auto"
+                        >
+                            <polygon points="0 0, 8 3, 0 6" fill="#3b82f6" />
+                        </marker>
+                    </defs>
+
+                    {/* Clickable hit areas (pointer-events enabled) */}
+                    <g style={{ pointerEvents: 'stroke' }} onClick={handleSvgClick as any}>
+                        {edgeLines.map(({ edge, from, to }) => (
+                            <line
+                                key={`hit-${edge.id}`}
+                                x1={from.x} y1={from.y}
+                                x2={to.x} y2={to.y}
+                                stroke="transparent"
+                                strokeWidth={EDGE_HIT_DISTANCE * 2}
+                                style={{ cursor: 'pointer', pointerEvents: 'stroke' }}
+                            />
+                        ))}
+                    </g>
+
+                    {/* Visible edges */}
+                    {edgeLines.map(({ edge, from, to }) => {
+                        const isSelected = edge.id === selectedEdgeId
+                        return (
+                            <line
+                                key={edge.id}
+                                x1={from.x} y1={from.y}
+                                x2={to.x} y2={to.y}
+                                stroke={isSelected ? '#3b82f6' : '#71717a'}
+                                strokeWidth={isSelected ? 2 : 1.5}
+                                markerEnd={isSelected ? 'url(#arrowhead-selected)' : 'url(#arrowhead)'}
+                            />
+                        )
+                    })}
+
+                    {/* Ghost connection line */}
+                    {connectionGhost && (
+                        <line
+                            x1={connectionGhost.fromX} y1={connectionGhost.fromY}
+                            x2={connectionGhost.toX} y2={connectionGhost.toY}
+                            stroke="#10b981"
+                            strokeWidth={2}
+                            strokeDasharray="6 3"
+                            markerEnd="url(#arrowhead)"
+                        />
+                    )}
+                </svg>
+
+                {/* R4-003: Edge labels — between SVG and nodes */}
+                {edgeLines.map(({ edge, from, to }) => {
+                    const isSelected = edge.id === selectedEdgeId
+                    if (!isSelected && !edge.label) return null
+
+                    const midX = (from.x + to.x) / 2
+                    const midY = (from.y + to.y) / 2
+
+                    return (
+                        <div
+                            key={`label-${edge.id}`}
+                            className="absolute pointer-events-auto z-[5]"
+                            style={{
+                                left: midX,
+                                top: midY,
+                                transform: 'translate(-50%, -50%)',
+                            }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            {isSelected ? (
+                                <input
+                                    type="text"
+                                    autoFocus={editingEdgeLabel === edge.id}
+                                    placeholder="label..."
+                                    defaultValue={edge.label || ''}
+                                    onFocus={() => setEditingEdgeLabel(edge.id)}
+                                    onBlur={(ev) => {
+                                        const value = ev.target.value.trim()
+                                        setEdges(prev => prev.map(ed =>
+                                            ed.id === edge.id ? { ...ed, label: value || undefined } : ed
+                                        ))
+                                        setEditingEdgeLabel(null)
+                                        setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                                    }}
+                                    onKeyDown={(ev) => {
+                                        if (ev.key === 'Enter') (ev.target as HTMLInputElement).blur()
+                                        if (ev.key === 'Escape') {
+                                            (ev.target as HTMLInputElement).value = edge.label || ''
+                                                ; (ev.target as HTMLInputElement).blur()
+                                        }
+                                        ev.stopPropagation()
+                                    }}
+                                    className="bg-zinc-800 border border-blue-500 text-zinc-200 text-[10px] px-1.5 py-0.5 outline-none text-center min-w-[60px] max-w-[120px]"
+                                />
+                            ) : (
+                                <span className="text-[10px] text-zinc-500 bg-zinc-900/80 px-1 py-0.5">
+                                    {edge.label}
+                                </span>
+                            )}
+                        </div>
+                    )
+                })}
+
+                {/* Nodes layer — ABOVE edges */}
                 {nodes.map((node) => (
                     <NodeShell
                         key={node.id}
@@ -577,6 +922,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         onPotentialDragStart={handlePotentialDragStart}
                         onDelete={handleDelete}
                         onResizeStart={handleResizeStart}
+                        onConnectionStart={handleConnectionStart}
                     >
                         {node.type === 'note' ? (
                             <NoteContent
@@ -595,7 +941,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     </NodeShell>
                 ))}
 
-                {/* R4-002: Selection box overlay */}
+                {/* Selection box overlay */}
                 {selectionBoxRect && selectionBoxRect.width > 2 && selectionBoxRect.height > 2 && (
                     <div
                         data-selection-box
@@ -609,7 +955,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     />
                 )}
 
-                {nodes.length === 0 && (
+                {nodes.length === 0 && edges.length === 0 && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                         <p className="text-zinc-600 text-sm">Drag "Note" or "Image" from sidebar to canvas</p>
                     </div>
