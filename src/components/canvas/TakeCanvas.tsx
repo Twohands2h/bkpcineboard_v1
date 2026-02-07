@@ -2,13 +2,11 @@
 
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react'
 import { NodeShell } from './NodeShell'
-import { NoteContent, type NoteData } from './NodeContent'
+import { NoteContent, ImageContent, type NoteData, type ImageData } from './NodeContent'
 
 // ===================================================
-// TAKE CANVAS — PURE WORK AREA (R4-001a final)
+// TAKE CANVAS — PURE WORK AREA (R4-001b)
 // ===================================================
-// Auto-grow: NodeContent richiede altezza via onRequestHeight.
-// Il canvas aggiorna height del nodo. No ResizeObserver.
 
 export interface UndoHistory {
     stack: CanvasNode[][]
@@ -18,6 +16,7 @@ export interface UndoHistory {
 const HISTORY_MAX = 50
 const MIN_WIDTH = 120
 const MIN_HEIGHT = 80
+const MIN_IMAGE_SIZE = 32
 
 interface TakeCanvasProps {
     takeId: string
@@ -27,7 +26,9 @@ interface TakeCanvasProps {
     onUndoHistoryChange?: (history: UndoHistory) => void
 }
 
-export interface CanvasNode {
+export type CanvasNode = NoteNode | ImageNode
+
+interface NoteNode {
     id: string
     type: 'note'
     x: number
@@ -38,15 +39,29 @@ export interface CanvasNode {
     data: NoteData
 }
 
+interface ImageNode {
+    id: string
+    type: 'image'
+    x: number
+    y: number
+    width: number
+    height: number
+    zIndex: number
+    data: ImageData
+}
+
 export interface TakeCanvasHandle {
     getSnapshot: () => CanvasNode[]
     createNodeAt: (x: number, y: number) => void
+    createImageNodeAt: (x: number, y: number, imageData: ImageData) => void
     getCanvasRect: () => DOMRect | null
 }
 
 type InteractionMode = 'idle' | 'dragging' | 'editing' | 'resizing'
 
 const DRAG_THRESHOLD = 3
+const MAX_INITIAL_IMAGE_WIDTH = 400
+const MAX_INITIAL_IMAGE_HEIGHT = 300
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
     function TakeCanvas({ takeId, initialNodes, onNodesChange, initialUndoHistory, onUndoHistoryChange }, ref) {
@@ -74,6 +89,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             startHeight: number
             startMouseX: number
             startMouseY: number
+            aspectRatio: number | null
         } | null>(null)
 
         const nodesRef = useRef<CanvasNode[]>(nodes)
@@ -155,8 +171,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             return () => window.removeEventListener('keydown', handleKeyDown)
         }, [undo, redo])
 
+        // ── Create note node ──
         const createNodeAt = useCallback((x: number, y: number) => {
-            const newNode: CanvasNode = {
+            const newNode: NoteNode = {
                 id: crypto.randomUUID(),
                 type: 'note',
                 x: Math.round(x - 100),
@@ -173,11 +190,48 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
+        // ── Create image node ──
+        const createImageNodeAt = useCallback((x: number, y: number, imageData: ImageData) => {
+            const { naturalWidth, naturalHeight } = imageData
+            const ratio = naturalWidth / naturalHeight
+            let w: number, h: number
+
+            if (naturalWidth > MAX_INITIAL_IMAGE_WIDTH || naturalHeight > MAX_INITIAL_IMAGE_HEIGHT) {
+                if (ratio > MAX_INITIAL_IMAGE_WIDTH / MAX_INITIAL_IMAGE_HEIGHT) {
+                    w = MAX_INITIAL_IMAGE_WIDTH
+                    h = w / ratio
+                } else {
+                    h = MAX_INITIAL_IMAGE_HEIGHT
+                    w = h * ratio
+                }
+            } else {
+                w = naturalWidth
+                h = naturalHeight
+            }
+
+            const newNode: ImageNode = {
+                id: crypto.randomUUID(),
+                type: 'image',
+                x: Math.round(x - w / 2),
+                y: Math.round(y - h / 2),
+                width: Math.round(w),
+                height: Math.round(h),
+                zIndex: nodesRef.current.length + 1,
+                data: imageData,
+            }
+
+            setNodes((prev) => [...prev, newNode])
+            setSelectedNodeId(newNode.id)
+            setInteractionMode('idle')
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
+
         useImperativeHandle(ref, () => ({
             getSnapshot: () => structuredClone(nodes),
             createNodeAt,
+            createImageNodeAt,
             getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
-        }), [nodes, createNodeAt])
+        }), [nodes, createNodeAt, createImageNodeAt])
 
         useEffect(() => {
             setSelectedNodeId(null)
@@ -249,8 +303,20 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const deltaX = e.clientX - resizeRef.current.startMouseX
             const deltaY = e.clientY - resizeRef.current.startMouseY
 
-            const newWidth = Math.max(MIN_WIDTH, resizeRef.current.startWidth + deltaX)
-            const newHeight = Math.max(MIN_HEIGHT, resizeRef.current.startHeight + deltaY)
+            let newWidth: number
+            let newHeight: number
+
+            if (resizeRef.current.aspectRatio !== null) {
+                newWidth = Math.max(MIN_IMAGE_SIZE, resizeRef.current.startWidth + deltaX)
+                newHeight = newWidth / resizeRef.current.aspectRatio
+                if (newHeight < MIN_IMAGE_SIZE) {
+                    newHeight = MIN_IMAGE_SIZE
+                    newWidth = newHeight * resizeRef.current.aspectRatio
+                }
+            } else {
+                newWidth = Math.max(MIN_WIDTH, resizeRef.current.startWidth + deltaX)
+                newHeight = Math.max(MIN_HEIGHT, resizeRef.current.startHeight + deltaY)
+            }
 
             setNodes((prev) =>
                 prev.map((node) =>
@@ -278,12 +344,17 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const node = nodesRef.current.find((n) => n.id === nodeId)
             if (!node) return
 
+            const aspectRatio = node.type === 'image'
+                ? node.width / node.height
+                : null
+
             resizeRef.current = {
                 nodeId,
                 startWidth: node.width,
                 startHeight: node.height,
                 startMouseX: mouseX,
                 startMouseY: mouseY,
+                aspectRatio,
             }
 
             setInteractionMode('resizing')
@@ -300,7 +371,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [handleResizeMouseMove, handleResizeMouseUp])
 
         // ============================================
-        // REQUEST HEIGHT (from NodeContent auto-grow)
+        // REQUEST HEIGHT (from NoteContent auto-grow)
         // ============================================
 
         const handleRequestHeight = useCallback((nodeId: string, requestedHeight: number) => {
@@ -400,27 +471,32 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         isSelected={node.id === selectedNodeId}
                         isDragging={interactionMode === 'dragging' && dragRef.current?.nodeId === node.id}
                         interactionMode={interactionMode}
+
                         onSelect={handleSelect}
                         onPotentialDragStart={handlePotentialDragStart}
                         onDelete={handleDelete}
                         onResizeStart={handleResizeStart}
                     >
-                        <NoteContent
-                            data={node.data}
-                            isEditing={interactionMode === 'editing' && node.id === selectedNodeId}
-                            editingField={node.id === selectedNodeId ? editingField : null}
-                            onDataChange={(data) => handleDataChange(node.id, data)}
-                            onFieldFocus={handleFieldFocus}
-                            onFieldBlur={handleFieldBlur}
-                            onStartEditing={(field) => handleStartEditing(node.id, field)}
-                            onRequestHeight={(h) => handleRequestHeight(node.id, h)}
-                        />
+                        {node.type === 'note' ? (
+                            <NoteContent
+                                data={node.data}
+                                isEditing={interactionMode === 'editing' && node.id === selectedNodeId}
+                                editingField={node.id === selectedNodeId ? editingField : null}
+                                onDataChange={(data) => handleDataChange(node.id, data)}
+                                onFieldFocus={handleFieldFocus}
+                                onFieldBlur={handleFieldBlur}
+                                onStartEditing={(field) => handleStartEditing(node.id, field)}
+                                onRequestHeight={(h) => handleRequestHeight(node.id, h)}
+                            />
+                        ) : (
+                            <ImageContent data={node.data} />
+                        )}
                     </NodeShell>
                 ))}
 
                 {nodes.length === 0 && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                        <p className="text-zinc-600 text-sm">Drag "Note" from sidebar to canvas</p>
+                        <p className="text-zinc-600 text-sm">Drag "Note" or "Image" from sidebar to canvas</p>
                     </div>
                 )}
             </div>

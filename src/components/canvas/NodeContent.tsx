@@ -3,11 +3,10 @@
 import { useRef, useEffect, useCallback } from 'react'
 
 // ===================================================
-// NODE CONTENT — SEMANTIC LAYER (R4-001a final)
+// NODE CONTENT — SEMANTIC LAYER (R4-001a/b)
 // ===================================================
-// TRASPARENTE. Lo stile visivo è sul NodeShell.
-// Auto-grow: SOLO quando isEditing è true per QUESTO nodo.
-// Nodi a riposo non reagiscono mai.
+
+// ── NOTE ──
 
 export interface NoteData {
     title?: string
@@ -38,7 +37,6 @@ export function NoteContent({
     const titleRef = useRef<HTMLInputElement>(null)
     const bodyRef = useRef<HTMLTextAreaElement>(null)
 
-    // Misura e richiedi altezza — SOLO se in editing
     const measureAndRequest = useCallback((force = false) => {
         if (!isEditing && !force) return
 
@@ -47,12 +45,10 @@ export function NoteContent({
 
         el.style.height = 'auto'
         const neededHeight = el.scrollHeight
-        // Richiedi altezza totale: header (~28px) + padding (16px) + contenuto
         onRequestHeight(neededHeight + 44)
         el.style.height = `${neededHeight}px`
     }, [isEditing, onRequestHeight])
 
-    // Auto-focus
     useEffect(() => {
         if (isEditing) {
             if (editingField === 'title' && titleRef.current) {
@@ -65,7 +61,6 @@ export function NoteContent({
         }
     }, [isEditing, editingField])
 
-    // Auto-grow quando entro in editing del body
     useEffect(() => {
         if (isEditing && editingField === 'body') {
             setTimeout(() => measureAndRequest(true), 0)
@@ -98,7 +93,6 @@ export function NoteContent({
 
     return (
         <div className="w-full h-full flex flex-col">
-            {/* Header / Title */}
             <div className="px-2 py-1 border-b border-zinc-700">
                 {isEditing && editingField === 'title' ? (
                     <input
@@ -122,7 +116,6 @@ export function NoteContent({
                 )}
             </div>
 
-            {/* Body */}
             <div className="p-2 flex-1 break-words whitespace-pre-wrap">
                 {isEditing && editingField === 'body' ? (
                     <textarea
@@ -149,6 +142,32 @@ export function NoteContent({
                     </div>
                 )}
             </div>
+        </div>
+    )
+}
+
+// ── IMAGE ──
+
+export interface ImageData {
+    src: string                // public URL from Supabase Storage
+    storage_path: string       // path in storage bucket
+    naturalWidth: number
+    naturalHeight: number
+}
+
+interface ImageContentProps {
+    data: ImageData
+}
+
+export function ImageContent({ data }: ImageContentProps) {
+    return (
+        <div className="w-full h-full flex items-center justify-center">
+            <img
+                src={data.src}
+                className="w-full h-full object-contain pointer-events-none select-none"
+                draggable={false}
+                alt=""
+            />
         </div>
     )
 }

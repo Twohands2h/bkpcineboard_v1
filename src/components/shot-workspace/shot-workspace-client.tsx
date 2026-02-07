@@ -5,16 +5,18 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { ShotHeader } from './shot-header'
 import { TakeTabs } from './take-tabs'
 import { TakeCanvas, type TakeCanvasHandle, type CanvasNode, type UndoHistory } from '@/components/canvas/TakeCanvas'
+import type { ImageData } from '@/components/canvas/NodeContent'
 import {
   saveTakeSnapshotAction,
   loadLatestTakeSnapshotAction,
 } from '@/app/actions/take-snapshots'
 import { createTakeAction, deleteTakeAction } from '@/app/actions/takes'
+import { createClient } from '@/lib/supabase/client'
 
 // ===================================================
-// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R3.8-002)
+// SHOT WORKSPACE CLIENT — ORCHESTRATOR (R4-001b)
 // ===================================================
-// R3.8-002: Delete Take with confirmation.
+// R4-001b: Image upload to Supabase Storage, no base64.
 
 interface Shot {
   id: string
@@ -82,6 +84,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
   // ── Undo history per Take ──
   const undoHistoryByTakeRef = useRef<Map<string, UndoHistory>>(new Map())
+
+  // ── R4-001b: Image input ref ──
+  const imageInputRef = useRef<HTMLInputElement>(null)
 
   // ── Persist function ──
   const persistNodes = useCallback(async (nodes: CanvasNode[]) => {
@@ -186,6 +191,74 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     window.addEventListener('mouseup', handleMouseUp)
   }, [])
 
+  // ── R4-001b: Image upload to Supabase Storage ──
+  const handleImageUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !canvasRef.current) return
+
+    // Reset input subito per permettere re-upload
+    e.target.value = ''
+
+    try {
+      // 1. Leggi dimensioni naturali
+      const dimensions = await new Promise<{ w: number; h: number }>((resolve, reject) => {
+        const img = new window.Image()
+        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
+        img.onerror = reject
+        img.src = URL.createObjectURL(file)
+      })
+
+      // 2. Upload su Supabase Storage
+      const supabase = createClient()
+      const ext = file.name.split('.').pop() || 'png'
+      const storagePath = `${projectId}/${shot.id}/${crypto.randomUUID()}.${ext}`
+
+      const { error: uploadError } = await supabase.storage
+        .from('take-images')
+        .upload(storagePath, file, {
+          cacheControl: '3600',
+          upsert: false,
+        })
+
+      if (uploadError) {
+        console.error('Upload failed:', uploadError)
+        return
+      }
+
+      // 3. Ottieni public URL
+      const { data: urlData } = supabase.storage
+        .from('take-images')
+        .getPublicUrl(storagePath)
+
+      if (!urlData?.publicUrl) {
+        console.error('Failed to get public URL')
+        return
+      }
+
+      // 4. Crea nodo immagine
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      const rect = canvas.getCanvasRect()
+      if (!rect) return
+
+      const imageData: ImageData = {
+        src: urlData.publicUrl,
+        storage_path: storagePath,
+        naturalWidth: dimensions.w,
+        naturalHeight: dimensions.h,
+      }
+
+      const cx = rect.width / 2
+      const cy = rect.height / 2
+
+      canvas.createImageNodeAt(cx, cy, imageData)
+
+    } catch (err) {
+      console.error('Image upload failed:', err)
+    }
+  }, [projectId, shot.id])
+
   // ── New Take ──
   const handleNewTake = async () => {
     try {
@@ -271,18 +344,14 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     const deletedId = takeId
     const remainingTakes = takes.filter(t => t.id !== deletedId)
 
-    // 1. UI immediata: rimuovi dalla lista e switch
     setTakes(remainingTakes)
 
-    // Switch al Take precedente o successivo
     const deletedIndex = takes.findIndex(t => t.id === deletedId)
     const nextTake = remainingTakes[Math.min(deletedIndex, remainingTakes.length - 1)]
     setCurrentTakeId(nextTake.id)
 
-    // Cleanup undo history del Take eliminato
     undoHistoryByTakeRef.current.delete(deletedId)
 
-    // 2. DB in background
     try {
       await deleteTakeAction({
         projectId,
@@ -291,7 +360,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
       })
     } catch (error) {
       console.error('Failed to delete take:', error)
-      // Rollback: riaggiungi il Take alla lista
       setTakes(takes)
       setCurrentTakeId(deletedId)
     }
@@ -347,6 +415,22 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
           >
             <span className="text-xs text-zinc-400 pointer-events-none">Note</span>
           </button>
+
+          {/* R4-001b: Image upload */}
+          <button
+            onClick={() => imageInputRef.current?.click()}
+            className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
+            title="Upload image to canvas"
+          >
+            <span className="text-xs text-zinc-400 pointer-events-none">Img</span>
+          </button>
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleImageUpload}
+            className="hidden"
+          />
         </aside>
 
         {/* Canvas area */}

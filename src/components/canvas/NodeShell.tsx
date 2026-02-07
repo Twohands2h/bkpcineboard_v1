@@ -3,12 +3,9 @@
 import { useCallback } from 'react'
 
 // ===================================================
-// NODE SHELL — SANDWICH LAYERING (R4-001a final)
+// NODE SHELL — SANDWICH LAYERING (R4)
 // ===================================================
-// Shell esterno: posizione, dimensione, bg, border, ring. NO overflow.
-// Viewport interno: overflow-hidden, clippa il contenuto.
-// Controlli (✕, resize): sul shell, fuori dal viewport.
-// Auto-grow: gestito internamente da NodeContent, NON qui.
+// R4 Visual Language: ZERO ROUNDED. Angoli retti 90°.
 
 interface NodeShellProps {
     nodeId: string
@@ -86,7 +83,7 @@ export function NodeShell({
 
     return (
         <div
-            className={`absolute select-none rounded-xl bg-zinc-800 border border-zinc-700 shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
+            className={`absolute select-none bg-zinc-800 border border-zinc-700 shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
             style={{
                 transform: `translate(${x}px, ${y}px)`,
                 width,
@@ -96,12 +93,12 @@ export function NodeShell({
             onMouseDown={handleMouseDown}
             onClick={handleClick}
         >
-            {/* VIEWPORT: clippa il contenuto */}
-            <div className="w-full h-full overflow-hidden rounded-xl flex flex-col">
+            {/* VIEWPORT */}
+            <div className="w-full h-full overflow-hidden flex flex-col">
                 {children}
             </div>
 
-            {/* CONTROLLI: fuori dal viewport, non clippati */}
+            {/* CONTROLLI */}
             {isSelected && interactionMode === 'idle' && (
                 <button
                     onClick={handleDelete}
@@ -120,7 +117,6 @@ export function NodeShell({
                 </div>
             )}
 
-            {/* Pointer block during drag or resize */}
             {(isDragging || isResizing) && (
                 <div className="absolute inset-0 z-[1]" style={{ pointerEvents: 'all' }} />
             )}
