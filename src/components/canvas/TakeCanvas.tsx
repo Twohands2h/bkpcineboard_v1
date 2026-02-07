@@ -5,10 +5,10 @@ import { NodeShell } from './NodeShell'
 import { NoteContent, type NoteData } from './NodeContent'
 
 // ===================================================
-// TAKE CANVAS — PURE WORK AREA (R4-001 final)
+// TAKE CANVAS — PURE WORK AREA (R4-001a final)
 // ===================================================
-// Resize: utente comanda, contenuto tagliato (overflow hidden)
-// Scrittura: contenuto comanda, nodo cresce (onContentResize)
+// Auto-grow: NodeContent richiede altezza via onRequestHeight.
+// Il canvas aggiorna height del nodo. No ResizeObserver.
 
 export interface UndoHistory {
     stack: CanvasNode[][]
@@ -300,23 +300,19 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [handleResizeMouseMove, handleResizeMouseUp])
 
         // ============================================
-        // R4-001: CONTENT RESIZE (auto-grow during editing)
+        // REQUEST HEIGHT (from NodeContent auto-grow)
         // ============================================
 
-        const handleContentResize = useCallback((nodeId: string, contentHeight: number) => {
-            // Solo durante editing — il contenuto comanda
-            if (interactionMode !== 'editing') return
-
+        const handleRequestHeight = useCallback((nodeId: string, requestedHeight: number) => {
             setNodes((prev) =>
                 prev.map((node) =>
-                    node.id === nodeId && contentHeight > node.height
-                        ? { ...node, height: contentHeight }
+                    node.id === nodeId && requestedHeight > node.height
+                        ? { ...node, height: requestedHeight }
                         : node
                 )
             )
-            // No pushHistory qui — verrà pushato al blur (fine editing)
             emitNodesChange()
-        }, [interactionMode, emitNodesChange])
+        }, [emitNodesChange])
 
         // ============================================
         // NODE HANDLERS
@@ -408,7 +404,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         onPotentialDragStart={handlePotentialDragStart}
                         onDelete={handleDelete}
                         onResizeStart={handleResizeStart}
-                        onContentResize={handleContentResize}
                     >
                         <NoteContent
                             data={node.data}
@@ -418,6 +413,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                             onFieldFocus={handleFieldFocus}
                             onFieldBlur={handleFieldBlur}
                             onStartEditing={(field) => handleStartEditing(node.id, field)}
+                            onRequestHeight={(h) => handleRequestHeight(node.id, h)}
                         />
                     </NodeShell>
                 ))}

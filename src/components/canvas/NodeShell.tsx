@@ -1,13 +1,14 @@
 'use client'
 
-import { useCallback, useRef, useEffect } from 'react'
+import { useCallback } from 'react'
 
 // ===================================================
-// NODE SHELL — SANDWICH LAYERING (R4-001a)
+// NODE SHELL — SANDWICH LAYERING (R4-001a final)
 // ===================================================
 // Shell esterno: posizione, dimensione, bg, border, ring. NO overflow.
 // Viewport interno: overflow-hidden, clippa il contenuto.
 // Controlli (✕, resize): sul shell, fuori dal viewport.
+// Auto-grow: gestito internamente da NodeContent, NON qui.
 
 interface NodeShellProps {
     nodeId: string
@@ -23,7 +24,6 @@ interface NodeShellProps {
     onPotentialDragStart: (nodeId: string, mouseX: number, mouseY: number) => void
     onDelete: (nodeId: string) => void
     onResizeStart: (nodeId: string, mouseX: number, mouseY: number) => void
-    onContentResize?: (nodeId: string, contentHeight: number) => void
     children: React.ReactNode
 }
 
@@ -41,28 +41,9 @@ export function NodeShell({
     onPotentialDragStart,
     onDelete,
     onResizeStart,
-    onContentResize,
     children,
 }: NodeShellProps) {
     const isResizing = interactionMode === 'resizing'
-    const contentRef = useRef<HTMLDivElement>(null)
-
-    useEffect(() => {
-        const el = contentRef.current
-        if (!el || !onContentResize) return
-
-        const observer = new ResizeObserver((entries) => {
-            for (const entry of entries) {
-                const contentHeight = entry.contentRect.height
-                if (contentHeight > height) {
-                    onContentResize(nodeId, Math.ceil(contentHeight))
-                }
-            }
-        })
-
-        observer.observe(el)
-        return () => observer.disconnect()
-    }, [nodeId, height, onContentResize])
 
     const handleMouseDown = useCallback(
         (e: React.MouseEvent) => {
@@ -117,9 +98,7 @@ export function NodeShell({
         >
             {/* VIEWPORT: clippa il contenuto */}
             <div className="w-full h-full overflow-hidden rounded-xl flex flex-col">
-                <div ref={contentRef} className="flex-1 w-full flex flex-col">
-                    {children}
-                </div>
+                {children}
             </div>
 
             {/* CONTROLLI: fuori dal viewport, non clippati */}

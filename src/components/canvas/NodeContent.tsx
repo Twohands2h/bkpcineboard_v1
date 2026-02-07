@@ -3,10 +3,11 @@
 import { useRef, useEffect, useCallback } from 'react'
 
 // ===================================================
-// NODE CONTENT — SEMANTIC LAYER (R4-001a)
+// NODE CONTENT — SEMANTIC LAYER (R4-001a final)
 // ===================================================
-// TRASPARENTE. Lo stile visivo (bg, border, shadow) è sul NodeShell.
-// Questo componente riempie lo spazio e mostra il contenuto.
+// TRASPARENTE. Lo stile visivo è sul NodeShell.
+// Auto-grow: SOLO quando isEditing è true per QUESTO nodo.
+// Nodi a riposo non reagiscono mai.
 
 export interface NoteData {
     title?: string
@@ -21,6 +22,7 @@ interface NoteContentProps {
     onFieldFocus: (field: 'title' | 'body') => void
     onFieldBlur: () => void
     onStartEditing: (field: 'title' | 'body') => void
+    onRequestHeight?: (height: number) => void
 }
 
 export function NoteContent({
@@ -31,17 +33,26 @@ export function NoteContent({
     onFieldFocus,
     onFieldBlur,
     onStartEditing,
+    onRequestHeight,
 }: NoteContentProps) {
     const titleRef = useRef<HTMLInputElement>(null)
     const bodyRef = useRef<HTMLTextAreaElement>(null)
 
-    const adjustTextareaHeight = useCallback(() => {
-        const el = bodyRef.current
-        if (!el) return
-        el.style.height = 'auto'
-        el.style.height = `${el.scrollHeight}px`
-    }, [])
+    // Misura e richiedi altezza — SOLO se in editing
+    const measureAndRequest = useCallback((force = false) => {
+        if (!isEditing && !force) return
 
+        const el = bodyRef.current
+        if (!el || !onRequestHeight) return
+
+        el.style.height = 'auto'
+        const neededHeight = el.scrollHeight
+        // Richiedi altezza totale: header (~28px) + padding (16px) + contenuto
+        onRequestHeight(neededHeight + 44)
+        el.style.height = `${neededHeight}px`
+    }, [isEditing, onRequestHeight])
+
+    // Auto-focus
     useEffect(() => {
         if (isEditing) {
             if (editingField === 'title' && titleRef.current) {
@@ -54,11 +65,12 @@ export function NoteContent({
         }
     }, [isEditing, editingField])
 
+    // Auto-grow quando entro in editing del body
     useEffect(() => {
         if (isEditing && editingField === 'body') {
-            setTimeout(adjustTextareaHeight, 0)
+            setTimeout(() => measureAndRequest(true), 0)
         }
-    }, [isEditing, editingField, adjustTextareaHeight])
+    }, [isEditing, editingField, measureAndRequest])
 
     const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         onDataChange({ ...data, title: e.target.value })
@@ -118,9 +130,10 @@ export function NoteContent({
                         placeholder="Write something..."
                         value={data.body || ''}
                         onChange={(e) => {
-                            adjustTextareaHeight()
                             handleBodyChange(e)
+                            measureAndRequest()
                         }}
+                        onFocus={() => measureAndRequest(true)}
                         onBlur={onFieldBlur}
                         onKeyDown={handleKeyDown}
                         onMouseDown={(e) => e.stopPropagation()}
