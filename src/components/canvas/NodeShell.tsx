@@ -1,20 +1,13 @@
 'use client'
 
-import { useCallback } from 'react'
+import { useCallback, useRef, useEffect } from 'react'
 
 // ===================================================
-// NODE SHELL — INTERACTION LAYER (R4-001)
+// NODE SHELL — SANDWICH LAYERING (R4-001a)
 // ===================================================
-// R1: select, drag, z-index, delete.
-// R4-001: resize handle (bottom-right corner).
-//
-// INVARIANTI:
-// - INV-1: editing attivo → niente drag, niente selezione, niente resize
-// - INV-2: dragging attivo → niente editing, niente input interni
-// - INV-3: delete solo in idle
-// - INV-4: selezione solo esplicita
-// - INV-5: resizing attivo → niente drag, niente editing
-// ===================================================
+// Shell esterno: posizione, dimensione, bg, border, ring. NO overflow.
+// Viewport interno: overflow-hidden, clippa il contenuto.
+// Controlli (✕, resize): sul shell, fuori dal viewport.
 
 interface NodeShellProps {
     nodeId: string
@@ -30,6 +23,7 @@ interface NodeShellProps {
     onPotentialDragStart: (nodeId: string, mouseX: number, mouseY: number) => void
     onDelete: (nodeId: string) => void
     onResizeStart: (nodeId: string, mouseX: number, mouseY: number) => void
+    onContentResize?: (nodeId: string, contentHeight: number) => void
     children: React.ReactNode
 }
 
@@ -47,9 +41,28 @@ export function NodeShell({
     onPotentialDragStart,
     onDelete,
     onResizeStart,
+    onContentResize,
     children,
 }: NodeShellProps) {
     const isResizing = interactionMode === 'resizing'
+    const contentRef = useRef<HTMLDivElement>(null)
+
+    useEffect(() => {
+        const el = contentRef.current
+        if (!el || !onContentResize) return
+
+        const observer = new ResizeObserver((entries) => {
+            for (const entry of entries) {
+                const contentHeight = entry.contentRect.height
+                if (contentHeight > height) {
+                    onContentResize(nodeId, Math.ceil(contentHeight))
+                }
+            }
+        })
+
+        observer.observe(el)
+        return () => observer.disconnect()
+    }, [nodeId, height, onContentResize])
 
     const handleMouseDown = useCallback(
         (e: React.MouseEvent) => {
@@ -92,47 +105,46 @@ export function NodeShell({
 
     return (
         <div
-            className={`absolute select-none ${isSelected ? 'ring-2 ring-blue-500' : ''
-                } ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
+            className={`absolute select-none rounded-xl bg-zinc-800 border border-zinc-700 shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
             style={{
-                left: x,
-                top: y,
+                transform: `translate(${x}px, ${y}px)`,
                 width,
-                minHeight: height,
+                height,
                 zIndex: isDragging ? 99999 : zIndex,
             }}
             onMouseDown={handleMouseDown}
             onClick={handleClick}
         >
-            {/* Delete button: solo idle + selected */}
+            {/* VIEWPORT: clippa il contenuto */}
+            <div className="w-full h-full overflow-hidden rounded-xl flex flex-col">
+                <div ref={contentRef} className="flex-1 w-full flex flex-col">
+                    {children}
+                </div>
+            </div>
+
+            {/* CONTROLLI: fuori dal viewport, non clippati */}
             {isSelected && interactionMode === 'idle' && (
                 <button
                     onClick={handleDelete}
                     onMouseDown={(e) => e.stopPropagation()}
-                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 hover:bg-red-600 text-white text-xs rounded-full flex items-center justify-center z-10"
+                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 hover:bg-red-600 text-white text-xs rounded-full flex items-center justify-center z-50"
                 >
                     ✕
                 </button>
             )}
-
-            {/* R4-001: Resize handle — solo selected + idle */}
             {isSelected && interactionMode === 'idle' && (
                 <div
                     onMouseDown={handleResizeMouseDown}
-                    className="absolute bottom-0 right-0 w-3 h-3 cursor-se-resize z-10"
-                    style={{
-                        background: 'linear-gradient(135deg, transparent 50%, #3b82f6 50%)',
-                    }}
-                />
+                    className="absolute -bottom-1 -right-1 w-4 h-4 cursor-se-resize z-50 flex items-center justify-center"
+                >
+                    <div className="w-2 h-2 bg-blue-500 rounded-full" />
+                </div>
             )}
 
             {/* Pointer block during drag or resize */}
             {(isDragging || isResizing) && (
                 <div className="absolute inset-0 z-[1]" style={{ pointerEvents: 'all' }} />
             )}
-
-            {/* Content */}
-            {children}
         </div>
     )
 }

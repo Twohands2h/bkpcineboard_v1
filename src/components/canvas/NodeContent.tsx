@@ -1,10 +1,12 @@
 'use client'
 
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useCallback } from 'react'
 
 // ===================================================
-// NODE CONTENT â€” SEMANTIC LAYER (CineBoard R1)
+// NODE CONTENT — SEMANTIC LAYER (R4-001a)
 // ===================================================
+// TRASPARENTE. Lo stile visivo (bg, border, shadow) è sul NodeShell.
+// Questo componente riempie lo spazio e mostra il contenuto.
 
 export interface NoteData {
     title?: string
@@ -33,7 +35,13 @@ export function NoteContent({
     const titleRef = useRef<HTMLInputElement>(null)
     const bodyRef = useRef<HTMLTextAreaElement>(null)
 
-    // Auto-focus quando entra in editing
+    const adjustTextareaHeight = useCallback(() => {
+        const el = bodyRef.current
+        if (!el) return
+        el.style.height = 'auto'
+        el.style.height = `${el.scrollHeight}px`
+    }, [])
+
     useEffect(() => {
         if (isEditing) {
             if (editingField === 'title' && titleRef.current) {
@@ -45,6 +53,12 @@ export function NoteContent({
             }
         }
     }, [isEditing, editingField])
+
+    useEffect(() => {
+        if (isEditing && editingField === 'body') {
+            setTimeout(adjustTextareaHeight, 0)
+        }
+    }, [isEditing, editingField, adjustTextareaHeight])
 
     const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         onDataChange({ ...data, title: e.target.value })
@@ -71,7 +85,8 @@ export function NoteContent({
     }
 
     return (
-        <div className="bg-zinc-800 border border-zinc-700 rounded shadow-lg overflow-hidden">
+        <div className="w-full h-full flex flex-col">
+            {/* Header / Title */}
             <div className="px-2 py-1 border-b border-zinc-700">
                 {isEditing && editingField === 'title' ? (
                     <input
@@ -96,18 +111,21 @@ export function NoteContent({
             </div>
 
             {/* Body */}
-            <div className="p-2 min-h-[60px]">
+            <div className="p-2 flex-1 break-words whitespace-pre-wrap">
                 {isEditing && editingField === 'body' ? (
                     <textarea
                         ref={bodyRef}
                         placeholder="Write something..."
                         value={data.body || ''}
-                        onChange={handleBodyChange}
+                        onChange={(e) => {
+                            adjustTextareaHeight()
+                            handleBodyChange(e)
+                        }}
                         onBlur={onFieldBlur}
                         onKeyDown={handleKeyDown}
                         onMouseDown={(e) => e.stopPropagation()}
-                        className="w-full bg-transparent text-xs text-zinc-400 outline-none resize-none placeholder-zinc-600"
-                        rows={4}
+                        className="w-full bg-transparent text-xs text-zinc-400 outline-none resize-none overflow-hidden placeholder-zinc-600"
+                        rows={1}
                     />
                 ) : (
                     <div

@@ -5,10 +5,10 @@ import { NodeShell } from './NodeShell'
 import { NoteContent, type NoteData } from './NodeContent'
 
 // ===================================================
-// TAKE CANVAS — PURE WORK AREA (R4-001)
+// TAKE CANVAS — PURE WORK AREA (R4-001 final)
 // ===================================================
-// R3.8: Pure work area, createNodeAt via ref
-// R4-001: Resizable nodes (5th mutation point)
+// Resize: utente comanda, contenuto tagliato (overflow hidden)
+// Scrittura: contenuto comanda, nodo cresce (onContentResize)
 
 export interface UndoHistory {
     stack: CanvasNode[][]
@@ -68,7 +68,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             hasMoved: boolean
         } | null>(null)
 
-        // R4-001: Resize ref
         const resizeRef = useRef<{
             nodeId: string
             startWidth: number
@@ -156,7 +155,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             return () => window.removeEventListener('keydown', handleKeyDown)
         }, [undo, redo])
 
-        // ── createNodeAt ──
         const createNodeAt = useCallback((x: number, y: number) => {
             const newNode: CanvasNode = {
                 id: crypto.randomUUID(),
@@ -190,7 +188,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [takeId])
 
         // ============================================
-        // DRAG HANDLERS (node move)
+        // DRAG HANDLERS
         // ============================================
 
         const handleWindowMouseMove = useCallback((e: MouseEvent) => {
@@ -241,7 +239,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [handleWindowMouseMove, handleWindowMouseUp])
 
         // ============================================
-        // R4-001: RESIZE HANDLERS
+        // RESIZE HANDLERS
         // ============================================
 
         const handleResizeMouseMove = useCallback((e: MouseEvent) => {
@@ -294,13 +292,31 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             window.addEventListener('mouseup', handleResizeMouseUp)
         }, [handleResizeMouseMove, handleResizeMouseUp])
 
-        // Cleanup resize listeners
         useEffect(() => {
             return () => {
                 window.removeEventListener('mousemove', handleResizeMouseMove)
                 window.removeEventListener('mouseup', handleResizeMouseUp)
             }
         }, [handleResizeMouseMove, handleResizeMouseUp])
+
+        // ============================================
+        // R4-001: CONTENT RESIZE (auto-grow during editing)
+        // ============================================
+
+        const handleContentResize = useCallback((nodeId: string, contentHeight: number) => {
+            // Solo durante editing — il contenuto comanda
+            if (interactionMode !== 'editing') return
+
+            setNodes((prev) =>
+                prev.map((node) =>
+                    node.id === nodeId && contentHeight > node.height
+                        ? { ...node, height: contentHeight }
+                        : node
+                )
+            )
+            // No pushHistory qui — verrà pushato al blur (fine editing)
+            emitNodesChange()
+        }, [interactionMode, emitNodesChange])
 
         // ============================================
         // NODE HANDLERS
@@ -392,6 +408,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         onPotentialDragStart={handlePotentialDragStart}
                         onDelete={handleDelete}
                         onResizeStart={handleResizeStart}
+                        onContentResize={handleContentResize}
                     >
                         <NoteContent
                             data={node.data}
