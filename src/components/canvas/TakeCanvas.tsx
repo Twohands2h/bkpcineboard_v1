@@ -265,15 +265,19 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     setInteractionMode('idle')
                     setEditingField(null)
                 }
-                // R4-003: Delete/Backspace deletes selected edge
-                if ((e.key === 'Delete' || e.key === 'Backspace') && selectedEdgeId && interactionMode === 'idle') {
-                    // Don't delete if editing text or label
+                // R4-002 addendum: Delete/Backspace deletes selected nodes
+                if ((e.key === 'Delete' || e.key === 'Backspace') && selectedNodeIdsRef.current.size > 0 && interactionMode === 'idle') {
                     const active = document.activeElement
                     if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return
                     e.preventDefault()
-                    setEdges(prev => prev.filter(edge => edge.id !== selectedEdgeId))
+                    const toDelete = selectedNodeIdsRef.current
+                    setNodes(prev => prev.filter(n => !toDelete.has(n.id)))
+                    setEdges(prev => prev.filter(ed => !toDelete.has(ed.from) && !toDelete.has(ed.to)))
+                    setSelectedNodeIds(new Set())
                     setSelectedEdgeId(null)
                     setEditingEdgeLabel(null)
+                    setInteractionMode('idle')
+                    setEditingField(null)
                     setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
                 }
             }
