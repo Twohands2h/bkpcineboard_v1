@@ -393,6 +393,39 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
             onChange={handleImageUpload}
             className="hidden"
           />
+          {/* R4-004a: Column */}
+          <button
+            onMouseDown={(e) => {
+              e.preventDefault()
+              setGhostPos({ x: e.clientX, y: e.clientY })
+
+              const handleMouseMove = (moveEvent: MouseEvent) => {
+                setGhostPos({ x: moveEvent.clientX, y: moveEvent.clientY })
+              }
+
+              const handleMouseUp = (upEvent: MouseEvent) => {
+                window.removeEventListener('mousemove', handleMouseMove)
+                window.removeEventListener('mouseup', handleMouseUp)
+                setGhostPos(null)
+
+                const canvas = canvasRef.current
+                if (!canvas) return
+                const rect = canvas.getCanvasRect()
+                if (!rect) return
+                const x = upEvent.clientX - rect.left
+                const y = upEvent.clientY - rect.top
+                if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
+                canvas.createColumnNodeAt(x, y)
+              }
+
+              window.addEventListener('mousemove', handleMouseMove)
+              window.addEventListener('mouseup', handleMouseUp)
+            }}
+            className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
+            title="Drag to canvas to create Column"
+          >
+            <span className="text-xs text-zinc-400 pointer-events-none">Col</span>
+          </button>
         </aside>
 
         <div className="flex-1 flex relative">

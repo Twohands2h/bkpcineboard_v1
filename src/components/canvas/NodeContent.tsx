@@ -3,7 +3,7 @@
 import { useRef, useEffect, useCallback } from 'react'
 
 // ===================================================
-// NODE CONTENT — SEMANTIC LAYER (R4-001a/b)
+// NODE CONTENT — SEMANTIC LAYER (R4-004a)
 // ===================================================
 
 // ── NOTE ──
@@ -149,8 +149,8 @@ export function NoteContent({
 // ── IMAGE ──
 
 export interface ImageData {
-    src: string                // public URL from Supabase Storage
-    storage_path: string       // path in storage bucket
+    src: string
+    storage_path: string
     naturalWidth: number
     naturalHeight: number
 }
@@ -168,6 +168,110 @@ export function ImageContent({ data }: ImageContentProps) {
                 draggable={false}
                 alt=""
             />
+        </div>
+    )
+}
+
+// ── COLUMN (R4-004a) ──
+
+export interface ColumnData {
+    title?: string
+    collapsed?: boolean
+}
+
+interface ColumnContentProps {
+    data: ColumnData
+    isEditing: boolean
+    editingField: 'title' | 'body' | null
+    onDataChange: (data: ColumnData) => void
+    onFieldBlur: () => void
+    onStartEditing: (field: 'title' | 'body') => void
+    onToggleCollapse: () => void
+}
+
+export function ColumnContent({
+    data,
+    isEditing,
+    editingField,
+    onDataChange,
+    onFieldBlur,
+    onStartEditing,
+    onToggleCollapse,
+}: ColumnContentProps) {
+    const titleRef = useRef<HTMLInputElement>(null)
+    const isCollapsed = data.collapsed ?? false
+
+    useEffect(() => {
+        if (isEditing && editingField === 'title' && titleRef.current) {
+            titleRef.current.focus()
+            titleRef.current.select()
+        }
+    }, [isEditing, editingField])
+
+    const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        onDataChange({ ...data, title: e.target.value })
+    }
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+        if (e.key === 'Escape') onFieldBlur()
+        if (e.key === 'Enter') onFieldBlur()
+    }
+
+    const handleTitleDoubleClick = (e: React.MouseEvent) => {
+        e.stopPropagation()
+        onStartEditing('title')
+    }
+
+    const handleToggleClick = (e: React.MouseEvent) => {
+        e.stopPropagation()
+        onToggleCollapse()
+    }
+
+    return (
+        <div className="w-full h-full flex flex-col">
+            {/* Column header */}
+            <div className="px-2 py-1.5 border-b border-zinc-600 flex items-center gap-1.5">
+                {/* Collapse toggle */}
+                <button
+                    onClick={handleToggleClick}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    className="text-zinc-500 hover:text-zinc-300 text-[10px] flex-shrink-0 w-4 h-4 flex items-center justify-center transition-colors"
+                    title={isCollapsed ? 'Expand' : 'Collapse'}
+                >
+                    {isCollapsed ? '▶' : '▼'}
+                </button>
+
+                {/* Title */}
+                {isEditing && editingField === 'title' ? (
+                    <input
+                        ref={titleRef}
+                        type="text"
+                        placeholder="Column"
+                        value={data.title || ''}
+                        onChange={handleTitleChange}
+                        onBlur={onFieldBlur}
+                        onKeyDown={handleKeyDown}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        className="bg-transparent text-xs text-zinc-200 font-semibold w-full outline-none placeholder-zinc-600"
+                    />
+                ) : (
+                    <div
+                        className="text-xs text-zinc-200 font-semibold truncate cursor-text flex-1"
+                        onDoubleClick={handleTitleDoubleClick}
+                    >
+                        {data.title || 'Column'}
+                    </div>
+                )}
+            </div>
+
+            {/* Body area — visible only when expanded */}
+            {!isCollapsed && (
+                <div className="flex-1 p-1">
+                    <div className="w-full h-full border border-dashed border-zinc-700 flex items-center justify-center">
+                        <span className="text-[10px] text-zinc-600">drop zone (R4-004b)</span>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }
