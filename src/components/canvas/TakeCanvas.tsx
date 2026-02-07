@@ -5,7 +5,7 @@ import { NodeShell } from './NodeShell'
 import { NoteContent, ImageContent, type NoteData, type ImageData } from './NodeContent'
 
 // ===================================================
-// TAKE CANVAS — PURE WORK AREA (R4-001b)
+// TAKE CANVAS — PURE WORK AREA (R4-002)
 // ===================================================
 
 export interface UndoHistory {
@@ -57,27 +57,35 @@ export interface TakeCanvasHandle {
     getCanvasRect: () => DOMRect | null
 }
 
-type InteractionMode = 'idle' | 'dragging' | 'editing' | 'resizing'
+type InteractionMode = 'idle' | 'dragging' | 'editing' | 'resizing' | 'selecting'
 
 const DRAG_THRESHOLD = 3
 const MAX_INITIAL_IMAGE_WIDTH = 400
 const MAX_INITIAL_IMAGE_HEIGHT = 300
+
+interface SelectionBoxRect {
+    left: number
+    top: number
+    width: number
+    height: number
+}
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
     function TakeCanvas({ takeId, initialNodes, onNodesChange, initialUndoHistory, onUndoHistoryChange }, ref) {
         const [nodes, setNodes] = useState<CanvasNode[]>(
             () => initialNodes ?? []
         )
-        const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+        const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
         const [interactionMode, setInteractionMode] = useState<InteractionMode>('idle')
         const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
+        // R4-002: visual selection box (for rendering only)
+        const [selectionBoxRect, setSelectionBoxRect] = useState<SelectionBoxRect | null>(null)
 
         const canvasRef = useRef<HTMLDivElement>(null)
 
         const dragRef = useRef<{
             nodeId: string
-            startNodeX: number
-            startNodeY: number
+            offsets: Map<string, { startX: number; startY: number }>
             startMouseX: number
             startMouseY: number
             hasMoved: boolean
@@ -92,10 +100,26 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             aspectRatio: number | null
         } | null>(null)
 
+        // R4-002: selection box ref (source of truth during drag)
+        const selBoxRef = useRef<{
+            startX: number  // canvas-relative
+            startY: number
+            canvasRect: DOMRect
+        } | null>(null)
+
         const nodesRef = useRef<CanvasNode[]>(nodes)
         useEffect(() => {
             nodesRef.current = nodes
         }, [nodes])
+
+        const selectedNodeIdsRef = useRef<Set<string>>(selectedNodeIds)
+        useEffect(() => {
+            selectedNodeIdsRef.current = selectedNodeIds
+        }, [selectedNodeIds])
+
+        const primarySelectedId = selectedNodeIds.size === 1
+            ? Array.from(selectedNodeIds)[0]
+            : null
 
         // ── History ──
         const historyRef = useRef<UndoHistory>(
@@ -119,23 +143,19 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const pushHistory = useCallback(() => {
             const current = structuredClone(nodesRef.current)
             const h = historyRef.current
-
             h.stack = h.stack.slice(0, h.cursor + 1)
             h.stack.push(current)
-
             if (h.stack.length > HISTORY_MAX) {
                 h.stack.shift()
             } else {
                 h.cursor++
             }
-
             emitHistoryChange()
         }, [emitHistoryChange])
 
         const undo = useCallback(() => {
             const h = historyRef.current
             if (h.cursor <= 0) return
-
             h.cursor--
             const prevState = structuredClone(h.stack[h.cursor])
             setNodes(prevState)
@@ -146,7 +166,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const redo = useCallback(() => {
             const h = historyRef.current
             if (h.cursor >= h.stack.length - 1) return
-
             h.cursor++
             const nextState = structuredClone(h.stack[h.cursor])
             setNodes(nextState)
@@ -165,8 +184,12 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     e.preventDefault()
                     redo()
                 }
+                if (e.key === 'Escape') {
+                    setSelectedNodeIds(new Set())
+                    setInteractionMode('idle')
+                    setEditingField(null)
+                }
             }
-
             window.addEventListener('keydown', handleKeyDown)
             return () => window.removeEventListener('keydown', handleKeyDown)
         }, [undo, redo])
@@ -183,9 +206,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 zIndex: nodesRef.current.length + 1,
                 data: {},
             }
-
             setNodes((prev) => [...prev, newNode])
-            setSelectedNodeId(newNode.id)
+            setSelectedNodeIds(new Set([newNode.id]))
             setInteractionMode('idle')
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
@@ -195,7 +217,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const { naturalWidth, naturalHeight } = imageData
             const ratio = naturalWidth / naturalHeight
             let w: number, h: number
-
             if (naturalWidth > MAX_INITIAL_IMAGE_WIDTH || naturalHeight > MAX_INITIAL_IMAGE_HEIGHT) {
                 if (ratio > MAX_INITIAL_IMAGE_WIDTH / MAX_INITIAL_IMAGE_HEIGHT) {
                     w = MAX_INITIAL_IMAGE_WIDTH
@@ -208,7 +229,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 w = naturalWidth
                 h = naturalHeight
             }
-
             const newNode: ImageNode = {
                 id: crypto.randomUUID(),
                 type: 'image',
@@ -219,9 +239,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 zIndex: nodesRef.current.length + 1,
                 data: imageData,
             }
-
             setNodes((prev) => [...prev, newNode])
-            setSelectedNodeId(newNode.id)
+            setSelectedNodeIds(new Set([newNode.id]))
             setInteractionMode('idle')
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
@@ -234,20 +253,21 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }), [nodes, createNodeAt, createImageNodeAt])
 
         useEffect(() => {
-            setSelectedNodeId(null)
+            setSelectedNodeIds(new Set())
             setInteractionMode('idle')
             setEditingField(null)
             dragRef.current = null
             resizeRef.current = null
+            selBoxRef.current = null
+            setSelectionBoxRect(null)
         }, [takeId])
 
         // ============================================
-        // DRAG HANDLERS
+        // DRAG HANDLERS (R4-002: group move)
         // ============================================
 
         const handleWindowMouseMove = useCallback((e: MouseEvent) => {
             if (!dragRef.current) return
-
             const deltaX = e.clientX - dragRef.current.startMouseX
             const deltaY = e.clientY - dragRef.current.startMouseY
             const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY)
@@ -259,15 +279,13 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
             if (dragRef.current.hasMoved) {
                 e.preventDefault()
-                const newX = dragRef.current.startNodeX + deltaX
-                const newY = dragRef.current.startNodeY + deltaY
-
+                const offsets = dragRef.current.offsets
                 setNodes((prev) =>
-                    prev.map((node) =>
-                        node.id === dragRef.current!.nodeId
-                            ? { ...node, x: newX, y: newY }
-                            : node
-                    )
+                    prev.map((node) => {
+                        const offset = offsets.get(node.id)
+                        if (!offset) return node
+                        return { ...node, x: offset.startX + deltaX, y: offset.startY + deltaY }
+                    })
                 )
             }
         }, [])
@@ -275,13 +293,11 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const handleWindowMouseUp = useCallback(() => {
             window.removeEventListener('mousemove', handleWindowMouseMove)
             window.removeEventListener('mouseup', handleWindowMouseUp)
-
             if (dragRef.current?.hasMoved) {
                 setInteractionMode('idle')
                 pushHistory()
                 emitNodesChange()
             }
-
             dragRef.current = null
         }, [handleWindowMouseMove, pushHistory, emitNodesChange])
 
@@ -293,16 +309,85 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [handleWindowMouseMove, handleWindowMouseUp])
 
         // ============================================
+        // SELECTION BOX HANDLERS (R4-002)
+        // All via refs — no stale closure issues
+        // ============================================
+
+        const handleSelBoxMouseMove = useCallback((e: MouseEvent) => {
+            const sb = selBoxRef.current
+            if (!sb) return
+            e.preventDefault()
+
+            const currentX = e.clientX - sb.canvasRect.left
+            const currentY = e.clientY - sb.canvasRect.top
+
+            const left = Math.min(sb.startX, currentX)
+            const top = Math.min(sb.startY, currentY)
+            const width = Math.abs(currentX - sb.startX)
+            const height = Math.abs(currentY - sb.startY)
+
+            setSelectionBoxRect({ left, top, width, height })
+        }, [])
+
+        const handleSelBoxMouseUp = useCallback(() => {
+            window.removeEventListener('mousemove', handleSelBoxMouseMove)
+            window.removeEventListener('mouseup', handleSelBoxMouseUp)
+
+            const sb = selBoxRef.current
+            if (sb) {
+                // Read final rect from DOM state via ref
+                // We need to recalculate from the last known mouse position
+                // But we can just use the current selectionBoxRect... which is stale.
+                // Instead, let's compute selection from what we have:
+            }
+
+            // Use a microtask to read the latest selectionBoxRect
+            setTimeout(() => {
+                // Find nodes inside the box using the ref
+                const boxEl = document.querySelector('[data-selection-box]')
+                if (boxEl) {
+                    const boxRect = boxEl.getBoundingClientRect()
+                    const canvasRect = canvasRef.current?.getBoundingClientRect()
+                    if (canvasRect && boxRect.width > 2 && boxRect.height > 2) {
+                        const left = boxRect.left - canvasRect.left
+                        const top = boxRect.top - canvasRect.top
+                        const right = left + boxRect.width
+                        const bottom = top + boxRect.height
+
+                        const selected = new Set<string>()
+                        nodesRef.current.forEach((node) => {
+                            const nodeRight = node.x + node.width
+                            const nodeBottom = node.y + node.height
+                            if (node.x < right && nodeRight > left && node.y < bottom && nodeBottom > top) {
+                                selected.add(node.id)
+                            }
+                        })
+                        setSelectedNodeIds(selected)
+                    }
+                }
+
+                setSelectionBoxRect(null)
+                selBoxRef.current = null
+                setInteractionMode('idle')
+            }, 0)
+        }, [handleSelBoxMouseMove])
+
+        useEffect(() => {
+            return () => {
+                window.removeEventListener('mousemove', handleSelBoxMouseMove)
+                window.removeEventListener('mouseup', handleSelBoxMouseUp)
+            }
+        }, [handleSelBoxMouseMove, handleSelBoxMouseUp])
+
+        // ============================================
         // RESIZE HANDLERS
         // ============================================
 
         const handleResizeMouseMove = useCallback((e: MouseEvent) => {
             if (!resizeRef.current) return
             e.preventDefault()
-
             const deltaX = e.clientX - resizeRef.current.startMouseX
             const deltaY = e.clientY - resizeRef.current.startMouseY
-
             let newWidth: number
             let newHeight: number
 
@@ -330,24 +415,18 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const handleResizeMouseUp = useCallback(() => {
             window.removeEventListener('mousemove', handleResizeMouseMove)
             window.removeEventListener('mouseup', handleResizeMouseUp)
-
             if (resizeRef.current) {
                 setInteractionMode('idle')
                 pushHistory()
                 emitNodesChange()
             }
-
             resizeRef.current = null
         }, [handleResizeMouseMove, pushHistory, emitNodesChange])
 
         const handleResizeStart = useCallback((nodeId: string, mouseX: number, mouseY: number) => {
             const node = nodesRef.current.find((n) => n.id === nodeId)
             if (!node) return
-
-            const aspectRatio = node.type === 'image'
-                ? node.width / node.height
-                : null
-
+            const aspectRatio = node.type === 'image' ? node.width / node.height : null
             resizeRef.current = {
                 nodeId,
                 startWidth: node.width,
@@ -356,9 +435,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 startMouseY: mouseY,
                 aspectRatio,
             }
-
             setInteractionMode('resizing')
-
             window.addEventListener('mousemove', handleResizeMouseMove)
             window.addEventListener('mouseup', handleResizeMouseUp)
         }, [handleResizeMouseMove, handleResizeMouseUp])
@@ -371,7 +448,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [handleResizeMouseMove, handleResizeMouseUp])
 
         // ============================================
-        // REQUEST HEIGHT (from NoteContent auto-grow)
+        // REQUEST HEIGHT
         // ============================================
 
         const handleRequestHeight = useCallback((nodeId: string, requestedHeight: number) => {
@@ -390,21 +467,34 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         // ============================================
 
         const handleSelect = useCallback((nodeId: string) => {
-            setSelectedNodeId(nodeId)
-        }, [])
+            // Se il nodo è già nella multi-selezione, mantienila
+            if (selectedNodeIds.has(nodeId) && selectedNodeIds.size > 1) return
+            setSelectedNodeIds(new Set([nodeId]))
+        }, [selectedNodeIds])
 
         const handlePotentialDragStart = useCallback(
             (nodeId: string, mouseX: number, mouseY: number) => {
-                const node = nodesRef.current.find((n) => n.id === nodeId)
-                if (!node) return
+                const currentSelected = selectedNodeIdsRef.current.has(nodeId)
+                    ? selectedNodeIdsRef.current
+                    : new Set([nodeId])
+
+                const offsets = new Map<string, { startX: number; startY: number }>()
+                nodesRef.current.forEach((node) => {
+                    if (currentSelected.has(node.id)) {
+                        offsets.set(node.id, { startX: node.x, startY: node.y })
+                    }
+                })
 
                 dragRef.current = {
                     nodeId,
-                    startNodeX: node.x,
-                    startNodeY: node.y,
+                    offsets,
                     startMouseX: mouseX,
                     startMouseY: mouseY,
                     hasMoved: false,
+                }
+
+                if (!selectedNodeIdsRef.current.has(nodeId)) {
+                    setSelectedNodeIds(new Set([nodeId]))
                 }
 
                 window.addEventListener('mousemove', handleWindowMouseMove)
@@ -415,14 +505,14 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
         const handleDelete = useCallback((nodeId: string) => {
             setNodes((prev) => prev.filter((n) => n.id !== nodeId))
-            setSelectedNodeId(null)
+            setSelectedNodeIds(new Set())
             setInteractionMode('idle')
             setEditingField(null)
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => {
-            setSelectedNodeId(nodeId)
+            setSelectedNodeIds(new Set([nodeId]))
             setInteractionMode('editing')
             setEditingField(field)
         }, [])
@@ -445,13 +535,25 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
-        const handleCanvasMouseDown = useCallback(() => {
-            if (interactionMode !== 'editing') {
-                setSelectedNodeId(null)
-                setInteractionMode('idle')
-                setEditingField(null)
-            }
-        }, [interactionMode])
+        // R4-002: Canvas mousedown — start selection box or clear
+        const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
+            if (interactionMode === 'editing') return
+
+            const rect = canvasRef.current?.getBoundingClientRect()
+            if (!rect) return
+
+            const startX = e.clientX - rect.left
+            const startY = e.clientY - rect.top
+
+            selBoxRef.current = { startX, startY, canvasRect: rect }
+            setSelectionBoxRect({ left: startX, top: startY, width: 0, height: 0 })
+            setInteractionMode('selecting')
+            setSelectedNodeIds(new Set())
+            setEditingField(null)
+
+            window.addEventListener('mousemove', handleSelBoxMouseMove)
+            window.addEventListener('mouseup', handleSelBoxMouseUp)
+        }, [interactionMode, handleSelBoxMouseMove, handleSelBoxMouseUp])
 
         return (
             <div
@@ -468,10 +570,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         width={node.width}
                         height={node.height}
                         zIndex={node.zIndex}
-                        isSelected={node.id === selectedNodeId}
-                        isDragging={interactionMode === 'dragging' && dragRef.current?.nodeId === node.id}
+                        isSelected={selectedNodeIds.has(node.id)}
+                        isDragging={interactionMode === 'dragging' && dragRef.current?.offsets.has(node.id) === true}
                         interactionMode={interactionMode}
-
                         onSelect={handleSelect}
                         onPotentialDragStart={handlePotentialDragStart}
                         onDelete={handleDelete}
@@ -480,8 +581,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         {node.type === 'note' ? (
                             <NoteContent
                                 data={node.data}
-                                isEditing={interactionMode === 'editing' && node.id === selectedNodeId}
-                                editingField={node.id === selectedNodeId ? editingField : null}
+                                isEditing={interactionMode === 'editing' && node.id === primarySelectedId}
+                                editingField={node.id === primarySelectedId ? editingField : null}
                                 onDataChange={(data) => handleDataChange(node.id, data)}
                                 onFieldFocus={handleFieldFocus}
                                 onFieldBlur={handleFieldBlur}
@@ -493,6 +594,20 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         )}
                     </NodeShell>
                 ))}
+
+                {/* R4-002: Selection box overlay */}
+                {selectionBoxRect && selectionBoxRect.width > 2 && selectionBoxRect.height > 2 && (
+                    <div
+                        data-selection-box
+                        className="absolute border border-blue-500 bg-blue-500/10 pointer-events-none z-[9998]"
+                        style={{
+                            left: selectionBoxRect.left,
+                            top: selectionBoxRect.top,
+                            width: selectionBoxRect.width,
+                            height: selectionBoxRect.height,
+                        }}
+                    />
+                )}
 
                 {nodes.length === 0 && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
