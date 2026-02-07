@@ -3,21 +3,17 @@
 import { useCallback } from 'react'
 
 // ===================================================
-// NODE SHELL — INTERACTION LAYER (CineBoard R1)
+// NODE SHELL — INTERACTION LAYER (R4-001)
 // ===================================================
-// Hardened in R1.1 — Contract enforcement.
+// R1: select, drag, z-index, delete.
+// R4-001: resize handle (bottom-right corner).
 //
-// RESPONSABILITÀ: select, drag, z-index, delete.
-// NON conosce il tipo di nodo.
-// NON gestisce editing.
-// NON muta contenuto semantico.
-//
-// INVARIANTI BLINDATI:
-// - INV-1: editing attivo → niente drag, niente selezione
+// INVARIANTI:
+// - INV-1: editing attivo → niente drag, niente selezione, niente resize
 // - INV-2: dragging attivo → niente editing, niente input interni
 // - INV-3: delete solo in idle
-// - INV-4: selezione solo esplicita, mai implicita
-// - INV-5: z-index aggiornato solo su selezione, mai su hover/mount
+// - INV-4: selezione solo esplicita
+// - INV-5: resizing attivo → niente drag, niente editing
 // ===================================================
 
 interface NodeShellProps {
@@ -29,10 +25,11 @@ interface NodeShellProps {
     zIndex: number
     isSelected: boolean
     isDragging: boolean
-    interactionMode: 'idle' | 'dragging' | 'editing'
+    interactionMode: 'idle' | 'dragging' | 'editing' | 'resizing'
     onSelect: (nodeId: string) => void
     onPotentialDragStart: (nodeId: string, mouseX: number, mouseY: number) => void
     onDelete: (nodeId: string) => void
+    onResizeStart: (nodeId: string, mouseX: number, mouseY: number) => void
     children: React.ReactNode
 }
 
@@ -49,21 +46,16 @@ export function NodeShell({
     onSelect,
     onPotentialDragStart,
     onDelete,
+    onResizeStart,
     children,
 }: NodeShellProps) {
+    const isResizing = interactionMode === 'resizing'
+
     const handleMouseDown = useCallback(
         (e: React.MouseEvent) => {
-            // ── INV-1: editing attivo → BLOCCO TOTALE ──
-            // Durante editing, NodeShell non può né selezionare né avviare drag.
-            // L'utente sta interagendo con NodeContent (input/textarea).
-            // Qualsiasi azione Shell corromperebbe lo stato.
             if (interactionMode === 'editing') return
-
-            // ── INV-2: dragging attivo → niente nuova interazione ──
-            // Se un drag è già in corso (su un altro nodo o sullo stesso),
-            // non avviare una nuova selezione/drag. Il drag è gestito
-            // a livello window da TakeCanvas, non da Shell.
             if (interactionMode === 'dragging') return
+            if (interactionMode === 'resizing') return
 
             e.stopPropagation()
             onSelect(nodeId)
@@ -74,9 +66,6 @@ export function NodeShell({
 
     const handleClick = useCallback(
         (e: React.MouseEvent) => {
-            // ── Difesa propagazione ──
-            // Impedisce che il click raggiunga il canvas (che deseleziona).
-            // Non è un handler di selezione: la selezione avviene in mouseDown.
             e.stopPropagation()
         },
         []
@@ -85,16 +74,20 @@ export function NodeShell({
     const handleDelete = useCallback(
         (e: React.MouseEvent) => {
             e.stopPropagation()
-
-            // ── INV-3: delete solo in idle ──
-            // Se arriva durante drag o editing → IGNORA silenziosamente.
-            // Il pulsante è già nascosto in quei casi (difesa visiva),
-            // ma questo guard protegge da race condition o future modifiche al render.
             if (interactionMode !== 'idle') return
-
             onDelete(nodeId)
         },
         [nodeId, interactionMode, onDelete]
+    )
+
+    const handleResizeMouseDown = useCallback(
+        (e: React.MouseEvent) => {
+            e.stopPropagation()
+            e.preventDefault()
+            if (interactionMode !== 'idle') return
+            onResizeStart(nodeId, e.clientX, e.clientY)
+        },
+        [nodeId, interactionMode, onResizeStart]
     )
 
     return (
@@ -111,9 +104,7 @@ export function NodeShell({
             onMouseDown={handleMouseDown}
             onClick={handleClick}
         >
-            {/* ── INV-3 (visivo): delete button solo in idle ──
-                Il guard logico è in handleDelete. Questo è il guard visivo:
-                nasconde il pulsante durante dragging E editing. */}
+            {/* Delete button: solo idle + selected */}
             {isSelected && interactionMode === 'idle' && (
                 <button
                     onClick={handleDelete}
@@ -124,16 +115,19 @@ export function NodeShell({
                 </button>
             )}
 
-            {/* ── INV-2 (fallback fisico): blocco input durante dragging ──
-                ATTENZIONE: questo overlay è una difesa FISICA, non la source of truth.
-                L'invariante "durante dragging non può avviarsi editing" è garantito
-                dalla logica in TakeCanvas (interactionMode state machine).
-                Questo overlay è un fallback: se un futuro NodeContent non rispetta
-                il contratto, il pointer-events: none impedisce fisicamente
-                che click/doubleclick raggiungano gli input interni.
-                NON basare mai la logica su questo overlay. Se lo rimuovi,
-                l'invariante DEVE reggere comunque a livello logico. */}
-            {isDragging && (
+            {/* R4-001: Resize handle — solo selected + idle */}
+            {isSelected && interactionMode === 'idle' && (
+                <div
+                    onMouseDown={handleResizeMouseDown}
+                    className="absolute bottom-0 right-0 w-3 h-3 cursor-se-resize z-10"
+                    style={{
+                        background: 'linear-gradient(135deg, transparent 50%, #3b82f6 50%)',
+                    }}
+                />
+            )}
+
+            {/* Pointer block during drag or resize */}
+            {(isDragging || isResizing) && (
                 <div className="absolute inset-0 z-[1]" style={{ pointerEvents: 'all' }} />
             )}
 

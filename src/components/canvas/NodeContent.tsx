@@ -72,7 +72,6 @@ export function NoteContent({
 
     return (
         <div className="bg-zinc-800 border border-zinc-700 rounded shadow-lg overflow-hidden">
-            {/* Header / Title */}
             <div className="px-2 py-1 border-b border-zinc-700">
                 {isEditing && editingField === 'title' ? (
                     <input
