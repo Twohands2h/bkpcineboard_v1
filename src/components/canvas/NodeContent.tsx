@@ -1,9 +1,9 @@
 'use client'
 
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useLayoutEffect } from 'react'
 
 // ===================================================
-// NODE CONTENT — SEMANTIC LAYER (R4-004a)
+// NODE CONTENT — SEMANTIC LAYER (R4-004b v7)
 // ===================================================
 
 // ── NOTE ──
@@ -22,6 +22,7 @@ interface NoteContentProps {
     onFieldBlur: () => void
     onStartEditing: (field: 'title' | 'body') => void
     onRequestHeight?: (height: number) => void
+    onContentMeasured?: (height: number) => void
 }
 
 export function NoteContent({
@@ -33,16 +34,29 @@ export function NoteContent({
     onFieldBlur,
     onStartEditing,
     onRequestHeight,
+    onContentMeasured,
 }: NoteContentProps) {
     const titleRef = useRef<HTMLInputElement>(null)
     const bodyRef = useRef<HTMLTextAreaElement>(null)
+    const containerRef = useRef<HTMLDivElement>(null)
+    const lastMeasuredRef = useRef<number>(0)
 
+    // ── DOM measurement: always, not just during editing ──
+    // Measures the container's scrollHeight and emits if changed
+    useLayoutEffect(() => {
+        if (!containerRef.current || !onContentMeasured) return
+        const measured = containerRef.current.scrollHeight
+        if (measured > 0 && measured !== lastMeasuredRef.current) {
+            lastMeasuredRef.current = measured
+            onContentMeasured(measured)
+        }
+    })
+
+    // ── Editing: auto-grow textarea ──
     const measureAndRequest = useCallback((force = false) => {
         if (!isEditing && !force) return
-
         const el = bodyRef.current
         if (!el || !onRequestHeight) return
-
         el.style.height = 'auto'
         const neededHeight = el.scrollHeight
         onRequestHeight(neededHeight + 44)
@@ -76,9 +90,7 @@ export function NoteContent({
     }
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === 'Escape') {
-            onFieldBlur()
-        }
+        if (e.key === 'Escape') onFieldBlur()
     }
 
     const handleTitleDoubleClick = (e: React.MouseEvent) => {
@@ -92,7 +104,7 @@ export function NoteContent({
     }
 
     return (
-        <div className="w-full h-full flex flex-col">
+        <div ref={containerRef} className="w-full flex flex-col">
             <div className="px-2 py-1 border-b border-zinc-700">
                 {isEditing && editingField === 'title' ? (
                     <input
@@ -116,7 +128,7 @@ export function NoteContent({
                 )}
             </div>
 
-            <div className="p-2 flex-1 break-words whitespace-pre-wrap">
+            <div className="p-2 break-words whitespace-pre-wrap">
                 {isEditing && editingField === 'body' ? (
                     <textarea
                         ref={bodyRef}
@@ -172,7 +184,7 @@ export function ImageContent({ data }: ImageContentProps) {
     )
 }
 
-// ── COLUMN (R4-004a) ──
+// ── COLUMN (R4-004b) ──
 
 export interface ColumnData {
     title?: string
@@ -229,9 +241,9 @@ export function ColumnContent({
 
     return (
         <div className="w-full h-full flex flex-col">
-            {/* Column header */}
-            <div className="px-2 py-1.5 border-b border-zinc-600 flex items-center gap-1.5">
-                {/* Collapse toggle */}
+            {/* Column header — drag handle */}
+            <div className="px-2 py-2 border-b border-zinc-600 flex items-center gap-1.5 cursor-grab active:cursor-grabbing">
+                <span className="text-zinc-600 text-[8px] select-none flex-shrink-0">⠿</span>
                 <button
                     onClick={handleToggleClick}
                     onMouseDown={(e) => e.stopPropagation()}
@@ -241,7 +253,6 @@ export function ColumnContent({
                     {isCollapsed ? '▶' : '▼'}
                 </button>
 
-                {/* Title */}
                 {isEditing && editingField === 'title' ? (
                     <input
                         ref={titleRef}
@@ -264,13 +275,9 @@ export function ColumnContent({
                 )}
             </div>
 
-            {/* Body area — visible only when expanded */}
+            {/* Body — transparent, children are canvas nodes rendered on top */}
             {!isCollapsed && (
-                <div className="flex-1 p-1">
-                    <div className="w-full h-full border border-dashed border-zinc-700 flex items-center justify-center">
-                        <span className="text-[10px] text-zinc-600">drop zone (R4-004b)</span>
-                    </div>
-                </div>
+                <div className="flex-1" />
             )}
         </div>
     )

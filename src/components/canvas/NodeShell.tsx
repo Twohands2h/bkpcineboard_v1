@@ -124,10 +124,10 @@ export function NodeShell({
                         ✕
                     </button>
 
-                    {/* Resize handle */}
+                    {/* Resize handle — large hit area, small visual dot */}
                     <div
                         onMouseDown={handleResizeMouseDown}
-                        className="absolute -bottom-1 -right-1 w-4 h-4 cursor-se-resize z-50 flex items-center justify-center"
+                        className="absolute -bottom-2.5 -right-2.5 w-8 h-8 cursor-se-resize z-50 flex items-center justify-center"
                     >
                         <div className="w-2 h-2 bg-blue-500 rounded-full" />
                     </div>
