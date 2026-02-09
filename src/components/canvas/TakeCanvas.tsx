@@ -5,9 +5,9 @@ import { NodeShell } from './NodeShell'
 import { NoteContent, ImageContent, ColumnContent, type NoteData, type ImageData, type ColumnData } from './NodeContent'
 
 // ===================================================
-// TAKE CANVAS — PURE WORK AREA (R4-004b v7-fixed)
+// TAKE CANVAS — PURE WORK AREA (R4-004c)
 // ===================================================
-// Text height in column: measured by DOM (onContentMeasured), not estimated
+// R4-004c: Column Spatial Influence — collapse/expand shifts nearby free nodes vertically
 
 export interface UndoHistory { stack: CanvasSnapshot[]; cursor: number }
 interface CanvasSnapshot { nodes: CanvasNode[]; edges: CanvasEdge[] }
@@ -23,6 +23,9 @@ const COLUMN_HEADER_HEIGHT = 36
 const COLUMN_PADDING = 4
 const CHILD_GAP = 4
 const COLUMN_MIN_BODY_HEIGHT = 60
+
+// R4-004c — Column Toggle: Vertical Wall Cascade
+const MIN_GAP = 15
 
 interface TakeCanvasProps {
     takeId: string
@@ -182,6 +185,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const selBoxRef = useRef<{ startX: number; startY: number; canvasRect: DOMRect } | null>(null)
         const connectionRef = useRef<{ fromNodeId: string; startX: number; startY: number; canvasRect: DOMRect } | null>(null)
 
+        // R4-004c: per-column snapshot of originalY for nodes displaced by expand
+        const shiftedNodesRef = useRef<Map<string, Map<string, number>>>(new Map())
+
         const nodesRef = useRef<CanvasNode[]>(nodes); useEffect(() => { nodesRef.current = nodes }, [nodes])
         const edgesRef = useRef<CanvasEdge[]>(edges); useEffect(() => { edgesRef.current = edges }, [edges])
         const selectedNodeIdsRef = useRef<Set<string>>(selectedNodeIds); useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds }, [selectedNodeIds])
@@ -278,6 +284,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
             dragRef.current = null; resizeRef.current = null; selBoxRef.current = null; connectionRef.current = null
             detachingRef.current = null; setDetachingOffset(null); setFrozenColumnId(null); frozenRectsRef.current = null
+            shiftedNodesRef.current = new Map()
+            console.log('[R4-004c] shiftedNodesRef RESET (takeId changed)')
             setSelectionBoxRect(null); setConnectionGhost(null)
         }, [takeId])
 
@@ -366,9 +374,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             } else {
                 const ids = new Set(dragRef.current!.offsets.keys())
                 setNodes(prev => {
-                    const rects = computeRenderRects(prev, null, null)
                     let u = [...prev]
                     for (const id of ids) {
+                        // Recompute rects each iteration so column dimensions are up-to-date
+                        const rects = computeRenderRects(u, null, null)
                         const nd = u.find(n => n.id === id)
                         if (!nd || nd.type === 'column' || (nd.data as any).parentId) continue
                         const ncx = nd.x + nd.width / 2, ncy = nd.y + nd.height / 2
@@ -495,14 +504,125 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setNodes(p => p.map(n => n.id === nodeId && rh > n.height ? { ...n, height: rh } : n)); emitNodesChange()
         }, [emitNodesChange])
 
+        // ============================================
+        // R4-004c — VERTICAL WALL CASCADE
+        //
+        // EXPAND: column creates a wall. ALL free elements below, sorted by Y,
+        //   pushed in cascade. Each pushed element becomes the new wall.
+        //
+        // COLLAPSE: restore ALL moved elements to savedOriginalY. Exact reversal.
+        // ============================================
         const handleToggleCollapse = useCallback((nodeId: string) => {
             if (detachingRef.current?.originalParentId === nodeId) return
-            setNodes(p => p.map(n => {
-                if (n.id !== nodeId || n.type !== 'column') return n
-                const col = n as ColumnNode
+
+            // Determine current state from ref (stable, not stale)
+            const currentCol = nodesRef.current.find(n => n.id === nodeId && n.type === 'column') as ColumnNode | undefined
+            const isCurrentlyCollapsed = currentCol?.data.collapsed ?? false
+
+            // For COLLAPSE: extract memory OUTSIDE setNodes (React 18 StrictMode safe)
+            let collapseMemory: Map<string, number> | null = null
+            if (!isCurrentlyCollapsed) {
+                collapseMemory = shiftedNodesRef.current.get(nodeId) ?? null
+                shiftedNodesRef.current.delete(nodeId)
+            }
+
+            setNodes(prevNodes => {
+                const col = prevNodes.find(n => n.id === nodeId && n.type === 'column') as ColumnNode | undefined
+                if (!col) return prevNodes
+
                 const wasCollapsed = col.data.collapsed ?? false
-                return { ...col, data: { ...col.data, collapsed: !wasCollapsed } }
-            }))
+
+                if (wasCollapsed) {
+                    // ── EXPAND (OPENING) ──
+
+                    // 1. Toggle the column
+                    const toggledNodes = prevNodes.map(n =>
+                        n.id === nodeId
+                            ? { ...n, data: { ...n.data, collapsed: false } } as CanvasNode
+                            : n
+                    )
+                    const newRects = computeRenderRects(toggledNodes, null, null)
+                    const colRect = newRects.get(nodeId)
+                    if (!colRect) return toggledNodes
+
+                    const occupiedBottom = colRect.y + colRect.height
+                    const colLeft = col.x
+                    const colRight = col.x + colRect.width
+
+                    // 2. Collect ALL free elements that overlap horizontally
+                    //    and have top >= column top
+                    const candidates: { id: string; y: number; height: number }[] = []
+                    for (const n of toggledNodes) {
+                        if (n.id === nodeId) continue
+                        if ((n.data as any).parentId != null) continue
+
+                        // Horizontal overlap
+                        const nRight = n.x + n.width
+                        if (nRight <= colLeft || n.x >= colRight) continue
+
+                        // Must be at or below column top
+                        if (n.y < colRect.y) continue
+
+                        const nRect = newRects.get(n.id)
+                        const nHeight = nRect ? nRect.height : n.height
+                        candidates.push({ id: n.id, y: n.y, height: nHeight })
+                    }
+
+                    // 3. Sort by Y ascending (top to bottom)
+                    candidates.sort((a, b) => a.y - b.y)
+
+                    // 4. Cascade: walk top-to-bottom, push if invading
+                    let currentBottom = occupiedBottom
+                    const savedPositions = new Map<string, number>()
+                    const newPositions = new Map<string, number>()
+
+                    for (const el of candidates) {
+                        // If element is already below currentBottom + gap, don't touch it
+                        if (el.y >= currentBottom + MIN_GAP) {
+                            currentBottom = el.y + el.height
+                            continue
+                        }
+
+                        // Save original Y (once)
+                        savedPositions.set(el.id, el.y)
+
+                        // Push element below the wall
+                        const newY = currentBottom + MIN_GAP
+                        newPositions.set(el.id, newY)
+
+                        // This element becomes the new wall
+                        currentBottom = newY + el.height
+                    }
+
+                    // 5. Write memory (idempotent for StrictMode)
+                    if (savedPositions.size > 0) {
+                        shiftedNodesRef.current.set(nodeId, savedPositions)
+                    }
+
+                    // 6. Apply new positions
+                    if (newPositions.size === 0) return toggledNodes
+                    return toggledNodes.map(n => {
+                        const newY = newPositions.get(n.id)
+                        return newY !== undefined ? { ...n, y: newY } : n
+                    })
+
+                } else {
+                    // ── COLLAPSE (CLOSING) ──
+                    // Restore ALL moved elements to their saved originalY
+                    const savedPositions = collapseMemory
+
+                    return prevNodes.map(n => {
+                        if (n.id === nodeId) {
+                            return { ...n, data: { ...n.data, collapsed: true } } as CanvasNode
+                        }
+                        if (savedPositions && savedPositions.has(n.id)) {
+                            return { ...n, y: savedPositions.get(n.id)! }
+                        }
+                        return n
+                    })
+                }
+            })
+
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
