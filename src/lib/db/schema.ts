@@ -438,6 +438,7 @@ export type Database = {
             }
             shots: {
                 Row: {
+                    approved_take_id: string | null
                     created_at: string
                     id: string
                     order_index: number
@@ -449,6 +450,7 @@ export type Database = {
                     visual_description: string
                 }
                 Insert: {
+                    approved_take_id?: string | null
                     created_at?: string
                     id?: string
                     order_index?: number
@@ -460,6 +462,7 @@ export type Database = {
                     visual_description: string
                 }
                 Update: {
+                    approved_take_id?: string | null
                     created_at?: string
                     id?: string
                     order_index?: number
@@ -471,6 +474,13 @@ export type Database = {
                     visual_description?: string
                 }
                 Relationships: [
+                    {
+                        foreignKeyName: "shots_approved_take_id_fkey"
+                        columns: ["approved_take_id"]
+                        isOneToOne: false
+                        referencedRelation: "takes"
+                        referencedColumns: ["id"]
+                    },
                     {
                         foreignKeyName: "shots_project_id_fkey"
                         columns: ["project_id"]
@@ -540,7 +550,7 @@ export type Database = {
             take_snapshots: {
                 Row: {
                     created_at: string
-                    created_by: string
+                    created_by: string | null
                     id: string
                     payload: Json
                     project_id: string
@@ -551,7 +561,7 @@ export type Database = {
                 }
                 Insert: {
                     created_at?: string
-                    created_by: string
+                    created_by?: string | null
                     id?: string
                     payload: Json
                     project_id: string
@@ -562,7 +572,7 @@ export type Database = {
                 }
                 Update: {
                     created_at?: string
-                    created_by?: string
+                    created_by?: string | null
                     id?: string
                     payload?: Json
                     project_id?: string
