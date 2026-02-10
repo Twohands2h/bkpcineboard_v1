@@ -211,60 +211,32 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const undo = useCallback(() => { const h = historyRef.current; if (h.cursor <= 0) return; h.cursor--; const p = structuredClone(h.stack[h.cursor]); setNodes(p.nodes); setEdges(p.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0) }, [emitNodesChange, emitHistoryChange])
         const redo = useCallback(() => { const h = historyRef.current; if (h.cursor >= h.stack.length - 1) return; h.cursor++; const n = structuredClone(h.stack[h.cursor]); setNodes(n.nodes); setEdges(n.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0) }, [emitNodesChange, emitHistoryChange])
 
-        // ── Keyboard (Space for pan, Undo/Redo, Delete) ──
-        useEffect(() => {
-            const kd = (e: KeyboardEvent) => {
-                if (e.code === 'Space' && !e.repeat) {
-                    const a = document.activeElement
-                    if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
-                    e.preventDefault()
-                    spaceDownRef.current = true
-                }
-                const mod = e.metaKey || e.ctrlKey
-                if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
-                if (mod && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo() }
-                if (e.key === 'Escape') { setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null) }
-                if ((e.key === 'Delete' || e.key === 'Backspace') && interactionMode === 'idle') {
-                    const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
-                    if (selectedEdgeId) { e.preventDefault(); setEdges(p => p.filter(ed => ed.id !== selectedEdgeId)); setSelectedEdgeId(null); setEditingEdgeLabel(null); setTimeout(() => { pushHistory(); emitNodesChange() }, 0); return }
-                    if (selectedNodeIdsRef.current.size > 0) {
-                        e.preventDefault(); const del = new Set(selectedNodeIdsRef.current)
-                        nodesRef.current.forEach(n => {
-                            if (n.type === 'column' && del.has(n.id)) {
-                                nodesRef.current.forEach(c => { if ((c.data as any).parentId === n.id) del.add(c.id) })
-                            }
-                        })
-                        setNodes(p => {
-                            let u = p.filter(n => !del.has(n.id))
-                            return u.map(n => n.type === 'column' && (n as ColumnNode).data.childOrder ? { ...n, data: { ...n.data, childOrder: (n as ColumnNode).data.childOrder!.filter(id => !del.has(id)) } } : n)
-                        })
-                        setEdges(p => p.filter(ed => !del.has(ed.from) && !del.has(ed.to)))
-                        setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
-                        setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
-                    }
-                }
-            }
-            const ku = (e: KeyboardEvent) => {
-                if (e.code === 'Space') { spaceDownRef.current = false }
-            }
-            window.addEventListener('keydown', kd); window.addEventListener('keyup', ku)
-            return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku) }
-        }, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange])
-
-        // ── R4-005: Zoom (Ctrl+Wheel / Trackpad pinch) ──
+        // ── R4-005: Zoom (Ctrl+Wheel) + R4-005b: Trackpad Pan (plain Wheel) ──
         useEffect(() => {
             const el = canvasRef.current; if (!el) return
             const handleWheel = (e: WheelEvent) => {
-                if (!e.ctrlKey && !e.metaKey) return
+                // Ctrl/Meta + Wheel = Zoom (trackpad pinch also sends ctrlKey)
+                if (e.ctrlKey || e.metaKey) {
+                    e.preventDefault()
+                    const cr = el.getBoundingClientRect()
+                    const screenX = e.clientX - cr.left
+                    const screenY = e.clientY - cr.top
+                    const delta = -e.deltaY * 0.01
+                    const vp = viewportRef.current
+                    const newScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, vp.scale + delta))
+                    if (newScale === vp.scale) return
+                    setViewport(zoomAtPoint(vp, screenX, screenY, newScale))
+                    return
+                }
+
+                // R4-005b: Plain wheel (two-finger trackpad swipe) = Pan
                 e.preventDefault()
-                const cr = el.getBoundingClientRect()
-                const screenX = e.clientX - cr.left
-                const screenY = e.clientY - cr.top
-                const delta = -e.deltaY * 0.01
                 const vp = viewportRef.current
-                const newScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, vp.scale + delta))
-                if (newScale === vp.scale) return
-                setViewport(zoomAtPoint(vp, screenX, screenY, newScale))
+                setViewport({
+                    ...vp,
+                    offsetX: vp.offsetX - e.deltaX,
+                    offsetY: vp.offsetY - e.deltaY,
+                })
             }
             el.addEventListener('wheel', handleWheel, { passive: false })
             return () => el.removeEventListener('wheel', handleWheel)
@@ -428,32 +400,71 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
         useEffect(() => { return () => { window.removeEventListener('mousemove', handleWindowMouseMove); window.removeEventListener('mouseup', handleWindowMouseUp) } }, [handleWindowMouseMove, handleWindowMouseUp])
 
-        // ── Selection box (R4-005: world coords) ──
+        // ── Selection box (R4-005b: threshold-based, ref-driven, zero stale closures) ──
+        const selBoxRectRef = useRef<SelectionBoxRect | null>(null)
+        const selBoxActiveRef = useRef(false)
+        const SEL_BOX_THRESHOLD = 4
+
         const handleSelBoxMouseMove = useCallback((e: MouseEvent) => {
-            const sb = selBoxRef.current; if (!sb) return; e.preventDefault()
-            // R4-005: Convert to world coords for selection box
+            const sb = selBoxRef.current; if (!sb) return
+            e.preventDefault()
             const world = mouseToWorld(e)
-            setSelectionBoxRect({ left: Math.min(sb.startX, world.x), top: Math.min(sb.startY, world.y), width: Math.abs(world.x - sb.startX), height: Math.abs(world.y - sb.startY) })
+            const dx = Math.abs(world.x - sb.startX), dy = Math.abs(world.y - sb.startY)
+
+            // R4-005b: Only activate after threshold (ref-driven, no interactionMode dependency)
+            if (!selBoxActiveRef.current) {
+                if (dx < SEL_BOX_THRESHOLD && dy < SEL_BOX_THRESHOLD) return
+                selBoxActiveRef.current = true
+                setInteractionMode('selecting')
+            }
+
+            const rect: SelectionBoxRect = {
+                left: Math.min(sb.startX, world.x),
+                top: Math.min(sb.startY, world.y),
+                width: Math.abs(world.x - sb.startX),
+                height: Math.abs(world.y - sb.startY),
+            }
+            selBoxRectRef.current = rect
+            setSelectionBoxRect(rect)
         }, [mouseToWorld])
 
         const handleSelBoxMouseUp = useCallback(() => {
-            window.removeEventListener('mousemove', handleSelBoxMouseMove); window.removeEventListener('mouseup', handleSelBoxMouseUp)
-            setTimeout(() => {
-                const box = selectionBoxRect
-                if (box && box.width > 2 && box.height > 2) {
-                    // R4-005: selectionBoxRect is already in world coords, compare directly
-                    const rects = computeRenderRects(nodesRef.current, null, null)
-                    const sel = new Set<string>()
-                    nodesRef.current.forEach(n => {
-                        if (nodeHidden(n, nodesRef.current)) return
-                        const rc = rects.get(n.id)
-                        if (rc && rc.x < box.left + box.width && rc.x + rc.width > box.left && rc.y < box.top + box.height && rc.y + rc.height > box.top) sel.add(n.id)
-                    })
-                    setSelectedNodeIds(sel)
-                }
-                setSelectionBoxRect(null); selBoxRef.current = null; setInteractionMode('idle')
-            }, 0)
-        }, [handleSelBoxMouseMove, selectionBoxRect])
+            window.removeEventListener('mousemove', handleSelBoxMouseMove)
+            window.removeEventListener('mouseup', handleSelBoxMouseUp)
+
+            const wasActive = selBoxActiveRef.current
+            const box = selBoxRectRef.current
+            const additive = selBoxRef.current?.additive ?? false
+
+            if (wasActive && box && box.width > 2 && box.height > 2) {
+                // Finalize selection — synchronous
+                const rects = computeRenderRects(nodesRef.current, null, null)
+                // R4-005d: Start from previous selection if additive (Cmd/Ctrl)
+                const sel = additive ? new Set(selectedNodeIdsRef.current) : new Set<string>()
+                nodesRef.current.forEach(n => {
+                    if (nodeHidden(n, nodesRef.current)) return
+                    const rc = rects.get(n.id)
+                    if (rc && rc.x < box.left + box.width && rc.x + rc.width > box.left
+                        && rc.y < box.top + box.height && rc.y + rc.height > box.top) sel.add(n.id)
+                })
+                selectedNodeIdsRef.current = sel
+                setSelectedNodeIds(sel)
+            } else if (!additive) {
+                // Click on empty canvas without modifier — clear selection
+                selectedNodeIdsRef.current = new Set()
+                setSelectedNodeIds(new Set())
+                setSelectedEdgeId(null)
+                setEditingEdgeLabel(null)
+                setEditingField(null)
+            }
+
+            // Synchronous cleanup — always
+            setSelectionBoxRect(null)
+            selBoxRectRef.current = null
+            selBoxActiveRef.current = false
+            selBoxRef.current = null
+            setInteractionMode('idle')
+        }, [handleSelBoxMouseMove])
 
         useEffect(() => { return () => { window.removeEventListener('mousemove', handleSelBoxMouseMove); window.removeEventListener('mouseup', handleSelBoxMouseUp) } }, [handleSelBoxMouseMove, handleSelBoxMouseUp])
 
@@ -600,9 +611,21 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [pushHistory, emitNodesChange])
 
         // ── Node handlers ──
-        const handleSelect = useCallback((nodeId: string) => {
-            if (selectedNodeIdsRef.current.has(nodeId) && selectedNodeIdsRef.current.size > 1) return
-            setSelectedNodeIds(new Set([nodeId])); setSelectedEdgeId(null); setEditingEdgeLabel(null)
+        const handleSelect = useCallback((nodeId: string, additive: boolean) => {
+            let next: Set<string>
+            if (additive) {
+                // Cmd/Ctrl + Click: toggle node in/out of selection
+                next = new Set(selectedNodeIdsRef.current)
+                if (next.has(nodeId)) { next.delete(nodeId) } else { next.add(nodeId) }
+            } else {
+                // Plain click: replace selection (but keep multi-selection intact for drag)
+                if (selectedNodeIdsRef.current.has(nodeId) && selectedNodeIdsRef.current.size > 1) return
+                next = new Set([nodeId])
+            }
+            // R4-005d: Sync ref immediately so handlePotentialDragStart sees updated selection in same event
+            selectedNodeIdsRef.current = next
+            setSelectedNodeIds(next)
+            setSelectedEdgeId(null); setEditingEdgeLabel(null)
         }, [])
 
         const handlePotentialDragStart = useCallback((nodeId: string, mouseX: number, mouseY: number) => {
@@ -624,7 +647,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 dragRef.current = { nodeId, offsets: off, startMouseX: mouseX, startMouseY: mouseY, hasMoved: false }
             }
 
-            if (!selectedNodeIdsRef.current.has(nodeId)) setSelectedNodeIds(new Set([nodeId]))
+            // R4-005d: Don't override selection — handleSelect already set it correctly
             window.addEventListener('mousemove', handleWindowMouseMove); window.addEventListener('mouseup', handleWindowMouseUp)
         }, [handleWindowMouseMove, handleWindowMouseUp])
 
@@ -691,18 +714,108 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 return
             }
 
-            // Selection box (start in world coords)
+            // R4-005b: Selection box — stay idle, register listeners.
+            // Mode changes to 'selecting' only after mousemove exceeds threshold.
+            // R4-005d: Capture additive flag for union vs replace on mouseup.
             const world = mouseToWorld(e)
-            selBoxRef.current = { startX: world.x, startY: world.y, canvasRect: canvasRef.current!.getBoundingClientRect() }
-            setSelectionBoxRect({ left: world.x, top: world.y, width: 0, height: 0 })
-            setInteractionMode('selecting'); setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setEditingField(null)
+            selBoxRef.current = { startX: world.x, startY: world.y, canvasRect: canvasRef.current!.getBoundingClientRect(), additive: e.metaKey || e.ctrlKey }
+            selBoxRectRef.current = null
+            selBoxActiveRef.current = false
+            // Don't clear selection yet — that happens on mouseup if it was just a click
+            // Don't setInteractionMode('selecting') — that happens on threshold in mousemove
             window.addEventListener('mousemove', handleSelBoxMouseMove); window.addEventListener('mouseup', handleSelBoxMouseUp)
         }, [interactionMode, handleSelBoxMouseMove, handleSelBoxMouseUp, handleWindowMouseMove, handleWindowMouseUp, mouseToWorld])
 
+        // R4-005b: Failsafe — reset interaction mode + clean up all refs
+        // Catches stuck states from mouseup outside canvas, lost focus, etc.
+        const endInteraction = useCallback(() => {
+            if (dragRef.current) {
+                window.removeEventListener('mousemove', handleWindowMouseMove)
+                window.removeEventListener('mouseup', handleWindowMouseUp)
+                dragRef.current = null
+            }
+            if (panRef.current) { panRef.current = null }
+            if (selBoxRef.current) {
+                window.removeEventListener('mousemove', handleSelBoxMouseMove)
+                window.removeEventListener('mouseup', handleSelBoxMouseUp)
+                selBoxRef.current = null; selBoxRectRef.current = null; selBoxActiveRef.current = false; setSelectionBoxRect(null)
+            }
+            if (connectionRef.current) {
+                window.removeEventListener('mousemove', handleConnectionMouseMove)
+                window.removeEventListener('mouseup', handleConnectionMouseUp)
+                connectionRef.current = null; setConnectionGhost(null)
+            }
+            if (resizeRef.current) {
+                window.removeEventListener('mousemove', handleResizeMouseMove)
+                window.removeEventListener('mouseup', handleResizeMouseUp)
+                resizeRef.current = null
+            }
+            detachingRef.current = null; setDetachingOffset(null)
+            setFrozenColumnId(null); frozenRectsRef.current = null
+            setInteractionMode('idle')
+        }, [handleWindowMouseMove, handleWindowMouseUp, handleSelBoxMouseMove, handleSelBoxMouseUp, handleConnectionMouseMove, handleConnectionMouseUp, handleResizeMouseMove, handleResizeMouseUp, setDetachingOffset])
+
+        // R4-005b: Window blur failsafe — if user switches tab/window mid-interaction
+        useEffect(() => {
+            const handleBlur = () => { endInteraction() }
+            window.addEventListener('blur', handleBlur)
+            return () => window.removeEventListener('blur', handleBlur)
+        }, [endInteraction])
+
+        // ── Keyboard (Space for pan, Undo/Redo, Delete) ──
+        // R4-005b: Positioned after endInteraction to avoid TDZ.
+        //          Space keyup calls endInteraction() — single reset path.
+        useEffect(() => {
+            const kd = (e: KeyboardEvent) => {
+                if (e.code === 'Space' && !e.repeat) {
+                    const a = document.activeElement
+                    if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
+                    e.preventDefault()
+                    spaceDownRef.current = true
+                }
+                const mod = e.metaKey || e.ctrlKey
+                if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
+                if (mod && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo() }
+                if (e.key === 'Escape') { endInteraction(); setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setEditingField(null) }
+                if ((e.key === 'Delete' || e.key === 'Backspace') && interactionMode === 'idle') {
+                    const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
+                    if (selectedEdgeId) { e.preventDefault(); setEdges(p => p.filter(ed => ed.id !== selectedEdgeId)); setSelectedEdgeId(null); setEditingEdgeLabel(null); setTimeout(() => { pushHistory(); emitNodesChange() }, 0); return }
+                    if (selectedNodeIdsRef.current.size > 0) {
+                        e.preventDefault(); const del = new Set(selectedNodeIdsRef.current)
+                        nodesRef.current.forEach(n => {
+                            if (n.type === 'column' && del.has(n.id)) {
+                                nodesRef.current.forEach(c => { if ((c.data as any).parentId === n.id) del.add(c.id) })
+                            }
+                        })
+                        setNodes(p => {
+                            let u = p.filter(n => !del.has(n.id))
+                            return u.map(n => n.type === 'column' && (n as ColumnNode).data.childOrder ? { ...n, data: { ...n.data, childOrder: (n as ColumnNode).data.childOrder!.filter(id => !del.has(id)) } } : n)
+                        })
+                        setEdges(p => p.filter(ed => !del.has(ed.from) && !del.has(ed.to)))
+                        setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
+                        setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                    }
+                }
+            }
+            const ku = (e: KeyboardEvent) => {
+                if (e.code === 'Space') {
+                    spaceDownRef.current = false
+                    // R4-005b: Single reset path via endInteraction
+                    if (panRef.current) endInteraction()
+                }
+            }
+            window.addEventListener('keydown', kd); window.addEventListener('keyup', ku)
+            return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku) }
+        }, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange, endInteraction])
+
         // R4-005: Double-click canvas = reset viewport
+        // R4-005b: Only on truly empty canvas — not on nodes, columns, or their children
         const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
-            // Only reset if clicking on empty canvas (not on a node)
-            if ((e.target as HTMLElement).closest('[data-node-shell]')) return
+            const target = e.target as HTMLElement
+            // Block if clicking on a node or anything inside a node
+            if (target.closest('[data-node-shell]')) return
+            // Block if clicking on interactive elements (buttons, inputs)
+            if (target.closest('button') || target.closest('input') || target.closest('textarea')) return
             setViewport(VIEWPORT_INITIAL)
         }, [])
 
@@ -776,6 +889,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 isSelected={selectedNodeIds.has(node.id)}
                                 isDragging={interactionMode === 'dragging' && dragRef.current?.offsets.has(node.id) === true}
                                 interactionMode={interactionMode}
+                                viewportScale={viewport.scale}
                                 onSelect={handleSelect} onPotentialDragStart={handlePotentialDragStart}
                                 onDelete={handleDelete} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}>
                                 {node.type === 'note' ? <NoteContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldFocus={handleFieldFocus} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />

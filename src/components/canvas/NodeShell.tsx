@@ -3,10 +3,13 @@
 import { useCallback } from 'react'
 
 // ===================================================
-// NODE SHELL — SANDWICH LAYERING (R4-003)
+// NODE SHELL — SANDWICH LAYERING (R4-005b)
 // ===================================================
 // R4 Visual Language: ZERO ROUNDED. Angoli retti 90°.
 // R4-003: Connection handle per edge creation.
+// R4-005b: Controls counter-scaled with transformOrigin at anchor corner.
+//          Controls gated on idle — dimmed + non-interactive otherwise.
+//          interactionMode must always return to idle deterministically.
 
 interface NodeShellProps {
     nodeId: string
@@ -17,8 +20,9 @@ interface NodeShellProps {
     zIndex: number
     isSelected: boolean
     isDragging: boolean
-    interactionMode: 'idle' | 'dragging' | 'editing' | 'resizing' | 'selecting' | 'connecting'
-    onSelect: (nodeId: string) => void
+    interactionMode: 'idle' | 'dragging' | 'editing' | 'resizing' | 'selecting' | 'connecting' | 'panning'
+    viewportScale?: number
+    onSelect: (nodeId: string, additive: boolean) => void
     onPotentialDragStart: (nodeId: string, mouseX: number, mouseY: number) => void
     onDelete: (nodeId: string) => void
     onResizeStart: (nodeId: string, mouseX: number, mouseY: number) => void
@@ -36,6 +40,7 @@ export function NodeShell({
     isSelected,
     isDragging,
     interactionMode,
+    viewportScale = 1,
     onSelect,
     onPotentialDragStart,
     onDelete,
@@ -44,6 +49,12 @@ export function NodeShell({
     children,
 }: NodeShellProps) {
     const isResizing = interactionMode === 'resizing'
+    const cs = 1 / viewportScale
+
+    // Controls visible when selected + not in active node manipulation
+    const showControls = isSelected && !isDragging && interactionMode !== 'resizing' && interactionMode !== 'connecting'
+    // Interactive only when idle
+    const controlsActive = interactionMode === 'idle'
 
     const handleMouseDown = useCallback(
         (e: React.MouseEvent) => {
@@ -51,9 +62,11 @@ export function NodeShell({
             if (interactionMode === 'dragging') return
             if (interactionMode === 'resizing') return
             if (interactionMode === 'connecting') return
+            if (interactionMode === 'panning') return
 
             e.stopPropagation()
-            onSelect(nodeId)
+            const additive = e.metaKey || e.ctrlKey
+            onSelect(nodeId, additive)
             onPotentialDragStart(nodeId, e.clientX, e.clientY)
         },
         [nodeId, interactionMode, onSelect, onPotentialDragStart]
@@ -69,34 +82,35 @@ export function NodeShell({
     const handleDelete = useCallback(
         (e: React.MouseEvent) => {
             e.stopPropagation()
-            if (interactionMode !== 'idle') return
+            if (!controlsActive) return
             onDelete(nodeId)
         },
-        [nodeId, interactionMode, onDelete]
+        [nodeId, controlsActive, onDelete]
     )
 
     const handleResizeMouseDown = useCallback(
         (e: React.MouseEvent) => {
             e.stopPropagation()
             e.preventDefault()
-            if (interactionMode !== 'idle') return
+            if (!controlsActive) return
             onResizeStart(nodeId, e.clientX, e.clientY)
         },
-        [nodeId, interactionMode, onResizeStart]
+        [nodeId, controlsActive, onResizeStart]
     )
 
     const handleConnectionMouseDown = useCallback(
         (e: React.MouseEvent) => {
             e.stopPropagation()
             e.preventDefault()
-            if (interactionMode !== 'idle') return
+            if (!controlsActive) return
             onConnectionStart?.(nodeId, e.clientX, e.clientY)
         },
-        [nodeId, interactionMode, onConnectionStart]
+        [nodeId, controlsActive, onConnectionStart]
     )
 
     return (
         <div
+            data-node-shell
             className={`absolute select-none bg-zinc-800 border border-zinc-700 shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
             style={{
                 transform: `translate(${x}px, ${y}px)`,
@@ -112,35 +126,63 @@ export function NodeShell({
                 {children}
             </div>
 
-            {/* CONTROLLI */}
-            {isSelected && interactionMode === 'idle' && (
-                <>
-                    {/* Delete */}
+            {/* CONTROLLI — R4-005b
+                Gated on idle: full opacity + interactive when idle,
+                dimmed + pointer-events:none otherwise.
+                Anchor: px offset from node corner.
+                Scale: 1/viewportScale, transformOrigin at anchor corner. */}
+            {showControls && (
+                <div
+                    style={{
+                        opacity: controlsActive ? 1 : 0.4,
+                        pointerEvents: controlsActive ? 'auto' : 'none',
+                    }}
+                >
+                    {/* Delete — pinned to top-right corner */}
                     <button
                         onClick={handleDelete}
                         onMouseDown={(e) => e.stopPropagation()}
-                        className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 hover:bg-red-600 text-white text-xs rounded-full flex items-center justify-center z-50"
+                        className="absolute w-5 h-5 bg-red-500 hover:bg-red-600 text-white text-xs rounded-full flex items-center justify-center z-50"
+                        style={{
+                            top: -8,
+                            right: -8,
+                            transform: `scale(${cs})`,
+                            transformOrigin: 'bottom left',
+                        }}
                     >
                         ✕
                     </button>
 
-                    {/* Resize handle — large hit area, small visual dot */}
+                    {/* Resize handle — pinned to bottom-right corner */}
                     <div
                         onMouseDown={handleResizeMouseDown}
-                        className="absolute -bottom-2.5 -right-2.5 w-8 h-8 cursor-se-resize z-50 flex items-center justify-center"
+                        className="absolute w-8 h-8 cursor-se-resize z-50 flex items-center justify-center"
+                        style={{
+                            bottom: -10,
+                            right: -10,
+                            transform: `scale(${cs})`,
+                            transformOrigin: 'top left',
+                        }}
                     >
                         <div className="w-2 h-2 bg-blue-500 rounded-full" />
                     </div>
 
-                    {/* R4-003: Connection handle — top-right, offset from delete */}
+                    {/* Connection handle — pinned to mid-right edge */}
                     <div
                         onMouseDown={handleConnectionMouseDown}
-                        className="absolute top-1/2 -right-3 -translate-y-1/2 w-4 h-4 cursor-crosshair z-50 flex items-center justify-center group"
+                        className="absolute w-4 h-4 cursor-crosshair z-50 flex items-center justify-center group"
+                        style={{
+                            top: '50%',
+                            right: -12,
+                            marginTop: -8,
+                            transform: `scale(${cs})`,
+                            transformOrigin: 'left center',
+                        }}
                         title="Drag to connect"
                     >
                         <div className="w-2.5 h-2.5 bg-emerald-500 group-hover:bg-emerald-400 group-hover:scale-125 rounded-full transition-transform" />
                     </div>
-                </>
+                </div>
             )}
 
             {/* Pointer block during drag or resize */}
