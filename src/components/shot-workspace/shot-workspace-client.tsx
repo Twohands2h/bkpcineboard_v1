@@ -11,6 +11,7 @@ import {
   loadLatestTakeSnapshotAction,
 } from '@/app/actions/take-snapshots'
 import { createTakeAction, deleteTakeAction } from '@/app/actions/takes'
+import { promoteAssetSelectionAction, discardAssetSelectionAction, getShotSelectionsAction, type ActiveSelection } from '@/app/actions/shot-selections'
 import { createClient } from '@/lib/supabase/client'
 
 // ===================================================
@@ -76,6 +77,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
   const [readyTakeId, setReadyTakeId] = useState<string | null>(null)
   const [readyPayload, setReadyPayload] = useState<SnapshotPayload | undefined>(undefined)
   const [isLoading, setIsLoading] = useState(true)
+  const [shotSelections, setShotSelections] = useState<ActiveSelection[]>([])
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -123,8 +125,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
     setIsLoading(true)
 
-    loadLatestTakeSnapshotAction(currentTakeId)
-      .then(snapshot => {
+    Promise.all([
+      loadLatestTakeSnapshotAction(currentTakeId),
+      getShotSelectionsAction({ shotId: shot.id }),
+    ])
+      .then(([snapshot, selections]) => {
         let payload: SnapshotPayload | undefined
 
         if (snapshot?.payload) {
@@ -136,6 +141,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
           }
         }
 
+        setShotSelections(selections)
         setReadyTakeId(currentTakeId)
         setReadyPayload(payload)
         setIsLoading(false)
@@ -145,7 +151,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         setReadyPayload(undefined)
         setIsLoading(false)
       })
-  }, [currentTakeId])
+  }, [currentTakeId, shot.id])
 
   useEffect(() => {
     return () => {
@@ -179,7 +185,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
       if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
 
-      canvas.createNodeAtScreen(x, y)
+      canvas.createNodeAt(x, y)
     }
 
     window.addEventListener('mousemove', handleMouseMove)
@@ -236,7 +242,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
       const cx = rect.width / 2
       const cy = rect.height / 2
-      canvas.createImageNodeAtScreen(cx, cy, imageData)
+      canvas.createImageNodeAt(cx, cy, imageData)
     } catch (err) {
       console.error('Image upload failed:', err)
     }
@@ -333,6 +339,45 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }
 
+  // ── Blocco 4C: Shot Selection Promotion callbacks ──
+  const handlePromoteSelection = useCallback(async (
+    imageNodeId: string,
+    imageData: ImageData,
+    promptData?: { body: string; promptType: string; origin: string; createdAt?: string } | null
+  ): Promise<{ selectionId: string; selectionNumber: number } | null> => {
+    try {
+      const result = await promoteAssetSelectionAction({
+        projectId,
+        shotId: shot.id,
+        imageSnapshot: {
+          src: imageData.src,
+          storage_path: imageData.storage_path,
+          naturalWidth: imageData.naturalWidth,
+          naturalHeight: imageData.naturalHeight,
+        },
+        promptSnapshot: promptData ?? null,
+      })
+      return result
+    } catch (error) {
+      console.error('Failed to promote selection:', error)
+      return null
+    }
+  }, [projectId, shot.id])
+
+  const handleDiscardSelection = useCallback(async (selectionId: string, reason: 'undo' | 'manual'): Promise<void> => {
+    if (!selectionId) return
+    try {
+      await discardAssetSelectionAction({
+        projectId,
+        shotId: shot.id,
+        selectionId,
+        reason,
+      })
+    } catch (error) {
+      console.error('Failed to discard selection:', error)
+    }
+  }, [projectId, shot.id])
+
   if (takes.length === 0) {
     return (
       <div className="flex-1 flex flex-col">
@@ -415,7 +460,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
                 const x = upEvent.clientX - rect.left
                 const y = upEvent.clientY - rect.top
                 if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
-                canvas.createColumnNodeAtScreen(x, y)
+                canvas.createColumnNodeAt(x, y)
               }
 
               window.addEventListener('mousemove', handleMouseMove)
@@ -449,7 +494,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
                 const x = upEvent.clientX - rect.left
                 const y = upEvent.clientY - rect.top
                 if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
-                canvas.createPromptNodeAtScreen(x, y)
+                canvas.createPromptNodeAt(x, y)
               }
 
               window.addEventListener('mousemove', handleMouseMove)
@@ -473,6 +518,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
               onNodesChange={handleNodesChange}
               initialUndoHistory={currentUndoHistory}
               onUndoHistoryChange={handleUndoHistoryChange}
+              onPromoteSelection={handlePromoteSelection}
+              onDiscardSelection={handleDiscardSelection}
+              shotSelections={shotSelections}
             />
           )}
 

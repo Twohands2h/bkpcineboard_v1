@@ -52,12 +52,15 @@ interface TakeCanvasProps {
     onNodesChange?: (nodes: CanvasNode[], edges: CanvasEdge[]) => void
     initialUndoHistory?: UndoHistory
     onUndoHistoryChange?: (history: UndoHistory) => void
+    onPromoteSelection?: (imageNodeId: string, imageData: ImageData, promptData?: { body: string; promptType: string; origin: string; createdAt?: string } | null) => Promise<{ selectionId: string; selectionNumber: number } | null>
+    onDiscardSelection?: (selectionId: string, reason: 'undo' | 'manual') => Promise<void>
+    shotSelections?: { selectionId: string; selectionNumber: number; storagePath: string; src: string }[]
 }
 
 export type CanvasNode = NoteNode | ImageNode | ColumnNode | PromptNode
 
 interface NoteNode { id: string; type: 'note'; x: number; y: number; width: number; height: number; zIndex: number; data: NoteData & { parentId?: string | null } }
-interface ImageNode { id: string; type: 'image'; x: number; y: number; width: number; height: number; zIndex: number; data: ImageData & { parentId?: string | null; origin_prompt_id?: string; aspectRatio?: number } }
+interface ImageNode { id: string; type: 'image'; x: number; y: number; width: number; height: number; zIndex: number; data: ImageData & { parentId?: string | null; origin_prompt_id?: string; aspectRatio?: number; promotedSelectionId?: string; selectionNumber?: number } }
 interface ColumnNode { id: string; type: 'column'; x: number; y: number; width: number; height: number; zIndex: number; data: ColumnData & { expandedHeight?: number; childOrder?: string[] } }
 interface PromptNode { id: string; type: 'prompt'; x: number; y: number; width: number; height: number; zIndex: number; data: PromptData & { parentId?: string | null } }
 
@@ -156,7 +159,7 @@ interface SelectionBoxRect { left: number; top: number; width: number; height: n
 interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange }, ref) {
+    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, shotSelections }, ref) {
         const [nodes, setNodes] = useState<CanvasNode[]>(() => initialNodes ?? [])
         const [edges, setEdges] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
@@ -194,6 +197,46 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const selectedNodeIdsRef = useRef<Set<string>>(selectedNodeIds); useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds }, [selectedNodeIds])
         const primarySelectedId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null
 
+        // Blocco 4C: Rehydrate selection badges from DB on mount
+        // Two-way sync: ADD badges for active selections, STRIP stale badges from snapshot
+        const selectionsAppliedRef = useRef(false)
+        useEffect(() => {
+            if (selectionsAppliedRef.current) return
+            selectionsAppliedRef.current = true
+
+            const activeIds = new Set((shotSelections ?? []).map(s => s.selectionId))
+
+            setNodes(prev => {
+                let changed = false
+                const next = prev.map(n => {
+                    if (n.type !== 'image') return n
+                    const nodeData = n.data as any
+
+                    // Strip stale: node has badge but selection is no longer active
+                    if (nodeData.promotedSelectionId && !activeIds.has(nodeData.promotedSelectionId)) {
+                        changed = true
+                        const { promotedSelectionId: _, selectionNumber: __, ...rest } = nodeData
+                        return { ...n, data: rest }
+                    }
+
+                    // Add missing: active selection matches this image but no badge yet
+                    if (!nodeData.promotedSelectionId && shotSelections?.length) {
+                        const match = shotSelections.find(s =>
+                            s.storagePath === nodeData.storage_path ||
+                            s.src === nodeData.src
+                        )
+                        if (match) {
+                            changed = true
+                            return { ...n, data: { ...nodeData, promotedSelectionId: match.selectionId, selectionNumber: match.selectionNumber } }
+                        }
+                    }
+
+                    return n
+                })
+                return changed ? next : prev
+            })
+        }, [shotSelections])
+
         const setDetachingOffset = useCallback((val: { dx: number; dy: number } | null) => {
             detachingOffsetRef.current = val; setDetachingOffsetState(val)
         }, [])
@@ -222,7 +265,30 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             h.stack.push({ nodes: structuredClone(nodesRef.current), edges: structuredClone(edgesRef.current) })
             if (h.stack.length > HISTORY_MAX) h.stack.shift(); else h.cursor++; emitHistoryChange()
         }, [emitHistoryChange])
-        const undo = useCallback(() => { const h = historyRef.current; if (h.cursor <= 0) return; h.cursor--; const p = structuredClone(h.stack[h.cursor]); setNodes(p.nodes); setEdges(p.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0) }, [emitNodesChange, emitHistoryChange])
+        const undo = useCallback(() => {
+            const h = historyRef.current; if (h.cursor <= 0) return
+            // Snapshot BEFORE undo (current state in history)
+            const beforeNodes = h.stack[h.cursor]?.nodes ?? []
+            h.cursor--
+            const p = structuredClone(h.stack[h.cursor])
+            setNodes(p.nodes); setEdges(p.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0)
+            // Blocco 4C: detect selections lost by THIS undo step only.
+            // Fires only here (not on redo, take switch, restore, or seed).
+            if (onDiscardSelection) {
+                const afterSelections = new Set<string>()
+                for (const n of p.nodes) {
+                    if ((n as any).type === 'image' && (n as any).data?.promotedSelectionId) {
+                        afterSelections.add((n as any).data.promotedSelectionId)
+                    }
+                }
+                for (const n of beforeNodes) {
+                    const sid = (n as any).type === 'image' ? (n as any).data?.promotedSelectionId : undefined
+                    if (sid && !afterSelections.has(sid)) {
+                        onDiscardSelection(sid, 'undo').catch(console.error)
+                    }
+                }
+            }
+        }, [emitNodesChange, emitHistoryChange, onDiscardSelection])
         const redo = useCallback(() => { const h = historyRef.current; if (h.cursor >= h.stack.length - 1) return; h.cursor++; const n = structuredClone(h.stack[h.cursor]); setNodes(n.nodes); setEdges(n.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0) }, [emitNodesChange, emitHistoryChange])
 
         // ── R4-005: Zoom (Ctrl+Wheel) + R4-005b: Trackpad Pan (plain Wheel) ──
@@ -868,6 +934,64 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku) }
         }, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange, endInteraction])
 
+        // ── Blocco 4C: Shot Selection Promotion ──
+        const handlePromoteSelectedImage = useCallback(async () => {
+            if (!onPromoteSelection) return
+            if (!primarySelectedId || selectedNodeIds.size !== 1) return
+            const imageNode = nodesRef.current.find(n => n.id === primarySelectedId && n.type === 'image') as ImageNode | undefined
+            if (!imageNode) return
+            if (imageNode.data.promotedSelectionId) return // already promoted
+
+            // Best-effort: find connected PromptNode via edges
+            let promptData: { body: string; promptType: string; origin: string; createdAt?: string } | null = null
+            const connectedEdge = edgesRef.current.find(e => e.to === imageNode.id || e.from === imageNode.id)
+            if (connectedEdge) {
+                const promptId = connectedEdge.from === imageNode.id ? connectedEdge.to : connectedEdge.from
+                const promptNode = nodesRef.current.find(n => n.id === promptId && n.type === 'prompt') as PromptNode | undefined
+                if (promptNode?.data.body) {
+                    promptData = {
+                        body: promptNode.data.body,
+                        promptType: promptNode.data.promptType ?? 'prompt',
+                        origin: promptNode.data.origin ?? 'manual',
+                        createdAt: promptNode.data.createdAt,
+                    }
+                }
+            }
+
+            const result = await onPromoteSelection(imageNode.id, imageNode.data, promptData)
+            if (!result) return
+
+            pushHistory()
+            setNodes(prev => prev.map(n =>
+                n.id === imageNode.id && n.type === 'image'
+                    ? { ...n, data: { ...n.data, promotedSelectionId: result.selectionId, selectionNumber: result.selectionNumber } }
+                    : n
+            ))
+            emitNodesChange()
+        }, [onPromoteSelection, primarySelectedId, selectedNodeIds, pushHistory, emitNodesChange])
+
+        const handleRemoveBadge = useCallback(async (nodeId: string) => {
+            const node = nodesRef.current.find(n => n.id === nodeId && n.type === 'image') as ImageNode | undefined
+            if (!node?.data.promotedSelectionId) return
+            const selectionId = node.data.promotedSelectionId
+
+            if (!onDiscardSelection) return
+            try {
+                await onDiscardSelection(selectionId, 'manual')
+            } catch (err) {
+                console.error('Failed to discard selection:', err)
+            }
+
+            // 2. Then update UI
+            pushHistory()
+            setNodes(prev => prev.map(n =>
+                n.id === nodeId && n.type === 'image'
+                    ? { ...n, data: { ...n.data, promotedSelectionId: undefined, selectionNumber: undefined } }
+                    : n
+            ))
+            emitNodesChange()
+        }, [pushHistory, emitNodesChange, onDiscardSelection])
+
         // R4-005: Double-click canvas = reset viewport
         // R4-005b: Only on truly empty canvas — not on nodes, columns, or their children
         const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -953,7 +1077,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 onSelect={handleSelect} onPotentialDragStart={handlePotentialDragStart}
                                 onDelete={handleDelete} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}>
                                 {node.type === 'note' ? <NoteContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldFocus={handleFieldFocus} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
-                                    : node.type === 'image' ? <ImageContent data={node.data} />
+                                    : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} onRemoveBadge={() => handleRemoveBadge(node.id)} />
                                         : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
                                             : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
                             </NodeShell>
@@ -964,6 +1088,30 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     {selectionBoxRect && selectionBoxRect.width > 2 && selectionBoxRect.height > 2 && (
                         <div data-selection-box className="absolute border border-blue-500 bg-blue-500/10 pointer-events-none z-[9998]" style={{ left: selectionBoxRect.left, top: selectionBoxRect.top, width: selectionBoxRect.width, height: selectionBoxRect.height }} />
                     )}
+
+                    {/* Blocco 4C: Selection Promote button — world space, under selected ImageNode */}
+                    {onPromoteSelection && primarySelectedId && interactionMode === 'idle' && (() => {
+                        const node = nodes.find(n => n.id === primarySelectedId)
+                        if (!node || node.type !== 'image') return null
+                        if ((node.data as any).promotedSelectionId) return null // already promoted
+                        const rect = renderRects.get(primarySelectedId)
+                        if (!rect) return null
+                        const s = 1 / viewport.scale
+                        return (
+                            <div
+                                className="absolute z-[9997] pointer-events-auto"
+                                style={{ left: rect.x + rect.width / 2, top: rect.y + rect.height + 8 * s, transform: `translateX(-50%) scale(${s})`, transformOrigin: 'top center' }}
+                            >
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); handlePromoteSelectedImage() }}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    className="px-2 py-0.5 bg-zinc-800 border border-zinc-600 hover:border-zinc-400 text-zinc-400 hover:text-zinc-200 text-[10px] rounded whitespace-nowrap transition-colors"
+                                >
+                                    Select as Asset
+                                </button>
+                            </div>
+                        )
+                    })()}
                 </div>
 
                 {/* Empty state — outside viewport transform */}

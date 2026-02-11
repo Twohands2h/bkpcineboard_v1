@@ -158,7 +158,7 @@ export function NoteContent({
     )
 }
 
-// ── IMAGE ──
+// ── IMAGE (Blocco 4C: TakeBadge inside node) ──
 
 export interface ImageData {
     src: string
@@ -168,18 +168,39 @@ export interface ImageData {
 }
 
 interface ImageContentProps {
-    data: ImageData
+    data: ImageData & { selectionNumber?: number }
+    isSelected?: boolean
+    onRemoveBadge?: () => void
 }
 
-export function ImageContent({ data }: ImageContentProps) {
+export function ImageContent({ data, isSelected, onRemoveBadge }: ImageContentProps) {
     return (
-        <div className="w-full h-full flex items-center justify-center">
+        <div className="w-full h-full flex items-center justify-center relative">
             <img
                 src={data.src}
                 className="w-full h-full object-contain pointer-events-none select-none"
                 draggable={false}
                 alt=""
             />
+            {data.selectionNumber != null && (
+                <>
+                    <div className="absolute inset-0 border-2 border-amber-700/70 pointer-events-none" />
+                    <span className="absolute top-1 right-1 z-10 flex items-center gap-0.5 select-none pointer-events-auto">
+                        <span className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-500 text-zinc-300 text-[9px] font-mono rounded-sm pointer-events-none">
+                            S{data.selectionNumber}
+                        </span>
+                        {isSelected && onRemoveBadge && (
+                            <button
+                                onPointerDown={(e) => { e.preventDefault(); e.stopPropagation() }}
+                                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation() }}
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemoveBadge() }}
+                                className="w-4 h-4 flex items-center justify-center bg-zinc-800 border border-zinc-600 hover:border-zinc-400 text-zinc-500 hover:text-zinc-200 text-[9px] rounded-sm transition-colors pointer-events-auto cursor-pointer"
+                                title="Remove Selection Badge"
+                            >✕</button>
+                        )}
+                    </span>
+                </>
+            )}
         </div>
     )
 }
