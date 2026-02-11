@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle, useMemo } from 'react'
 import { NodeShell } from './NodeShell'
 import { NoteContent, ImageContent, ColumnContent, type NoteData, type ImageData, type ColumnData } from './NodeContent'
+import { PromptContent, type PromptData, type PromptType, type PromptOrigin } from './PromptContent'
 import {
     screenToWorld,
     screenDeltaToWorld,
@@ -40,6 +41,10 @@ const COLUMN_MIN_BODY_HEIGHT = 60
 // R4-004c — Column Toggle: Vertical Wall Cascade
 const MIN_GAP = 15
 
+// Blocco 4 — Prompt Node (Memory Node)
+const PROMPT_DEFAULT_WIDTH = 280
+const PROMPT_DEFAULT_HEIGHT = 180
+
 interface TakeCanvasProps {
     takeId: string
     initialNodes?: CanvasNode[]
@@ -49,11 +54,12 @@ interface TakeCanvasProps {
     onUndoHistoryChange?: (history: UndoHistory) => void
 }
 
-export type CanvasNode = NoteNode | ImageNode | ColumnNode
+export type CanvasNode = NoteNode | ImageNode | ColumnNode | PromptNode
 
 interface NoteNode { id: string; type: 'note'; x: number; y: number; width: number; height: number; zIndex: number; data: NoteData & { parentId?: string | null } }
-interface ImageNode { id: string; type: 'image'; x: number; y: number; width: number; height: number; zIndex: number; data: ImageData & { parentId?: string | null } }
+interface ImageNode { id: string; type: 'image'; x: number; y: number; width: number; height: number; zIndex: number; data: ImageData & { parentId?: string | null; origin_prompt_id?: string; aspectRatio?: number } }
 interface ColumnNode { id: string; type: 'column'; x: number; y: number; width: number; height: number; zIndex: number; data: ColumnData & { expandedHeight?: number; childOrder?: string[] } }
+interface PromptNode { id: string; type: 'prompt'; x: number; y: number; width: number; height: number; zIndex: number; data: PromptData & { parentId?: string | null } }
 
 export interface CanvasEdge { id: string; from: string; to: string; label?: string }
 
@@ -62,6 +68,7 @@ export interface TakeCanvasHandle {
     createNodeAt: (x: number, y: number) => void
     createImageNodeAt: (x: number, y: number, imageData: ImageData) => void
     createColumnNodeAt: (x: number, y: number) => void
+    createPromptNodeAt: (x: number, y: number) => void
     getCanvasRect: () => DOMRect | null
 }
 
@@ -174,6 +181,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const connectionRef = useRef<{ fromNodeId: string; startX: number; startY: number; canvasRect: DOMRect } | null>(null)
 
         const shiftedNodesRef = useRef<Map<string, Map<string, number>>>(new Map())
+        const dataChangeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
         const nodesRef = useRef<CanvasNode[]>(nodes); useEffect(() => { nodesRef.current = nodes }, [nodes])
         const edgesRef = useRef<CanvasEdge[]>(edges); useEffect(() => { edgesRef.current = edges }, [edges])
@@ -265,17 +273,26 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
+        // Blocco 4 — Create Prompt Node (Memory Node)
+        // Default promptType/origin assigned ONLY at creation time.
+        const createPromptNodeAt = useCallback((x: number, y: number) => {
+            const n: PromptNode = { id: crypto.randomUUID(), type: 'prompt', x: Math.round(x - PROMPT_DEFAULT_WIDTH / 2), y: Math.round(y - PROMPT_DEFAULT_HEIGHT / 2), width: PROMPT_DEFAULT_WIDTH, height: PROMPT_DEFAULT_HEIGHT, zIndex: nodesRef.current.length + 1, data: { body: '', promptType: 'prompt', origin: 'manual' } }
+            setNodes(p => [...p, n]); setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
+
         useImperativeHandle(ref, () => ({
             getSnapshot: () => ({ nodes: structuredClone(nodes), edges: structuredClone(edges) }),
-            createNodeAt, createImageNodeAt, createColumnNodeAt,
+            createNodeAt, createImageNodeAt, createColumnNodeAt, createPromptNodeAt,
             getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
-        }), [nodes, edges, createNodeAt, createImageNodeAt, createColumnNodeAt])
+        }), [nodes, edges, createNodeAt, createImageNodeAt, createColumnNodeAt, createPromptNodeAt])
 
         useEffect(() => {
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
             dragRef.current = null; resizeRef.current = null; selBoxRef.current = null; connectionRef.current = null
             detachingRef.current = null; setDetachingOffset(null); setFrozenColumnId(null); frozenRectsRef.current = null
             shiftedNodesRef.current = new Map()
+            if (dataChangeTimerRef.current) { clearTimeout(dataChangeTimerRef.current); dataChangeTimerRef.current = null }
             setViewport(VIEWPORT_INITIAL) // Reset viewport on Take change
             setSelectionBoxRect(null); setConnectionGhost(null)
         }, [takeId])
@@ -677,8 +694,22 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => { setSelectedNodeIds(new Set([nodeId])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('editing'); setEditingField(field) }, [])
         const handleFieldFocus = useCallback((f: 'title' | 'body') => setEditingField(f), [])
-        const handleFieldBlur = useCallback(() => { setInteractionMode('idle'); setEditingField(null) }, [])
-        const handleDataChange = useCallback((nodeId: string, data: NoteData | ColumnData) => { setNodes(p => p.map(n => n.id === nodeId ? { ...n, data: data as any } : n)); setTimeout(() => { pushHistory(); emitNodesChange() }, 0) }, [pushHistory, emitNodesChange])
+        // Flush: on blur, commit any pending debounced history immediately.
+        // emitNodesChange already fired immediately in handleDataChange — only pushHistory needs flush.
+        const handleFieldBlur = useCallback(() => {
+            if (dataChangeTimerRef.current) { clearTimeout(dataChangeTimerRef.current); dataChangeTimerRef.current = null; pushHistory() }
+            setInteractionMode('idle'); setEditingField(null)
+        }, [pushHistory])
+        // Debounced history push: groups rapid keystrokes into single undo steps (like Word/Figma).
+        // CRITICAL: pushHistory is debounced (operator), emitNodesChange fires immediately (memory/persist).
+        // Persist and undo are separate concerns — memory must never depend on debounce.
+        const DATA_CHANGE_DEBOUNCE = 500
+        const handleDataChange = useCallback((nodeId: string, data: NoteData | ColumnData | PromptData) => {
+            setNodes(p => p.map(n => n.id === nodeId ? { ...n, data: data as any } : n))
+            emitNodesChange()
+            if (dataChangeTimerRef.current) clearTimeout(dataChangeTimerRef.current)
+            dataChangeTimerRef.current = setTimeout(() => { dataChangeTimerRef.current = null; pushHistory() }, DATA_CHANGE_DEBOUNCE)
+        }, [pushHistory, emitNodesChange])
 
         // ── Edge click (R4-005: world coords) ──
         const handleSvgClick = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
@@ -894,7 +925,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 onDelete={handleDelete} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}>
                                 {node.type === 'note' ? <NoteContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldFocus={handleFieldFocus} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
                                     : node.type === 'image' ? <ImageContent data={node.data} />
-                                        : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
+                                        : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onContentMeasured={h => handleContentMeasured(node.id, h)} />
+                                            : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
                             </NodeShell>
                         )
                     })}
