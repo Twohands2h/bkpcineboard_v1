@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 
 // ===================================================
@@ -28,6 +28,7 @@ export interface PromptData {
     body?: string
     promptType?: PromptType
     origin?: string
+    createdAt?: string  // ISO timestamp, set once at creation, never updated
 }
 
 // ── UI Labels (display only) ──
@@ -54,6 +55,16 @@ const KNOWN_ORIGINS: { value: string; label: string }[] = [
     { value: 'kling', label: 'Kling' },
 ]
 const ALTRO_SENTINEL = '__altro__'
+
+// Format ISO timestamp to compact readable date (e.g. "Feb 11, 2026")
+function formatCreatedAt(iso: string): string {
+    try {
+        const d = new Date(iso)
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    } catch {
+        return ''
+    }
+}
 
 const PROMPT_TYPES = Object.keys(PROMPT_TYPE_LABELS) as PromptType[]
 
@@ -103,6 +114,7 @@ interface PromptContentProps {
     onDataChange: (data: PromptData) => void
     onStartEditing: (field: 'title' | 'body') => void
     onFieldBlur: () => void
+    onRequestHeight?: (height: number) => void
     onContentMeasured?: (height: number) => void
 }
 
@@ -113,12 +125,14 @@ export function PromptContent({
     onDataChange,
     onStartEditing,
     onFieldBlur,
+    onRequestHeight,
     onContentMeasured,
 }: PromptContentProps) {
     const titleRef = useRef<HTMLInputElement>(null)
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const measureRef = useRef<HTMLDivElement>(null)
     const customOriginInputRef = useRef<HTMLInputElement>(null)
+    const lastMeasuredRef = useRef<number>(0)
 
     // "Altro..." custom input state (local UI only, not persisted until commit)
     const [customOriginActive, setCustomOriginActive] = useState(false)
@@ -131,33 +145,52 @@ export function PromptContent({
     const displayType = data.promptType ?? 'prompt'
     const displayOrigin = data.origin ?? 'manual'
 
-    useEffect(() => {
-        if (editingTitle && titleRef.current) {
-            titleRef.current.focus()
-            const len = titleRef.current.value.length
-            titleRef.current.setSelectionRange(len, len)
+    // ── DOM measurement (same as NoteContent) ──
+    useLayoutEffect(() => {
+        if (!measureRef.current || !onContentMeasured) return
+        const measured = measureRef.current.scrollHeight
+        if (measured > 0 && measured !== lastMeasuredRef.current) {
+            lastMeasuredRef.current = measured
+            onContentMeasured(measured)
         }
-    }, [editingTitle])
+    })
+
+    // ── Auto-grow textarea (same as NoteContent) ──
+    const measureAndRequest = useCallback((force = false) => {
+        if (!isEditing && !force) return
+        const el = textareaRef.current
+        if (!el || !onRequestHeight) return
+        el.style.height = 'auto'
+        const neededHeight = el.scrollHeight
+        // Header (~32) + title (~28) + padding (~16) + footer (~20) = ~96
+        onRequestHeight(neededHeight + 96)
+        el.style.height = `${neededHeight}px`
+    }, [isEditing, onRequestHeight])
+
+    // ── Focus on edit start (same pattern as NoteContent) ──
+    useEffect(() => {
+        if (isEditing) {
+            if (editingField === 'title' && titleRef.current) {
+                titleRef.current.focus()
+                titleRef.current.select()
+            } else if (editingField === 'body' && textareaRef.current) {
+                textareaRef.current.focus()
+                textareaRef.current.select()
+            }
+        }
+    }, [isEditing, editingField])
 
     useEffect(() => {
-        if (editingBody && textareaRef.current) {
-            textareaRef.current.focus()
-            const len = textareaRef.current.value.length
-            textareaRef.current.setSelectionRange(len, len)
+        if (isEditing && editingField === 'body') {
+            setTimeout(() => measureAndRequest(true), 0)
         }
-    }, [editingBody])
+    }, [isEditing, editingField, measureAndRequest])
 
     useEffect(() => {
         if (customOriginActive && customOriginInputRef.current) {
             customOriginInputRef.current.focus()
         }
     }, [customOriginActive])
-
-    useEffect(() => {
-        if (measureRef.current && onContentMeasured) {
-            onContentMeasured(measureRef.current.scrollHeight)
-        }
-    })
 
     // INPUT ISOLATION — CRITICO (Costituzionale)
     // Quando si scrive, il canvas tace.
@@ -246,11 +279,10 @@ export function PromptContent({
     }, [])
 
     return (
-        <div ref={measureRef} className="flex flex-col h-full">
+        <div ref={measureRef} className="w-full flex flex-col">
             {/* Header: Type badge + Origin */}
             <div
                 className="flex items-center justify-between px-2 py-1.5 border-b border-zinc-700 bg-zinc-900/50 shrink-0 gap-2"
-                onMouseDown={(e) => e.stopPropagation()}
             >
                 {/* Prompt Type dropdown + ⓘ */}
                 <div className="flex items-center gap-1">
@@ -331,29 +363,43 @@ export function PromptContent({
                 )}
             </div>
 
-            {/* Body — multiline textarea (taccuino) */}
-            <div className="flex-1 min-h-0 px-2 pb-2" onDoubleClick={handleBodyDoubleClick}>
+            {/* Body — NoteContent pattern: auto-grow textarea in editing */}
+            <div className="p-2 break-words whitespace-pre-wrap" onDoubleClick={handleBodyDoubleClick}>
                 {editingBody ? (
                     <textarea
                         ref={textareaRef}
                         value={data.body ?? ''}
-                        onChange={handleBodyChange}
+                        onChange={(e) => {
+                            handleBodyChange(e)
+                            measureAndRequest()
+                        }}
+                        onFocus={() => measureAndRequest(true)}
                         onKeyDown={stopKeyPropagation}
                         onKeyUp={stopKeyPropagation}
                         onBlur={handleBodyBlur}
+                        onMouseDown={(e) => e.stopPropagation()}
                         placeholder="Scrivi il prompt qui…"
-                        autoFocus
-                        className="w-full h-full bg-transparent text-zinc-200 text-sm resize-none outline-none placeholder-zinc-600"
+                        className="w-full bg-transparent text-zinc-200 text-sm outline-none resize-none overflow-hidden placeholder-zinc-600"
+                        rows={1}
                         spellCheck={false}
                     />
                 ) : (
-                    <div className="text-zinc-300 text-sm whitespace-pre-wrap break-words cursor-text min-h-[2em]">
+                    <div className="text-zinc-300 text-sm cursor-text min-h-[2em]">
                         {data.body || (
                             <span className="text-zinc-600 italic">Scrivi il prompt qui…</span>
                         )}
                     </div>
                 )}
             </div>
+
+            {/* Created at — read-only, immutable */}
+            {data.createdAt && (
+                <div className="px-2 py-0.5 border-t border-zinc-800">
+                    <span className="text-[9px] text-zinc-600 select-none whitespace-nowrap truncate block">
+                        {formatCreatedAt(data.createdAt)}
+                    </span>
+                </div>
+            )}
         </div>
     )
 }
