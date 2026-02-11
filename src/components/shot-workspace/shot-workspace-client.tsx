@@ -179,7 +179,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
       if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
 
-      canvas.createNodeAt(x, y)
+      canvas.createNodeAtScreen(x, y)
     }
 
     window.addEventListener('mousemove', handleMouseMove)
@@ -236,7 +236,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
       const cx = rect.width / 2
       const cy = rect.height / 2
-      canvas.createImageNodeAt(cx, cy, imageData)
+      canvas.createImageNodeAtScreen(cx, cy, imageData)
     } catch (err) {
       console.error('Image upload failed:', err)
     }
@@ -415,7 +415,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
                 const x = upEvent.clientX - rect.left
                 const y = upEvent.clientY - rect.top
                 if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
-                canvas.createColumnNodeAt(x, y)
+                canvas.createColumnNodeAtScreen(x, y)
               }
 
               window.addEventListener('mousemove', handleMouseMove)
@@ -449,7 +449,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
                 const x = upEvent.clientX - rect.left
                 const y = upEvent.clientY - rect.top
                 if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
-                canvas.createPromptNodeAt(x, y)
+                canvas.createPromptNodeAtScreen(x, y)
               }
 
               window.addEventListener('mousemove', handleMouseMove)

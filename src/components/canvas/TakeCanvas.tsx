@@ -69,6 +69,12 @@ export interface TakeCanvasHandle {
     createImageNodeAt: (x: number, y: number, imageData: ImageData) => void
     createColumnNodeAt: (x: number, y: number) => void
     createPromptNodeAt: (x: number, y: number) => void
+    // Screen-coordinate variants: caller passes screen-relative coords,
+    // TakeCanvas converts to world internally. Sidebar should use these.
+    createNodeAtScreen: (screenX: number, screenY: number) => void
+    createImageNodeAtScreen: (screenX: number, screenY: number, imageData: ImageData) => void
+    createColumnNodeAtScreen: (screenX: number, screenY: number) => void
+    createPromptNodeAtScreen: (screenX: number, screenY: number) => void
     getCanvasRect: () => DOMRect | null
 }
 
@@ -281,11 +287,34 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
+        // Screen-coordinate delegates: convert screen → world, then call world-coordinate creators.
+        // Encapsulates viewport knowledge inside TakeCanvas. Sidebar never sees viewport.
+        const screenToWorldCoord = useCallback((screenX: number, screenY: number) => {
+            return screenToWorld(screenX, screenY, viewportRef.current)
+        }, [])
+
+        const createNodeAtScreen = useCallback((sx: number, sy: number) => {
+            const w = screenToWorldCoord(sx, sy); createNodeAt(w.x, w.y)
+        }, [screenToWorldCoord, createNodeAt])
+
+        const createImageNodeAtScreen = useCallback((sx: number, sy: number, imgData: ImageData) => {
+            const w = screenToWorldCoord(sx, sy); createImageNodeAt(w.x, w.y, imgData)
+        }, [screenToWorldCoord, createImageNodeAt])
+
+        const createColumnNodeAtScreen = useCallback((sx: number, sy: number) => {
+            const w = screenToWorldCoord(sx, sy); createColumnNodeAt(w.x, w.y)
+        }, [screenToWorldCoord, createColumnNodeAt])
+
+        const createPromptNodeAtScreen = useCallback((sx: number, sy: number) => {
+            const w = screenToWorldCoord(sx, sy); createPromptNodeAt(w.x, w.y)
+        }, [screenToWorldCoord, createPromptNodeAt])
+
         useImperativeHandle(ref, () => ({
             getSnapshot: () => ({ nodes: structuredClone(nodes), edges: structuredClone(edges) }),
             createNodeAt, createImageNodeAt, createColumnNodeAt, createPromptNodeAt,
+            createNodeAtScreen, createImageNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen,
             getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
-        }), [nodes, edges, createNodeAt, createImageNodeAt, createColumnNodeAt, createPromptNodeAt])
+        }), [nodes, edges, createNodeAt, createImageNodeAt, createColumnNodeAt, createPromptNodeAt, createNodeAtScreen, createImageNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen])
 
         useEffect(() => {
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
