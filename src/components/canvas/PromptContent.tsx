@@ -1,6 +1,7 @@
 'use client'
 
-import { useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 
 // ===================================================
 // PROMPT CONTENT — BLOCCO 4 (MEMORY NODE)
@@ -18,13 +19,15 @@ import { useCallback, useRef, useEffect } from 'react'
 // ── Canonical Types ──
 
 export type PromptType = 'master' | 'prompt' | 'negative' | 'pre-prompt' | 'post-prompt'
-export type PromptOrigin = 'manual' | 'midjourney' | 'runway' | 'veo' | 'comfyui' | 'kling' | 'altro'
+
+// Origin is an open string — dropdown is UX convenience, not a closed enum.
+// Known values get nice labels; unknown values display as-is (retrocompat).
 
 export interface PromptData {
     title?: string
     body?: string
     promptType?: PromptType
-    origin?: PromptOrigin
+    origin?: string
 }
 
 // ── UI Labels (display only) ──
@@ -37,18 +40,59 @@ const PROMPT_TYPE_LABELS: Record<PromptType, string> = {
     'post-prompt': 'Post-Prompt',
 }
 
-const ORIGIN_LABELS: Record<PromptOrigin, string> = {
-    'manual': 'Manual',
-    'midjourney': 'Midjourney',
-    'runway': 'Runway',
-    'veo': 'Veo',
-    'comfyui': 'ComfyUI',
-    'kling': 'Kling',
-    'altro': 'Altro',
-}
+// Known origins: dropdown shows these + "Altro..." sentinel.
+// Storage is always a plain string — the dropdown is just UX sugar.
+const KNOWN_ORIGINS: { value: string; label: string }[] = [
+    { value: 'manual', label: 'Manual' },
+    { value: 'claude', label: 'Claude' },
+    { value: 'chatgpt', label: 'ChatGPT' },
+    { value: 'gemini', label: 'Gemini' },
+    { value: 'midjourney', label: 'Midjourney' },
+    { value: 'runway', label: 'Runway' },
+    { value: 'veo', label: 'Veo' },
+    { value: 'comfyui', label: 'ComfyUI' },
+    { value: 'kling', label: 'Kling' },
+]
+const ALTRO_SENTINEL = '__altro__'
 
 const PROMPT_TYPES = Object.keys(PROMPT_TYPE_LABELS) as PromptType[]
-const ORIGINS = Object.keys(ORIGIN_LABELS) as PromptOrigin[]
+
+// ── InfoTip: Portal-based tooltip (escapes overflow clip) ──
+
+function InfoTip({ text }: { text: string }) {
+    const triggerRef = useRef<HTMLSpanElement>(null)
+    const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+
+    const handleEnter = useCallback(() => {
+        const el = triggerRef.current
+        if (!el) return
+        const r = el.getBoundingClientRect()
+        setPos({ x: r.left + r.width / 2, y: r.top })
+    }, [])
+
+    const handleLeave = useCallback(() => setPos(null), [])
+
+    return (
+        <>
+            <span
+                ref={triggerRef}
+                className="inline-flex items-center justify-center w-3 h-3 rounded-full border border-zinc-600 text-zinc-500 hover:text-zinc-300 hover:border-zinc-400 cursor-default select-none leading-none"
+                style={{ fontSize: '8px' }}
+                onMouseEnter={handleEnter}
+                onMouseLeave={handleLeave}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+            >i</span>
+            {pos && createPortal(
+                <div
+                    className="fixed px-1.5 py-0.5 bg-zinc-800 border border-zinc-600 text-zinc-300 rounded whitespace-nowrap pointer-events-none z-[99999]"
+                    style={{ fontSize: '9px', left: pos.x, top: pos.y, transform: 'translate(-50%, -100%) translateY(-4px)' }}
+                >{text}</div>,
+                document.body
+            )}
+        </>
+    )
+}
 
 // ── Component ──
 
@@ -74,9 +118,18 @@ export function PromptContent({
     const titleRef = useRef<HTMLInputElement>(null)
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const measureRef = useRef<HTMLDivElement>(null)
+    const customOriginInputRef = useRef<HTMLInputElement>(null)
+
+    // "Altro..." custom input state (local UI only, not persisted until commit)
+    const [customOriginActive, setCustomOriginActive] = useState(false)
+    const [customOriginDraft, setCustomOriginDraft] = useState('')
 
     const editingTitle = isEditing && editingField === 'title'
     const editingBody = isEditing && editingField === 'body'
+
+    // Fallback visuals for missing fields (NO mutation — just display defaults)
+    const displayType = data.promptType ?? 'prompt'
+    const displayOrigin = data.origin ?? 'manual'
 
     useEffect(() => {
         if (editingTitle && titleRef.current) {
@@ -93,6 +146,12 @@ export function PromptContent({
             textareaRef.current.setSelectionRange(len, len)
         }
     }, [editingBody])
+
+    useEffect(() => {
+        if (customOriginActive && customOriginInputRef.current) {
+            customOriginInputRef.current.focus()
+        }
+    }, [customOriginActive])
 
     useEffect(() => {
         if (measureRef.current && onContentMeasured) {
@@ -140,14 +199,51 @@ export function PromptContent({
         onDataChange({ ...data, promptType: e.target.value as PromptType })
     }, [data, onDataChange])
 
-    const handleOriginChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    // Origin: open string. Dropdown always visible.
+    // Known origin → dropdown shows it. Custom origin → dropdown shows "Altro…" + input appears.
+    const isKnownOrigin = KNOWN_ORIGINS.some(o => o.value === displayOrigin)
+    // Show custom input if: origin is custom string, OR user just clicked "Altro..."
+    const showCustomInput = customOriginActive || (!isKnownOrigin && displayOrigin !== '')
+    // Dropdown value: known origin → that value, custom → sentinel
+    const dropdownValue = isKnownOrigin ? displayOrigin : ALTRO_SENTINEL
+
+    const handleOriginDropdownChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
         e.stopPropagation()
-        onDataChange({ ...data, origin: e.target.value as PromptOrigin })
+        const val = e.target.value
+        if (val === ALTRO_SENTINEL) {
+            setCustomOriginActive(true)
+            setCustomOriginDraft(isKnownOrigin ? '' : displayOrigin)
+        } else {
+            setCustomOriginActive(false)
+            setCustomOriginDraft('')
+            onDataChange({ ...data, origin: val })
+        }
+    }, [data, onDataChange, isKnownOrigin, displayOrigin])
+
+    const handleCustomOriginChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+        const val = e.target.value
+        setCustomOriginDraft(val)
+        // Live update origin as user types (so it persists even without explicit commit)
+        if (val.trim()) {
+            onDataChange({ ...data, origin: val.trim() })
+        }
     }, [data, onDataChange])
 
-    // Fallback visuals for missing fields (NO mutation — just display defaults)
-    const displayType = data.promptType ?? 'prompt'
-    const displayOrigin = data.origin ?? 'manual'
+    const handleCustomOriginBlur = useCallback(() => {
+        const trimmed = customOriginDraft.trim()
+        if (!trimmed) {
+            // Empty custom → revert to manual
+            onDataChange({ ...data, origin: 'manual' })
+        }
+        setCustomOriginActive(false)
+        setCustomOriginDraft('')
+    }, [data, onDataChange, customOriginDraft])
+
+    const handleCustomOriginKeyDown = useCallback((e: React.KeyboardEvent) => {
+        e.stopPropagation()
+        if (e.key === 'Enter') { (e.target as HTMLInputElement).blur() }
+        if (e.key === 'Escape') { setCustomOriginActive(false); setCustomOriginDraft('') }
+    }, [])
 
     return (
         <div ref={measureRef} className="flex flex-col h-full">
@@ -156,33 +252,55 @@ export function PromptContent({
                 className="flex items-center justify-between px-2 py-1.5 border-b border-zinc-700 bg-zinc-900/50 shrink-0 gap-2"
                 onMouseDown={(e) => e.stopPropagation()}
             >
-                {/* Prompt Type dropdown */}
-                <select
-                    value={displayType}
-                    onChange={handlePromptTypeChange}
-                    onKeyDown={stopKeyPropagation}
-                    onKeyUp={stopKeyPropagation}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    className="text-[10px] bg-amber-900/40 text-amber-400 border border-amber-800/50 rounded px-1 py-0.5 outline-none cursor-pointer appearance-auto"
-                >
-                    {PROMPT_TYPES.map(t => (
-                        <option key={t} value={t}>{PROMPT_TYPE_LABELS[t]}</option>
-                    ))}
-                </select>
+                {/* Prompt Type dropdown + ⓘ */}
+                <div className="flex items-center gap-1">
+                    <select
+                        value={displayType}
+                        onChange={handlePromptTypeChange}
+                        onKeyDown={stopKeyPropagation}
+                        onKeyUp={stopKeyPropagation}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        className="text-[10px] bg-amber-900/40 text-amber-400 border border-amber-800/50 rounded px-1 py-0.5 outline-none cursor-pointer appearance-auto"
+                    >
+                        {PROMPT_TYPES.map(t => (
+                            <option key={t} value={t}>{PROMPT_TYPE_LABELS[t]}</option>
+                        ))}
+                    </select>
+                    <InfoTip text="Ruolo del prompt nel processo creativo" />
+                </div>
 
-                {/* Origin dropdown */}
-                <select
-                    value={displayOrigin}
-                    onChange={handleOriginChange}
-                    onKeyDown={stopKeyPropagation}
-                    onKeyUp={stopKeyPropagation}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    className="text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 rounded px-1 py-0.5 outline-none cursor-pointer appearance-auto"
-                >
-                    {ORIGINS.map(o => (
-                        <option key={o} value={o}>{ORIGIN_LABELS[o]}</option>
-                    ))}
-                </select>
+                {/* Origin: dropdown always visible + ⓘ + custom input when "Altro..." */}
+                <div className="flex items-center gap-1">
+                    <select
+                        value={dropdownValue}
+                        onChange={handleOriginDropdownChange}
+                        onKeyDown={stopKeyPropagation}
+                        onKeyUp={stopKeyPropagation}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        className="text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 rounded px-1 py-0.5 outline-none cursor-pointer appearance-auto"
+                    >
+                        {KNOWN_ORIGINS.map(o => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                        <option value={ALTRO_SENTINEL}>Altro…</option>
+                    </select>
+                    <InfoTip text="Strumento o contesto di provenienza" />
+                    {showCustomInput && (
+                        <input
+                            ref={customOriginInputRef}
+                            type="text"
+                            value={customOriginActive ? customOriginDraft : displayOrigin}
+                            onChange={handleCustomOriginChange}
+                            onKeyDown={handleCustomOriginKeyDown}
+                            onKeyUp={stopKeyPropagation}
+                            onBlur={handleCustomOriginBlur}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            placeholder="Tool…"
+                            className="text-[10px] bg-zinc-800 text-zinc-300 border border-zinc-600 rounded px-1 py-0.5 outline-none w-[72px]"
+                            spellCheck={false}
+                        />
+                    )}
+                </div>
             </div>
 
             {/* Title — editable inline */}

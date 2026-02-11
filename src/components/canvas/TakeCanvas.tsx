@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle, useMemo } from 'react'
 import { NodeShell } from './NodeShell'
 import { NoteContent, ImageContent, ColumnContent, type NoteData, type ImageData, type ColumnData } from './NodeContent'
-import { PromptContent, type PromptData, type PromptType, type PromptOrigin } from './PromptContent'
+import { PromptContent, type PromptData, type PromptType } from './PromptContent'
 import {
     screenToWorld,
     screenDeltaToWorld,
