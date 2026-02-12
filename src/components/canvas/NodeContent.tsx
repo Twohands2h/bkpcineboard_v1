@@ -171,11 +171,15 @@ interface ImageContentProps {
     data: ImageData & { selectionNumber?: number }
     isSelected?: boolean
     onRemoveBadge?: () => void
+    onInspect?: () => void
 }
 
-export function ImageContent({ data, isSelected, onRemoveBadge }: ImageContentProps) {
+export function ImageContent({ data, isSelected, onRemoveBadge, onInspect }: ImageContentProps) {
     return (
-        <div className="w-full h-full flex items-center justify-center relative">
+        <div
+            className="w-full h-full flex items-center justify-center relative"
+            onDoubleClick={(e) => { if (onInspect && data.src) { e.stopPropagation(); onInspect() } }}
+        >
             <img
                 src={data.src}
                 className="w-full h-full object-contain pointer-events-none select-none"

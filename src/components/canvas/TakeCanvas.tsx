@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHand
 import { NodeShell } from './NodeShell'
 import { NoteContent, ImageContent, ColumnContent, type NoteData, type ImageData, type ColumnData } from './NodeContent'
 import { PromptContent, type PromptData, type PromptType } from './PromptContent'
+import { ImageInspectOverlay } from './ImageInspectOverlay'
 import {
     screenToWorld,
     screenDeltaToWorld,
@@ -182,6 +183,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const [detachingOffsetState, setDetachingOffsetState] = useState<{ dx: number; dy: number } | null>(null)
         const [frozenColumnId, setFrozenColumnId] = useState<string | null>(null)
         const frozenRectsRef = useRef<Map<string, Rect> | null>(null)
+
+        // R4.0a: Image Inspect overlay
+        const [inspectImage, setInspectImage] = useState<{ src: string; naturalWidth: number; naturalHeight: number } | null>(null)
 
         const canvasRef = useRef<HTMLDivElement>(null)
         const dragRef = useRef<{ nodeId: string; offsets: Map<string, { startX: number; startY: number }>; startMouseX: number; startMouseY: number; hasMoved: boolean } | null>(null)
@@ -1020,6 +1024,17 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 onMouseDown={handleCanvasMouseDown}
                 onDoubleClick={handleCanvasDoubleClick}
             >
+                {/* R4.0a: Dot grid background — world space, moves with viewport */}
+                <div
+                    className="absolute pointer-events-none"
+                    style={{
+                        inset: -2000,
+                        transform: `translate(${viewport.offsetX}px, ${viewport.offsetY}px) scale(${viewport.scale})`,
+                        transformOrigin: '0 0',
+                        backgroundImage: 'radial-gradient(circle, rgba(161,161,170,0.15) 1px, transparent 1px)',
+                        backgroundSize: '20px 20px',
+                    }}
+                />
                 {/* R4-005: Viewport transform wrapper — everything inside scales/pans */}
                 <div
                     style={{
@@ -1077,7 +1092,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 onSelect={handleSelect} onPotentialDragStart={handlePotentialDragStart}
                                 onDelete={handleDelete} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}>
                                 {node.type === 'note' ? <NoteContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldFocus={handleFieldFocus} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
-                                    : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} onRemoveBadge={() => handleRemoveBadge(node.id)} />
+                                    : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} onRemoveBadge={() => handleRemoveBadge(node.id)} onInspect={() => setInspectImage({ src: node.data.src, naturalWidth: node.data.naturalWidth, naturalHeight: node.data.naturalHeight })} />
                                         : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
                                             : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
                             </NodeShell>
@@ -1124,6 +1139,16 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     <div className="absolute bottom-3 right-3 text-zinc-500 text-xs bg-zinc-900/80 px-2 py-1 rounded pointer-events-none z-[9999]">
                         {Math.round(viewport.scale * 100)}%
                     </div>
+                )}
+
+                {/* R4.0a: Image Inspect Overlay */}
+                {inspectImage && (
+                    <ImageInspectOverlay
+                        src={inspectImage.src}
+                        naturalWidth={inspectImage.naturalWidth}
+                        naturalHeight={inspectImage.naturalHeight}
+                        onClose={() => setInspectImage(null)}
+                    />
                 )}
             </div>
         )

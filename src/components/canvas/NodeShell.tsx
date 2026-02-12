@@ -10,6 +10,7 @@ import { useCallback } from 'react'
 // R4-005b: Controls counter-scaled with transformOrigin at anchor corner.
 //          Controls gated on idle — dimmed + non-interactive otherwise.
 //          interactionMode must always return to idle deterministically.
+// R4.0a: Delete ✕ button removed — deletion via Delete/Backspace only.
 
 interface NodeShellProps {
     nodeId: string
@@ -79,15 +80,6 @@ export function NodeShell({
         []
     )
 
-    const handleDelete = useCallback(
-        (e: React.MouseEvent) => {
-            e.stopPropagation()
-            if (!controlsActive) return
-            onDelete(nodeId)
-        },
-        [nodeId, controlsActive, onDelete]
-    )
-
     const handleResizeMouseDown = useCallback(
         (e: React.MouseEvent) => {
             e.stopPropagation()
@@ -138,21 +130,6 @@ export function NodeShell({
                         pointerEvents: controlsActive ? 'auto' : 'none',
                     }}
                 >
-                    {/* Delete — pinned to top-right corner */}
-                    <button
-                        onClick={handleDelete}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        className="absolute w-5 h-5 bg-red-500 hover:bg-red-600 text-white text-xs rounded-full flex items-center justify-center z-50"
-                        style={{
-                            top: -8,
-                            right: -8,
-                            transform: `scale(${cs})`,
-                            transformOrigin: 'bottom left',
-                        }}
-                    >
-                        ✕
-                    </button>
-
                     {/* Resize handle — pinned to bottom-right corner */}
                     <div
                         onMouseDown={handleResizeMouseDown}
