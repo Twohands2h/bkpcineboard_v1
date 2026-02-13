@@ -10,9 +10,14 @@ import {
   saveTakeSnapshotAction,
   loadLatestTakeSnapshotAction,
 } from '@/app/actions/take-snapshots'
-import { createTakeAction, deleteTakeAction } from '@/app/actions/takes'
+import { createTakeAction } from '@/app/actions/takes'
 import { promoteAssetSelectionAction, discardAssetSelectionAction, getShotSelectionsAction, type ActiveSelection } from '@/app/actions/shot-selections'
 import { setShotFinalVisualAction, getShotFinalVisualAction, clearShotFinalVisualAction } from '@/app/actions/shot-final-visual'
+import {
+  approveTakeAction,
+  revokeTakeAction,
+  deleteTakeWithGuardAction,
+} from '@/app/actions/shot-approved-take'
 import { createClient } from '@/lib/supabase/client'
 import { SceneShotStrip, setLastTakeForShot, type StripScene, type StripShot } from './scene-shot-strip'
 
@@ -30,6 +35,7 @@ interface Shot {
   visual_description: string
   created_at: string
   updated_at: string
+  approved_take_id: string | null
 }
 
 interface Take {
@@ -369,7 +375,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
     if (!window.confirm(message)) return
 
-    // If this take has FV, clear it first
+    // FV guard: clear FV client-side first (FREEZED — do not modify)
     if (isFVTake) {
       await clearShotFinalVisualAction({ shotId: shot.id })
       setFinalVisual(null)
@@ -391,12 +397,26 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     undoHistoryByTakeRef.current.delete(deletedId)
 
     try {
-      await deleteTakeAction({ projectId, shotId: shot.id, takeId: deletedId })
+      // Atomic RPC: clears approved_take_id if needed + deletes take in one transaction.
+      // Safe for non-approved takes (UPDATE is a no-op, DELETE proceeds normally).
+      await deleteTakeWithGuardAction(deletedId)
+      router.refresh()
     } catch (error) {
       console.error('Failed to delete take:', error)
       setTakes(takes)
       setCurrentTakeId(deletedId)
     }
+  }
+
+  // ── Approved Take handlers ──
+  const handleApproveTake = async (takeId: string) => {
+    await approveTakeAction(shot.id, takeId)
+    router.refresh()
+  }
+
+  const handleRevokeTake = async () => {
+    await revokeTakeAction(shot.id)
+    router.refresh()
   }
 
   // ── Blocco 4C: Shot Selection Promotion callbacks ──
@@ -546,7 +566,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         onDuplicate={handleDuplicateTake}
         onDelete={handleDeleteTake}
         finalVisualTakeId={finalVisualTakeId}
-        approvedTakeId={(shot as any).approved_take_id ?? null}
+        approvedTakeId={shot.approved_take_id}
+        onApproveTake={handleApproveTake}
+        onRevokeTake={handleRevokeTake}
       />
 
       <div className="flex-1 flex">

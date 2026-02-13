@@ -1,11 +1,11 @@
 'use client'
 
 // ===================================================
-// TAKE TABS — NAVIGAZIONE TRA TAKES (R3.8-002 v3)
+// TAKE TABS — NAVIGAZIONE TRA TAKES (R3.8-002 v4)
 // ===================================================
 // ✕ inline su hover del tab. Non eliminabile se unico Take.
-// v3: Discrete dot indicator for FV (amber) / Approved (emerald).
-//     Active tab highlight remains primary styling.
+// v4: Approved Take CTA (✓ approve / ↺ revoke).
+//     Dot: emerald (approved) > amber (FV). Props required.
 
 interface Take {
   id: string
@@ -25,8 +25,10 @@ interface TakeTabsProps {
   onNewTake: () => void
   onDuplicate: () => void
   onDelete: (takeId: string) => void
-  finalVisualTakeId?: string | null
-  approvedTakeId?: string | null
+  finalVisualTakeId: string | null
+  approvedTakeId: string | null
+  onApproveTake: (takeId: string) => void
+  onRevokeTake: () => void
 }
 
 export function TakeTabs({
@@ -38,6 +40,8 @@ export function TakeTabs({
   onDelete,
   finalVisualTakeId,
   approvedTakeId,
+  onApproveTake,
+  onRevokeTake,
 }: TakeTabsProps) {
   const canDelete = takes.length > 1
 
@@ -68,6 +72,34 @@ export function TakeTabs({
                 }`} />
             )}
 
+            {/* Approve ✓ — visible on hover, only if NOT approved */}
+            {!isApproved && (
+              <span
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onApproveTake(take.id)
+                }}
+                className="ml-0.5 w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-emerald-900/50 text-zinc-500 hover:text-emerald-400 transition-all text-xs cursor-pointer"
+                title={`Approve ${take.name}`}
+              >
+                ✓
+              </span>
+            )}
+
+            {/* Revoke ↺ — always visible when approved */}
+            {isApproved && (
+              <span
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onRevokeTake()
+                }}
+                className="ml-0.5 w-4 h-4 flex items-center justify-center rounded hover:bg-zinc-600 text-emerald-500 hover:text-zinc-300 transition-all text-xs cursor-pointer"
+                title="Revoke approval"
+              >
+                ↺
+              </span>
+            )}
+
             {/* ✕ visibile solo su hover, solo se eliminabile */}
             {canDelete && (
               <span
@@ -75,7 +107,7 @@ export function TakeTabs({
                   e.stopPropagation()
                   onDelete(take.id)
                 }}
-                className="ml-1 w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-red-900/50 text-zinc-500 hover:text-red-400 transition-all text-xs"
+                className="ml-0.5 w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-red-900/50 text-zinc-500 hover:text-red-400 transition-all text-xs"
                 title={`Delete ${take.name}`}
               >
                 ✕

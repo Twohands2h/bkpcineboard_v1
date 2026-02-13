@@ -3,12 +3,21 @@ import { Database } from '@/lib/db/schema'
 
 type Shot = Database['public']['Tables']['shots']['Row']
 
+interface FinalVisualData {
+  selectionId: string
+  src: string
+  storagePath: string
+  selectionNumber: number
+}
+
 interface ShotHeaderProps {
   shot: Shot
   projectId: string
+  finalVisual?: FinalVisualData | null
+  onUndoFinalVisual?: () => void
 }
 
-export function ShotHeader({ shot, projectId }: ShotHeaderProps) {
+export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual }: ShotHeaderProps) {
   return (
     <div className="border-b border-zinc-800 bg-zinc-900 px-6 py-4 shrink-0">
       {/* Breadcrumb minimale */}
@@ -25,10 +34,39 @@ export function ShotHeader({ shot, projectId }: ShotHeaderProps) {
         </Link>
         <span>/</span>
         <span className="text-zinc-300">Shot #{shot.order_index}</span>
+
+        {/* DECIDED badge — display only, no CTA */}
+        {shot.approved_take_id && (
+          <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase text-emerald-500 bg-emerald-500/10 rounded">
+            Decided
+          </span>
+        )}
       </nav>
 
-      {/* Contenuto esistente */}
+      {/* Contenuto + Final Visual thumbnail */}
       <div className="flex items-center gap-3">
+        {finalVisual && finalVisual.src && (
+          <div className="shrink-0 h-12 max-w-[160px] border border-emerald-600/50 bg-zinc-800 overflow-hidden">
+            <img
+              src={finalVisual.src}
+              alt={`Final Visual S${finalVisual.selectionNumber}`}
+              className="h-12 w-auto max-w-[160px] object-contain"
+            />
+          </div>
+        )}
+        {finalVisual && finalVisual.src && onUndoFinalVisual && (
+          <button
+            onClick={onUndoFinalVisual}
+            className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-600 hover:border-zinc-400 text-zinc-400 hover:text-zinc-200 text-[9px] rounded transition-colors cursor-pointer shrink-0"
+            title="Revert Final Visual"
+          >↩ Undo</button>
+        )}
+        {finalVisual && !finalVisual.src && (
+          <div className="h-12 w-12 shrink-0 border border-zinc-700 bg-zinc-800 flex items-center justify-center">
+            <span className="text-zinc-600 text-[8px]">missing</span>
+          </div>
+        )}
+
         <h1 className="text-lg font-semibold text-zinc-100">
           {shot.visual_description.slice(0, 80) || 'No description'}
           {shot.visual_description.length > 80 && '...'}
