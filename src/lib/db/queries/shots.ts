@@ -99,3 +99,27 @@ export async function deleteShot(_shotId: string): Promise<void> {
 export async function getOrCreateShotlist(_projectId: string): Promise<any> {
   throw new Error('getOrCreateShotlist not implemented - legacy function')
 }
+
+/**
+ * List shots for a scene — minimal fields for strip navigation.
+ * Includes final_visual_selection_id + approved_take_id for status derivation.
+ */
+export async function listSceneShots(sceneId: string): Promise<{
+  id: string
+  scene_id: string
+  order_index: number
+  visual_description: string
+  final_visual_selection_id: string | null
+  approved_take_id: string | null
+}[]> {
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from('shots')
+    .select('id, scene_id, order_index, visual_description, final_visual_selection_id, approved_take_id')
+    .eq('scene_id', sceneId)
+    .order('order_index', { ascending: true })
+
+  if (error) return []
+  return (data ?? []) as any[]
+}

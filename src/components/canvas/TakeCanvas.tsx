@@ -55,6 +55,9 @@ interface TakeCanvasProps {
     onUndoHistoryChange?: (history: UndoHistory) => void
     onPromoteSelection?: (imageNodeId: string, imageData: ImageData, promptData?: { body: string; promptType: string; origin: string; createdAt?: string } | null) => Promise<{ selectionId: string; selectionNumber: number } | null>
     onDiscardSelection?: (selectionId: string, reason: 'undo' | 'manual') => Promise<void>
+    onSetFinalVisual?: (selectionId: string) => Promise<void>
+    onClearFinalVisual?: () => Promise<void>
+    currentFinalVisualId?: string | null
     shotSelections?: { selectionId: string; selectionNumber: number; storagePath: string; src: string }[]
 }
 
@@ -160,7 +163,7 @@ interface SelectionBoxRect { left: number; top: number; width: number; height: n
 interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, shotSelections }, ref) {
+    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, shotSelections }, ref) {
         const [nodes, setNodes] = useState<CanvasNode[]>(() => initialNodes ?? [])
         const [edges, setEdges] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
@@ -185,7 +188,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const frozenRectsRef = useRef<Map<string, Rect> | null>(null)
 
         // R4.0a: Image Inspect overlay
-        const [inspectImage, setInspectImage] = useState<{ src: string; naturalWidth: number; naturalHeight: number } | null>(null)
+        const [inspectImage, setInspectImage] = useState<{ src: string; naturalWidth: number; naturalHeight: number; storagePath?: string } | null>(null)
 
         const canvasRef = useRef<HTMLDivElement>(null)
         const dragRef = useRef<{ nodeId: string; offsets: Map<string, { startX: number; startY: number }>; startMouseX: number; startMouseY: number; hasMoved: boolean } | null>(null)
@@ -269,31 +272,42 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             h.stack.push({ nodes: structuredClone(nodesRef.current), edges: structuredClone(edgesRef.current) })
             if (h.stack.length > HISTORY_MAX) h.stack.shift(); else h.cursor++; emitHistoryChange()
         }, [emitHistoryChange])
+        // Helper: re-apply selection badges from server state (shotSelections).
+        // Called after undo/redo to ensure promoted state is never lost by canvas history.
+        const reapplySelectionBadges = useCallback((restoredNodes: CanvasNode[]): CanvasNode[] => {
+            if (!shotSelections?.length) return restoredNodes
+            let changed = false
+            const result = restoredNodes.map(n => {
+                if (n.type !== 'image') return n
+                const nd = n.data as any
+                const match = shotSelections.find(s =>
+                    s.storagePath === nd.storage_path || s.src === nd.src
+                )
+                if (match && nd.promotedSelectionId !== match.selectionId) {
+                    changed = true
+                    return { ...n, data: { ...nd, promotedSelectionId: match.selectionId, selectionNumber: match.selectionNumber } }
+                }
+                return n
+            })
+            return changed ? result : restoredNodes
+        }, [shotSelections])
+
         const undo = useCallback(() => {
             const h = historyRef.current; if (h.cursor <= 0) return
-            // Snapshot BEFORE undo (current state in history)
-            const beforeNodes = h.stack[h.cursor]?.nodes ?? []
             h.cursor--
             const p = structuredClone(h.stack[h.cursor])
-            setNodes(p.nodes); setEdges(p.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0)
-            // Blocco 4C: detect selections lost by THIS undo step only.
-            // Fires only here (not on redo, take switch, restore, or seed).
-            if (onDiscardSelection) {
-                const afterSelections = new Set<string>()
-                for (const n of p.nodes) {
-                    if ((n as any).type === 'image' && (n as any).data?.promotedSelectionId) {
-                        afterSelections.add((n as any).data.promotedSelectionId)
-                    }
-                }
-                for (const n of beforeNodes) {
-                    const sid = (n as any).type === 'image' ? (n as any).data?.promotedSelectionId : undefined
-                    if (sid && !afterSelections.has(sid)) {
-                        onDiscardSelection(sid, 'undo').catch(console.error)
-                    }
-                }
-            }
-        }, [emitNodesChange, emitHistoryChange, onDiscardSelection])
-        const redo = useCallback(() => { const h = historyRef.current; if (h.cursor >= h.stack.length - 1) return; h.cursor++; const n = structuredClone(h.stack[h.cursor]); setNodes(n.nodes); setEdges(n.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0) }, [emitNodesChange, emitHistoryChange])
+            // Re-apply selection badges — undo must never affect promoted state
+            const nodesWithBadges = reapplySelectionBadges(p.nodes)
+            setNodes(nodesWithBadges); setEdges(p.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0)
+        }, [emitNodesChange, emitHistoryChange, reapplySelectionBadges])
+        const redo = useCallback(() => {
+            const h = historyRef.current; if (h.cursor >= h.stack.length - 1) return
+            h.cursor++
+            const n = structuredClone(h.stack[h.cursor])
+            // Re-apply selection badges — redo must never affect promoted state
+            const nodesWithBadges = reapplySelectionBadges(n.nodes)
+            setNodes(nodesWithBadges); setEdges(n.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0)
+        }, [emitNodesChange, emitHistoryChange, reapplySelectionBadges])
 
         // ── R4-005: Zoom (Ctrl+Wheel) + R4-005b: Trackpad Pan (plain Wheel) ──
         useEffect(() => {
@@ -768,6 +782,15 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [handleWindowMouseMove, handleWindowMouseUp])
 
         const handleDelete = useCallback((nodeId: string) => {
+            // Guard: if deleting an image node that is the current FV, only clear FV (keep node)
+            const targetNode = nodesRef.current.find(n => n.id === nodeId)
+            if (targetNode?.type === 'image' && currentFinalVisualId && (targetNode.data as any).promotedSelectionId === currentFinalVisualId) {
+                const confirmed = window.confirm('This image is the current Final Visual.\n\nClearing Final Visual status. The image will be kept.')
+                if (!confirmed) return
+                onClearFinalVisual?.()
+                return
+            }
+
             setNodes(p => {
                 const node = p.find(n => n.id === nodeId)
                 const deleteIds = new Set([nodeId])
@@ -789,7 +812,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             })
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
-        }, [pushHistory, emitNodesChange])
+        }, [pushHistory, emitNodesChange, currentFinalVisualId, onClearFinalVisual])
 
         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => { setSelectedNodeIds(new Set([nodeId])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('editing'); setEditingField(field) }, [])
         const handleFieldFocus = useCallback((f: 'title' | 'body') => setEditingField(f), [])
@@ -912,6 +935,17 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     if (selectedEdgeId) { e.preventDefault(); setEdges(p => p.filter(ed => ed.id !== selectedEdgeId)); setSelectedEdgeId(null); setEditingEdgeLabel(null); setTimeout(() => { pushHistory(); emitNodesChange() }, 0); return }
                     if (selectedNodeIdsRef.current.size > 0) {
                         e.preventDefault(); const del = new Set(selectedNodeIdsRef.current)
+                        // If any selected node is the current FV image, clear FV and exclude it from deletion
+                        if (currentFinalVisualId) {
+                            const fvNodeId = nodesRef.current.find(n => del.has(n.id) && n.type === 'image' && (n.data as any).promotedSelectionId === currentFinalVisualId)?.id
+                            if (fvNodeId) {
+                                const ok = window.confirm('Selection includes the current Final Visual image.\n\nFinal Visual will be cleared. The FV image will be kept; other selected items will be deleted.')
+                                if (!ok) return
+                                onClearFinalVisual?.()
+                                del.delete(fvNodeId)
+                                if (del.size === 0) return
+                            }
+                        }
                         nodesRef.current.forEach(n => {
                             if (n.type === 'column' && del.has(n.id)) {
                                 nodesRef.current.forEach(c => { if ((c.data as any).parentId === n.id) del.add(c.id) })
@@ -1024,17 +1058,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 onMouseDown={handleCanvasMouseDown}
                 onDoubleClick={handleCanvasDoubleClick}
             >
-                {/* R4.0a: Dot grid background — world space, moves with viewport */}
-                <div
-                    className="absolute pointer-events-none"
-                    style={{
-                        inset: -2000,
-                        transform: `translate(${viewport.offsetX}px, ${viewport.offsetY}px) scale(${viewport.scale})`,
-                        transformOrigin: '0 0',
-                        backgroundImage: 'radial-gradient(circle, rgba(161,161,170,0.15) 1px, transparent 1px)',
-                        backgroundSize: '20px 20px',
-                    }}
-                />
                 {/* R4-005: Viewport transform wrapper — everything inside scales/pans */}
                 <div
                     style={{
@@ -1046,6 +1069,18 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         // No width/height — children positioned absolutely in world space
                     }}
                 >
+                    {/* R4.0a: Dot grid — inside viewport, same transform, zero desync */}
+                    <div
+                        className="absolute pointer-events-none"
+                        style={{
+                            top: -4000,
+                            left: -4000,
+                            width: 8000,
+                            height: 8000,
+                            backgroundImage: 'radial-gradient(circle, rgba(161,161,170,0.15) 1px, transparent 1px)',
+                            backgroundSize: '20px 20px',
+                        }}
+                    />
                     {/* SVG for edges — in world space */}
                     <svg className="absolute pointer-events-none" style={{ zIndex: 0, overflow: 'visible', width: 1, height: 1 }}>
                         <defs>
@@ -1092,7 +1127,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 onSelect={handleSelect} onPotentialDragStart={handlePotentialDragStart}
                                 onDelete={handleDelete} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}>
                                 {node.type === 'note' ? <NoteContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldFocus={handleFieldFocus} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
-                                    : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} onRemoveBadge={() => handleRemoveBadge(node.id)} onInspect={() => setInspectImage({ src: node.data.src, naturalWidth: node.data.naturalWidth, naturalHeight: node.data.naturalHeight })} />
+                                    : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} isFinalVisual={!!currentFinalVisualId && (node.data as any).promotedSelectionId === currentFinalVisualId} onRemoveBadge={() => handleRemoveBadge(node.id)} onInspect={() => setInspectImage({ src: node.data.src, naturalWidth: node.data.naturalWidth, naturalHeight: node.data.naturalHeight, storagePath: node.data.storage_path })} />
                                         : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
                                             : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
                             </NodeShell>
@@ -1105,6 +1140,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     )}
 
                     {/* Blocco 4C: Selection Promote button — world space, under selected ImageNode */}
+                    {/* Blocco 4C: "Select as Asset" button — for unpromoted images */}
                     {onPromoteSelection && primarySelectedId && interactionMode === 'idle' && (() => {
                         const node = nodes.find(n => n.id === primarySelectedId)
                         if (!node || node.type !== 'image') return null
@@ -1127,6 +1163,38 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                             </div>
                         )
                     })()}
+
+                    {/* Shot Final Visual: "Set as Final" button or "Final Visual ✓" indicator */}
+                    {onSetFinalVisual && primarySelectedId && interactionMode === 'idle' && (() => {
+                        const node = nodes.find(n => n.id === primarySelectedId)
+                        if (!node || node.type !== 'image') return null
+                        const selId = (node.data as any).promotedSelectionId
+                        if (!selId) return null // must be promoted first
+                        const rect = renderRects.get(primarySelectedId)
+                        if (!rect) return null
+                        const s = 1 / viewport.scale
+                        const isCurrentFV = selId === currentFinalVisualId
+                        return (
+                            <div
+                                className="absolute z-[9997] pointer-events-auto"
+                                style={{ left: rect.x + rect.width / 2, top: rect.y + rect.height + 8 * s, transform: `translateX(-50%) scale(${s})`, transformOrigin: 'top center' }}
+                            >
+                                {isCurrentFV ? (
+                                    <span className="px-2 py-0.5 bg-emerald-900/60 border border-emerald-700 text-emerald-400 text-[10px] rounded whitespace-nowrap">
+                                        Final Visual ✓
+                                    </span>
+                                ) : (
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); onSetFinalVisual(selId) }}
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        className="px-2 py-0.5 bg-amber-900/80 border border-amber-600 hover:border-amber-400 text-amber-400 hover:text-amber-200 text-[10px] rounded whitespace-nowrap transition-colors"
+                                    >
+                                        Set as Final Visual
+                                    </button>
+                                )}
+                            </div>
+                        )
+                    })()}
                 </div>
 
                 {/* Empty state — outside viewport transform */}
@@ -1145,6 +1213,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 {inspectImage && (
                     <ImageInspectOverlay
                         src={inspectImage.src}
+                        storagePath={inspectImage.storagePath}
                         naturalWidth={inspectImage.naturalWidth}
                         naturalHeight={inspectImage.naturalHeight}
                         onClose={() => setInspectImage(null)}

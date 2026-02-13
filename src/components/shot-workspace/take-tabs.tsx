@@ -1,9 +1,11 @@
 'use client'
 
 // ===================================================
-// TAKE TABS — NAVIGAZIONE TRA TAKES (R3.8-002 v2)
+// TAKE TABS — NAVIGAZIONE TRA TAKES (R3.8-002 v3)
 // ===================================================
 // ✕ inline su hover del tab. Non eliminabile se unico Take.
+// v3: Discrete dot indicator for FV (amber) / Approved (emerald).
+//     Active tab highlight remains primary styling.
 
 interface Take {
   id: string
@@ -22,7 +24,9 @@ interface TakeTabsProps {
   onTakeChange: (takeId: string) => void
   onNewTake: () => void
   onDuplicate: () => void
-  onDelete: (takeId: string) => void  // R3.8-002: passa l'id del Take da eliminare
+  onDelete: (takeId: string) => void
+  finalVisualTakeId?: string | null
+  approvedTakeId?: string | null
 }
 
 export function TakeTabs({
@@ -31,7 +35,9 @@ export function TakeTabs({
   onTakeChange,
   onNewTake,
   onDuplicate,
-  onDelete
+  onDelete,
+  finalVisualTakeId,
+  approvedTakeId,
 }: TakeTabsProps) {
   const canDelete = takes.length > 1
 
@@ -39,6 +45,8 @@ export function TakeTabs({
     <nav className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center px-4 gap-1 shrink-0 overflow-x-auto">
       {takes.map((take) => {
         const isActive = take.id === currentTakeId
+        const isApproved = approvedTakeId === take.id
+        const isFV = !isApproved && finalVisualTakeId === take.id
 
         return (
           <div
@@ -53,6 +61,12 @@ export function TakeTabs({
             onClick={() => onTakeChange(take.id)}
           >
             <span>{take.name}</span>
+
+            {/* Status dot — emerald (approved) wins over amber (FV) */}
+            {(isApproved || isFV) && (
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isApproved ? 'bg-emerald-500' : 'bg-amber-500'
+                }`} />
+            )}
 
             {/* ✕ visibile solo su hover, solo se eliminabile */}
             {canDelete && (

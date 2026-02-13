@@ -3,10 +3,11 @@
 import { createClient } from '@/lib/supabase/server'
 
 // ============================================
-// BLOCCO 4C — SHOT SELECTION PROMOTION (v1)
+// BLOCCO 4C — SHOT SELECTION PROMOTION (v1.1)
 // ============================================
 // Asset selection registered as decision_note (parent_type='shot').
 // Append-only: promote inserts, discard inserts (never deletes).
+// v1.1: optional take_id in promote body for FV→Take derivation.
 
 /**
  * Register an asset selection for a shot.
@@ -16,6 +17,7 @@ import { createClient } from '@/lib/supabase/server'
 export async function promoteAssetSelectionAction(params: {
     projectId: string
     shotId: string
+    takeId?: string | null
     imageSnapshot: {
         src: string
         storage_path: string
@@ -29,7 +31,7 @@ export async function promoteAssetSelectionAction(params: {
         createdAt?: string
     } | null
 }): Promise<{ selectionId: string; selectionNumber: number }> {
-    const { projectId, shotId, imageSnapshot, promptSnapshot } = params
+    const { projectId, shotId, takeId, imageSnapshot, promptSnapshot } = params
 
     if (!projectId) throw new Error('shot-selections: projectId missing')
     if (!shotId) throw new Error('shot-selections: shotId missing')
@@ -62,6 +64,7 @@ export async function promoteAssetSelectionAction(params: {
             body: JSON.stringify({
                 event: 'promote_asset',
                 selection_number: selectionNumber,
+                take_id: takeId ?? null,
                 image_snapshot: imageSnapshot,
                 prompt_snapshot: promptSnapshot ?? null,
                 created_at: new Date().toISOString(),
@@ -120,6 +123,7 @@ export interface ActiveSelection {
     selectionNumber: number
     storagePath: string
     src: string
+    takeId: string | null
 }
 
 /**
@@ -144,12 +148,11 @@ export async function getShotSelectionsAction(params: {
     if (!notes || notes.length === 0) return []
 
     // Build promote map and discard set
-    const promotes = new Map<string, { selectionNumber: number; storagePath: string; src: string }>()
+    const promotes = new Map<string, { selectionNumber: number; storagePath: string; src: string; takeId: string | null }>()
     const discarded = new Set<string>()
 
     for (const note of notes) {
         try {
-            // body may be string (text column) or already-parsed object (jsonb column)
             const raw = note.body
             const p = typeof raw === 'string' ? JSON.parse(raw) : raw
             if (!p || typeof p !== 'object') continue
@@ -159,6 +162,7 @@ export async function getShotSelectionsAction(params: {
                     selectionNumber: p.selection_number,
                     storagePath: p.image_snapshot?.storage_path ?? '',
                     src: p.image_snapshot?.src ?? '',
+                    takeId: p.take_id ?? null,
                 })
             } else if (p.event === 'discard_promote_asset' && p.selection_id) {
                 discarded.add(p.selection_id)

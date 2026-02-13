@@ -12,7 +12,9 @@ import {
 } from '@/app/actions/take-snapshots'
 import { createTakeAction, deleteTakeAction } from '@/app/actions/takes'
 import { promoteAssetSelectionAction, discardAssetSelectionAction, getShotSelectionsAction, type ActiveSelection } from '@/app/actions/shot-selections'
+import { setShotFinalVisualAction, getShotFinalVisualAction, clearShotFinalVisualAction } from '@/app/actions/shot-final-visual'
 import { createClient } from '@/lib/supabase/client'
+import { SceneShotStrip, setLastTakeForShot, type StripScene, type StripShot } from './scene-shot-strip'
 
 // ===================================================
 // SHOT WORKSPACE CLIENT — ORCHESTRATOR (R4-003)
@@ -41,10 +43,17 @@ interface Take {
   updated_at: string
 }
 
+interface StripData {
+  scenes: StripScene[]
+  currentSceneId: string
+  sceneShots: StripShot[]
+}
+
 interface ShotWorkspaceClientProps {
   shot: Shot
   takes: Take[]
   projectId: string
+  stripData?: StripData
 }
 
 interface SnapshotPayload {
@@ -52,7 +61,7 @@ interface SnapshotPayload {
   edges: CanvasEdge[]
 }
 
-export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: ShotWorkspaceClientProps) {
+export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stripData }: ShotWorkspaceClientProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -70,7 +79,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     if (current !== currentTakeId) {
       router.replace(`?take=${currentTakeId}`, { scroll: false })
     }
-  }, [currentTakeId, searchParams, router])
+    // Record last active take for this shot (session memory for strip nav)
+    setLastTakeForShot(shot.id, currentTakeId)
+  }, [currentTakeId, searchParams, router, shot.id])
 
   const canvasRef = useRef<TakeCanvasHandle>(null)
 
@@ -78,6 +89,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
   const [readyPayload, setReadyPayload] = useState<SnapshotPayload | undefined>(undefined)
   const [isLoading, setIsLoading] = useState(true)
   const [shotSelections, setShotSelections] = useState<ActiveSelection[]>([])
+  const [finalVisual, setFinalVisual] = useState<{ selectionId: string; src: string; storagePath: string; selectionNumber: number; takeId: string | null } | null>(null)
+  const [finalVisualTakeId, setFinalVisualTakeId] = useState<string | null>(null)
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -115,6 +128,24 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
   }, [currentTakeId])
 
+  // ── Request sequencing guard ──
+  const takeLoadSeqRef = useRef(0)
+  const shotDerivedSeqRef = useRef(0)
+
+  // Load shot-level derived state (FV + selections) — shot-scoped, not take-scoped
+  const loadShotDerivedState = useCallback(async () => {
+    const seq = ++shotDerivedSeqRef.current
+    const [fv, sels] = await Promise.all([
+      getShotFinalVisualAction({ shotId: shot.id }),
+      getShotSelectionsAction({ shotId: shot.id }),
+    ])
+    if (seq !== shotDerivedSeqRef.current) return // stale response, discard
+    setFinalVisual(fv)
+    setFinalVisualTakeId(fv?.takeId ?? null)
+    setShotSelections(sels)
+  }, [shot.id])
+
+  // Load take snapshot (take-scoped)
   useEffect(() => {
     if (!currentTakeId) return
 
@@ -124,12 +155,17 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     }
 
     setIsLoading(true)
+    const seq = ++takeLoadSeqRef.current
 
     Promise.all([
       loadLatestTakeSnapshotAction(currentTakeId),
-      getShotSelectionsAction({ shotId: shot.id }),
+      // Only load shot-derived state on first take load (not on every take switch)
+      shotSelections.length === 0 && !finalVisual
+        ? loadShotDerivedState()
+        : Promise.resolve(),
     ])
-      .then(([snapshot, selections]) => {
+      .then(([snapshot]) => {
+        if (seq !== takeLoadSeqRef.current) return // stale response
         let payload: SnapshotPayload | undefined
 
         if (snapshot?.payload) {
@@ -141,17 +177,17 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
           }
         }
 
-        setShotSelections(selections)
         setReadyTakeId(currentTakeId)
         setReadyPayload(payload)
         setIsLoading(false)
       })
       .catch(() => {
+        if (seq !== takeLoadSeqRef.current) return
         setReadyTakeId(currentTakeId)
         setReadyPayload(undefined)
         setIsLoading(false)
       })
-  }, [currentTakeId, shot.id])
+  }, [currentTakeId, shot.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     return () => {
@@ -278,6 +314,17 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     const snapshot = canvasRef.current.getSnapshot()
     const clonedPayload = structuredClone(snapshot)
 
+    // C) Sanitize: strip editorial markers from cloned nodes
+    if (clonedPayload.nodes) {
+      for (const node of clonedPayload.nodes) {
+        if (node.data) {
+          delete (node.data as any).promotedSelectionId
+          delete (node.data as any).selectionNumber
+          delete (node.data as any).isFinalVisual
+        }
+      }
+    }
+
     try {
       const newTake = await createTakeAction({ projectId, shotId: shot.id })
 
@@ -314,10 +361,23 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
     if (takes.length <= 1) return
 
     const targetTake = takes.find(t => t.id === takeId)
-    const confirmed = window.confirm(
-      `Eliminare "${targetTake?.name ?? 'questo Take'}"?\n\nQuesta azione è irreversibile.`
-    )
-    if (!confirmed) return
+    const isFVTake = finalVisualTakeId === takeId
+
+    const message = isFVTake
+      ? `You're deleting "${targetTake?.name ?? 'this Take'}" which contains the Final Visual.\n\nThis will also clear the Shot Final Visual (header + strip + take indicators).\n\nThis action is irreversible.`
+      : `Eliminare "${targetTake?.name ?? 'questo Take'}"?\n\nQuesta azione è irreversibile.`
+
+    if (!window.confirm(message)) return
+
+    // If this take has FV, clear it first
+    if (isFVTake) {
+      await clearShotFinalVisualAction({ shotId: shot.id })
+      setFinalVisual(null)
+      setFinalVisualTakeId(null)
+      fvUndoStackRef.current = []
+      setFvUndoCount(0)
+      router.refresh()
+    }
 
     const deletedId = takeId
     const remainingTakes = takes.filter(t => t.id !== deletedId)
@@ -349,6 +409,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
       const result = await promoteAssetSelectionAction({
         projectId,
         shotId: shot.id,
+        takeId: currentTakeId,
         imageSnapshot: {
           src: imageData.src,
           storage_path: imageData.storage_path,
@@ -357,15 +418,28 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         },
         promptSnapshot: promptData ?? null,
       })
+      // Refresh selections after promote
+      loadShotDerivedState()
       return result
     } catch (error) {
       console.error('Failed to promote selection:', error)
       return null
     }
-  }, [projectId, shot.id])
+  }, [projectId, shot.id, currentTakeId, loadShotDerivedState])
 
   const handleDiscardSelection = useCallback(async (selectionId: string, reason: 'undo' | 'manual'): Promise<void> => {
     if (!selectionId) return
+
+    // If discarding the current Final Visual, clear FV first
+    if (finalVisual?.selectionId === selectionId) {
+      setFinalVisual(null)
+      setFinalVisualTakeId(null)
+      fvUndoStackRef.current = []
+      setFvUndoCount(0)
+      await clearShotFinalVisualAction({ shotId: shot.id })
+      router.refresh()
+    }
+
     try {
       await discardAssetSelectionAction({
         projectId,
@@ -373,15 +447,73 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         selectionId,
         reason,
       })
+      // Refresh selections after discard
+      await loadShotDerivedState()
     } catch (error) {
       console.error('Failed to discard selection:', error)
     }
-  }, [projectId, shot.id])
+  }, [projectId, shot.id, finalVisual?.selectionId, loadShotDerivedState, router])
+
+  // ── Shot Final Visual ──
+  const fvUndoStackRef = useRef<{ selectionId: string | null; takeId: string | null }[]>([])
+  const [fvUndoCount, setFvUndoCount] = useState(0)
+
+  const handleSetFinalVisual = useCallback(async (selectionId: string) => {
+    fvUndoStackRef.current.push({
+      selectionId: finalVisual?.selectionId ?? null,
+      takeId: finalVisualTakeId,
+    })
+    setFvUndoCount(fvUndoStackRef.current.length)
+    const result = await setShotFinalVisualAction({ shotId: shot.id, selectionId })
+    if (result.success) {
+      await loadShotDerivedState()
+      router.refresh()
+    } else {
+      fvUndoStackRef.current.pop()
+      setFvUndoCount(fvUndoStackRef.current.length)
+    }
+  }, [shot.id, finalVisual, finalVisualTakeId, loadShotDerivedState, router])
+
+  const handleUndoFinalVisual = useCallback(async () => {
+    const prev = fvUndoStackRef.current.pop()
+    setFvUndoCount(fvUndoStackRef.current.length)
+    if (prev === undefined) return
+    if (prev.selectionId === null) {
+      const result = await clearShotFinalVisualAction({ shotId: shot.id })
+      if (result.success) {
+        setFinalVisual(null)
+        setFinalVisualTakeId(null)
+        router.refresh()
+      }
+    } else {
+      const result = await setShotFinalVisualAction({ shotId: shot.id, selectionId: prev.selectionId })
+      if (result.success) {
+        await loadShotDerivedState()
+        router.refresh()
+      }
+    }
+  }, [shot.id, loadShotDerivedState, router])
+
+  // Strip rendering helper
+  const renderStrip = () => {
+    if (!stripData || stripData.scenes.length === 0) return null
+    return (
+      <SceneShotStrip
+        key={shot.id}
+        projectId={projectId}
+        scenes={stripData.scenes}
+        currentSceneId={stripData.currentSceneId}
+        currentShotId={shot.id}
+        sceneShots={stripData.sceneShots}
+      />
+    )
+  }
 
   if (takes.length === 0) {
     return (
       <div className="flex-1 flex flex-col">
-        <ShotHeader shot={shot} projectId={projectId} />
+        {renderStrip()}
+        <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual} onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined} />
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
           <div className="text-center">
             <p className="text-zinc-500 text-sm mb-4">Nessun Take presente per questo Shot</p>
@@ -403,7 +535,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
 
   return (
     <div className="flex-1 flex flex-col">
-      <ShotHeader shot={shot} projectId={projectId} />
+      {renderStrip()}
+      <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual} onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined} />
 
       <TakeTabs
         takes={takes}
@@ -412,6 +545,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
         onNewTake={handleNewTake}
         onDuplicate={handleDuplicateTake}
         onDelete={handleDeleteTake}
+        finalVisualTakeId={finalVisualTakeId}
+        approvedTakeId={(shot as any).approved_take_id ?? null}
       />
 
       <div className="flex-1 flex">
@@ -511,7 +646,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
           {readyTakeId && (
             <TakeCanvas
               ref={canvasRef}
-              key={readyTakeId}
+              key={`${readyTakeId}-${finalVisual?.selectionId ?? 'none'}`}
               takeId={readyTakeId}
               initialNodes={readyPayload?.nodes}
               initialEdges={readyPayload?.edges}
@@ -520,6 +655,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId }: Sh
               onUndoHistoryChange={handleUndoHistoryChange}
               onPromoteSelection={handlePromoteSelection}
               onDiscardSelection={handleDiscardSelection}
+              onSetFinalVisual={handleSetFinalVisual}
+              onClearFinalVisual={async () => {
+                await clearShotFinalVisualAction({ shotId: shot.id })
+                setFinalVisual(null)
+                setFinalVisualTakeId(null)
+                fvUndoStackRef.current = []
+                setFvUndoCount(0)
+                router.refresh()
+              }}
+              currentFinalVisualId={finalVisual?.selectionId ?? null}
               shotSelections={shotSelections}
             />
           )}
