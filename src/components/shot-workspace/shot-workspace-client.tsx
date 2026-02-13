@@ -18,6 +18,8 @@ import {
   revokeTakeAction,
   deleteTakeWithGuardAction,
 } from '@/app/actions/shot-approved-take'
+import { ExportTakeModal } from '@/components/export/export-take-modal'
+import { ProductionLaunchPanel } from '@/components/production/production-launch-panel'
 import { createClient } from '@/lib/supabase/client'
 import { SceneShotStrip, setLastTakeForShot, type StripScene, type StripShot } from './scene-shot-strip'
 
@@ -419,6 +421,28 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     router.refresh()
   }
 
+  // ── Take Export ──
+  const [exportNodes, setExportNodes] = useState<CanvasNode[] | null>(null)
+
+  const handleExportOpen = () => {
+    if (!canvasRef.current) return
+    setExportNodes(canvasRef.current.getSnapshot().nodes)
+  }
+
+  const handleExportClose = () => {
+    setExportNodes(null)
+  }
+
+  // ── Production Launch Panel ──
+  const [showPLP, setShowPLP] = useState(false)
+  const [plpNodes, setPlpNodes] = useState<CanvasNode[]>([])
+
+  const handleOpenPLP = () => {
+    if (!canvasRef.current) return
+    setPlpNodes(canvasRef.current.getSnapshot().nodes)
+    setShowPLP(true)
+  }
+
   // ── Blocco 4C: Shot Selection Promotion callbacks ──
   const handlePromoteSelection = useCallback(async (
     imageNodeId: string,
@@ -569,10 +593,35 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         approvedTakeId={shot.approved_take_id}
         onApproveTake={handleApproveTake}
         onRevokeTake={handleRevokeTake}
+        onOpenProduction={handleOpenPLP}
+        isProductionReady={shot.approved_take_id === readyTakeId}
       />
 
       <div className="flex-1 flex">
         <aside className="w-12 bg-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
+          {/* Tool rail ALTO: azioni */}
+
+          {/* More menu (⋯) — secondary actions */}
+          <div className="relative group">
+            <button
+              className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
+              title="More actions"
+            >
+              <span className="text-xs text-zinc-400 pointer-events-none">⋯</span>
+            </button>
+            <div className="absolute left-full top-0 ml-1 hidden group-hover:flex flex-col bg-zinc-800 border border-zinc-600 rounded shadow-lg z-20 min-w-[140px]">
+              <button
+                onClick={handleExportOpen}
+                className="px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-700 text-left transition-colors rounded-t"
+              >
+                Export .md
+              </button>
+            </div>
+          </div>
+
+          <div className="w-6 border-t border-zinc-600 my-1" />
+
+          {/* Tool rail BASSO: drag nodes */}
           <button
             onMouseDown={handleSidebarNoteMouseDown}
             className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
@@ -698,6 +747,22 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           )}
         </div>
       </div>
+
+      {showPLP && (
+        <ProductionLaunchPanel
+          nodes={plpNodes}
+          isApproved={shot.approved_take_id === readyTakeId}
+          onClose={() => setShowPLP(false)}
+        />
+      )}
+
+      {exportNodes && readyTakeId && (
+        <ExportTakeModal
+          takeId={readyTakeId}
+          nodes={exportNodes}
+          onClose={handleExportClose}
+        />
+      )}
 
       {ghostPos && (
         <div
