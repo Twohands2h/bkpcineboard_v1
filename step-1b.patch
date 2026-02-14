@@ -1,0 +1,264 @@
+From 0f653eac7ef512dc5d57b5abf25991298476d1de Mon Sep 17 00:00:00 2001
+From: C <c@c.dev>
+Date: Sat, 14 Feb 2026 20:48:04 +0000
+Subject: [PATCH] step-1b
+
+---
+ src/components/canvas/NodeContent.tsx         | 13 +++++-
+ src/components/canvas/NodeShell.tsx           | 42 +++++++++++++++++++
+ src/components/canvas/TakeCanvas.tsx          | 22 ++++++++--
+ .../shot-workspace/shot-workspace-client.tsx  | 40 ++++++++++++++++++
+ 4 files changed, 112 insertions(+), 5 deletions(-)
+
+diff --git a/src/components/canvas/NodeContent.tsx b/src/components/canvas/NodeContent.tsx
+index eb84080..4640244 100644
+--- a/src/components/canvas/NodeContent.tsx
++++ b/src/components/canvas/NodeContent.tsx
+@@ -325,9 +325,10 @@ export interface VideoData {
+ 
+ interface VideoContentProps {
+     data: VideoData
++    isOutput?: boolean
+ }
+ 
+-export function VideoContent({ data }: VideoContentProps) {
++export function VideoContent({ data, isOutput }: VideoContentProps) {
+     const [isPreview, setIsPreview] = useState(false)
+     const videoRef = useRef<HTMLVideoElement>(null)
+ 
+@@ -350,6 +351,16 @@ export function VideoContent({ data }: VideoContentProps) {
+ 
+     return (
+         <div className="w-full h-full bg-black relative">
++            {/* Output badge — emerald, always visible when isOutput */}
++            {isOutput && (
++                <span className="absolute top-1 right-1 z-20 px-1.5 py-0.5 bg-emerald-900/80 border border-emerald-600 text-emerald-300 text-[9px] font-mono rounded-sm pointer-events-none select-none">
++                    Output
++                </span>
++            )}
++            {isOutput && (
++                <div className="absolute inset-0 border-2 border-emerald-500/70 pointer-events-none z-10" />
++            )}
++
+             {!isPreview && (
+                 <>
+                     {data.thumbnail ? (
+diff --git a/src/components/canvas/NodeShell.tsx b/src/components/canvas/NodeShell.tsx
+index 1a29cee..15f32c7 100644
+--- a/src/components/canvas/NodeShell.tsx
++++ b/src/components/canvas/NodeShell.tsx
+@@ -28,6 +28,11 @@ interface NodeShellProps {
+     onDelete: (nodeId: string) => void
+     onResizeStart: (nodeId: string, mouseX: number, mouseY: number) => void
+     onConnectionStart?: (nodeId: string, mouseX: number, mouseY: number) => void
++    // Step 1B — Take Output (video nodes only)
++    nodeType?: string
++    isOutputVideo?: boolean
++    onSetOutputVideo?: (nodeId: string) => void
++    onClearOutputVideo?: (nodeId: string) => void
+     children: React.ReactNode
+ }
+ 
+@@ -47,6 +52,10 @@ export function NodeShell({
+     onDelete,
+     onResizeStart,
+     onConnectionStart,
++    nodeType,
++    isOutputVideo,
++    onSetOutputVideo,
++    onClearOutputVideo,
+     children,
+ }: NodeShellProps) {
+     const isResizing = interactionMode === 'resizing'
+@@ -159,6 +168,39 @@ export function NodeShell({
+                     >
+                         <div className="w-2.5 h-2.5 bg-emerald-500 group-hover:bg-emerald-400 group-hover:scale-125 rounded-full transition-transform" />
+                     </div>
++
++                    {/* Step 1B: Output toggle — only for video nodes */}
++                    {nodeType === 'video' && (
++                        <div
++                            className="absolute z-50 flex items-center justify-center"
++                            style={{
++                                top: -10,
++                                left: -10,
++                                transform: `scale(${cs})`,
++                                transformOrigin: 'bottom right',
++                            }}
++                        >
++                            {isOutputVideo ? (
++                                <button
++                                    onMouseDown={(e) => { e.stopPropagation(); e.preventDefault() }}
++                                    onClick={(e) => { e.stopPropagation(); onClearOutputVideo?.(nodeId) }}
++                                    className="px-1.5 py-0.5 bg-emerald-900/80 border border-emerald-600 hover:border-red-500 text-emerald-300 hover:text-red-400 text-[9px] font-mono rounded-sm whitespace-nowrap transition-colors cursor-pointer"
++                                    title="Remove Take Output"
++                                >
++                                    Output ✓
++                                </button>
++                            ) : (
++                                <button
++                                    onMouseDown={(e) => { e.stopPropagation(); e.preventDefault() }}
++                                    onClick={(e) => { e.stopPropagation(); onSetOutputVideo?.(nodeId) }}
++                                    className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-600 hover:border-emerald-500 text-zinc-500 hover:text-emerald-400 text-[9px] font-mono rounded-sm whitespace-nowrap transition-colors cursor-pointer"
++                                    title="Set as Take Output"
++                                >
++                                    Output
++                                </button>
++                            )}
++                        </div>
++                    )
+                 </div>
+             )}
+ 
+diff --git a/src/components/canvas/TakeCanvas.tsx b/src/components/canvas/TakeCanvas.tsx
+index eab4698..381dfc3 100644
+--- a/src/components/canvas/TakeCanvas.tsx
++++ b/src/components/canvas/TakeCanvas.tsx
+@@ -63,6 +63,10 @@ interface TakeCanvasProps {
+     onClearFinalVisual?: () => Promise<void>
+     currentFinalVisualId?: string | null
+     shotSelections?: { selectionId: string; selectionNumber: number; storagePath: string; src: string }[]
++    // Step 1B — Take Output
++    outputVideoNodeId?: string | null
++    onSetOutputVideo?: (nodeId: string) => Promise<void>
++    onClearOutputVideo?: () => Promise<void>
+ }
+ 
+ export type CanvasNode = NoteNode | ImageNode | VideoNode | ColumnNode | PromptNode
+@@ -170,7 +174,7 @@ interface SelectionBoxRect { left: number; top: number; width: number; height: n
+ interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
+ 
+ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
+-    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, shotSelections }, ref) {
++    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, shotSelections, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo }, ref) {
+         const [nodes, setNodes] = useState<CanvasNode[]>(() => initialNodes ?? [])
+         const [edges, setEdges] = useState<CanvasEdge[]>(() => initialEdges ?? [])
+         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
+@@ -800,6 +804,12 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
+         }, [handleWindowMouseMove, handleWindowMouseUp])
+ 
+         const handleDelete = useCallback((nodeId: string) => {
++            // Guard: if deleting a video node that is the current Take Output, clear output first
++            const targetNode = nodesRef.current.find(n => n.id === nodeId)
++            if (targetNode?.type === 'video' && outputVideoNodeId === nodeId) {
++                onClearOutputVideo?.()
++            }
++
+             // Guard: if deleting an image node that is the current FV, only clear FV (keep node)
+             const targetNode = nodesRef.current.find(n => n.id === nodeId)
+             if (targetNode?.type === 'image' && currentFinalVisualId && (targetNode.data as any).promotedSelectionId === currentFinalVisualId) {
+@@ -830,7 +840,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
+             })
+             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
+             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+-        }, [pushHistory, emitNodesChange, currentFinalVisualId, onClearFinalVisual])
++        }, [pushHistory, emitNodesChange, currentFinalVisualId, onClearFinalVisual, outputVideoNodeId, onClearOutputVideo])
+ 
+         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => { setSelectedNodeIds(new Set([nodeId])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('editing'); setEditingField(field) }, [])
+         const handleFieldFocus = useCallback((f: 'title' | 'body') => setEditingField(f), [])
+@@ -1143,10 +1153,14 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
+                                 interactionMode={interactionMode}
+                                 viewportScale={viewport.scale}
+                                 onSelect={handleSelect} onPotentialDragStart={handlePotentialDragStart}
+-                                onDelete={handleDelete} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}>
++                                onDelete={handleDelete} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}
++                                nodeType={node.type}
++                                isOutputVideo={node.type === 'video' && outputVideoNodeId === node.id}
++                                onSetOutputVideo={onSetOutputVideo ? (nid) => { onSetOutputVideo(nid) } : undefined}
++                                onClearOutputVideo={onClearOutputVideo ? () => { onClearOutputVideo() } : undefined}>
+                                 {node.type === 'note' ? <NoteContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldFocus={handleFieldFocus} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
+                                     : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} isFinalVisual={!!currentFinalVisualId && (node.data as any).promotedSelectionId === currentFinalVisualId} onRemoveBadge={() => handleRemoveBadge(node.id)} onInspect={() => setInspectImage({ src: node.data.src, naturalWidth: node.data.naturalWidth, naturalHeight: node.data.naturalHeight, storagePath: node.data.storage_path })} />
+-                                        : node.type === 'video' ? <VideoContent data={node.data} />
++                                        : node.type === 'video' ? <VideoContent data={node.data} isOutput={outputVideoNodeId === node.id} />
+                                         : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
+                                             : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
+                             </NodeShell>
+diff --git a/src/components/shot-workspace/shot-workspace-client.tsx b/src/components/shot-workspace/shot-workspace-client.tsx
+index ac129e2..3897f90 100644
+--- a/src/components/shot-workspace/shot-workspace-client.tsx
++++ b/src/components/shot-workspace/shot-workspace-client.tsx
+@@ -13,6 +13,7 @@ import {
+ import { createTakeAction } from '@/app/actions/takes'
+ import { promoteAssetSelectionAction, discardAssetSelectionAction, getShotSelectionsAction, type ActiveSelection } from '@/app/actions/shot-selections'
+ import { setShotFinalVisualAction, getShotFinalVisualAction, clearShotFinalVisualAction } from '@/app/actions/shot-final-visual'
++import { setTakeOutputVideoAction, clearTakeOutputVideoAction, getTakeOutputVideoAction } from '@/app/actions/take-output'
+ import {
+   approveTakeAction,
+   revokeTakeAction,
+@@ -49,6 +50,7 @@ interface Take {
+   order_index: number
+   created_at: string
+   updated_at: string
++  output_video_node_id: string | null
+ }
+ 
+ interface StripData {
+@@ -99,6 +101,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
+   const [shotSelections, setShotSelections] = useState<ActiveSelection[]>([])
+   const [finalVisual, setFinalVisual] = useState<{ selectionId: string; src: string; storagePath: string; selectionNumber: number; takeId: string | null } | null>(null)
+   const [finalVisualTakeId, setFinalVisualTakeId] = useState<string | null>(null)
++  const [outputVideoNodeId, setOutputVideoNodeId] = useState<string | null>(null)
+ 
+   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
+   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+@@ -198,6 +201,17 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
+       })
+   }, [currentTakeId, shot.id]) // eslint-disable-line react-hooks/exhaustive-deps
+ 
++  // Step 1B: Sync outputVideoNodeId from takes array on take switch
++  useEffect(() => {
++    if (!currentTakeId) { setOutputVideoNodeId(null); return }
++    const take = takes.find(t => t.id === currentTakeId)
++    if (take) {
++      setOutputVideoNodeId(take.output_video_node_id)
++    } else {
++      getTakeOutputVideoAction({ takeId: currentTakeId }).then(setOutputVideoNodeId)
++    }
++  }, [currentTakeId, takes])
++
+   useEffect(() => {
+     return () => {
+       if (persistTimerRef.current) {
+@@ -590,6 +604,29 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
+     }
+   }, [shot.id, loadShotDerivedState, router])
+ 
++  // ── Step 1B: Take Output Video ──
++  const handleSetOutputVideo = useCallback(async (nodeId: string) => {
++    if (!currentTakeId) return
++    try {
++      await setTakeOutputVideoAction({ takeId: currentTakeId, nodeId })
++      setOutputVideoNodeId(nodeId)
++      setTakes(prev => prev.map(t => t.id === currentTakeId ? { ...t, output_video_node_id: nodeId } : t))
++    } catch (err) {
++      console.error('Failed to set output video:', err)
++    }
++  }, [currentTakeId])
++
++  const handleClearOutputVideo = useCallback(async () => {
++    if (!currentTakeId) return
++    try {
++      await clearTakeOutputVideoAction({ takeId: currentTakeId })
++      setOutputVideoNodeId(null)
++      setTakes(prev => prev.map(t => t.id === currentTakeId ? { ...t, output_video_node_id: null } : t))
++    } catch (err) {
++      console.error('Failed to clear output video:', err)
++    }
++  }, [currentTakeId])
++
+   // Strip rendering helper
+   const renderStrip = () => {
+     if (!stripData || stripData.scenes.length === 0) return null
+@@ -804,6 +841,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
+               }}
+               currentFinalVisualId={finalVisual?.selectionId ?? null}
+               shotSelections={shotSelections}
++              outputVideoNodeId={outputVideoNodeId}
++              onSetOutputVideo={handleSetOutputVideo}
++              onClearOutputVideo={handleClearOutputVideo}
+             />
+           )}
+ 
+-- 
+2.43.0
+
