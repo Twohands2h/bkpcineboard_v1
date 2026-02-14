@@ -28,6 +28,10 @@ interface NodeShellProps {
     onDelete: (nodeId: string) => void
     onResizeStart: (nodeId: string, mouseX: number, mouseY: number) => void
     onConnectionStart?: (nodeId: string, mouseX: number, mouseY: number) => void
+    // Step 1B — Take Output (video nodes only)
+    nodeType?: string
+    isOutputVideo?: boolean
+    onToggleOutputVideo?: () => void
     children: React.ReactNode
 }
 
@@ -47,6 +51,9 @@ export function NodeShell({
     onDelete,
     onResizeStart,
     onConnectionStart,
+    nodeType,
+    isOutputVideo,
+    onToggleOutputVideo,
     children,
 }: NodeShellProps) {
     const isResizing = interactionMode === 'resizing'
@@ -103,7 +110,7 @@ export function NodeShell({
     return (
         <div
             data-node-shell
-            className={`absolute select-none bg-zinc-800 border border-zinc-700 shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
+            className={`absolute select-none bg-zinc-800 border ${isOutputVideo ? 'border-emerald-600' : 'border-zinc-700'} shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
             style={{
                 transform: `translate(${x}px, ${y}px)`,
                 width,
@@ -159,6 +166,48 @@ export function NodeShell({
                     >
                         <div className="w-2.5 h-2.5 bg-emerald-500 group-hover:bg-emerald-400 group-hover:scale-125 rounded-full transition-transform" />
                     </div>
+
+                    {/* Step 1B: Output toggle — video nodes only */}
+                    {nodeType === 'video' && onToggleOutputVideo && (
+                        <div
+                            className="absolute z-50"
+                            style={{
+                                top: -4,
+                                left: -4,
+                                transform: `scale(${cs})`,
+                                transformOrigin: 'bottom right',
+                            }}
+                        >
+                            <button
+                                onMouseDown={(e) => { e.stopPropagation(); e.preventDefault() }}
+                                onClick={(e) => { e.stopPropagation(); onToggleOutputVideo() }}
+                                className={`px-1.5 py-0.5 text-[9px] font-medium border transition-colors ${isOutputVideo
+                                    ? 'bg-emerald-900/80 border-emerald-600 text-emerald-400 hover:bg-red-900/60 hover:border-red-500 hover:text-red-400'
+                                    : 'bg-zinc-800 border-zinc-600 text-zinc-400 hover:border-emerald-500 hover:text-emerald-400'
+                                    }`}
+                                title={isOutputVideo ? 'Remove Take Output' : 'Set as Take Output'}
+                            >
+                                {isOutputVideo ? 'Output ✓' : 'Output'}
+                            </button>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Step 1B: Output badge — always visible when is output and not showing controls */}
+            {isOutputVideo && !showControls && (
+                <div
+                    className="absolute z-40 pointer-events-none"
+                    style={{
+                        top: -2,
+                        right: -2,
+                        transform: `scale(${cs})`,
+                        transformOrigin: 'bottom left',
+                    }}
+                >
+                    <span className="px-1 py-0.5 text-[8px] font-medium bg-emerald-900/80 border border-emerald-700 text-emerald-400">
+                        Output
+                    </span>
                 </div>
             )}
 
