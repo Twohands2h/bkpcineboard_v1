@@ -62,6 +62,9 @@ interface TakeCanvasProps {
     onSetFinalVisual?: (selectionId: string) => Promise<void>
     onClearFinalVisual?: () => Promise<void>
     currentFinalVisualId?: string | null
+    outputVideoNodeId?: string | null
+    onSetOutputVideo?: (nodeId: string) => Promise<void>
+    onClearOutputVideo?: () => Promise<void>
     shotSelections?: { selectionId: string; selectionNumber: number; storagePath: string; src: string }[]
 }
 
@@ -170,7 +173,7 @@ interface SelectionBoxRect { left: number; top: number; width: number; height: n
 interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, shotSelections }, ref) {
+    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, shotSelections }, ref) {
         const [nodes, setNodes] = useState<CanvasNode[]>(() => initialNodes ?? [])
         const [edges, setEdges] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
@@ -799,15 +802,33 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             window.addEventListener('mousemove', handleWindowMouseMove); window.addEventListener('mouseup', handleWindowMouseUp)
         }, [handleWindowMouseMove, handleWindowMouseUp])
 
-        const handleDelete = useCallback((nodeId: string) => {
-            // Guard: if deleting an image node that is the current FV, only clear FV (keep node)
-            const targetNode = nodesRef.current.find(n => n.id === nodeId)
-            if (targetNode?.type === 'image' && currentFinalVisualId && (targetNode.data as any).promotedSelectionId === currentFinalVisualId) {
-                const confirmed = window.confirm('This image is the current Final Visual.\n\nClearing Final Visual status. The image will be kept.')
-                if (!confirmed) return
-                onClearFinalVisual?.()
-                return
+        // Step 1B: Anti re-entrancy guard for async delete
+        const isDeletingRef = useRef(false)
+
+        // Step 1B: Shared guard — clear video output before deleting output node(s)
+        const maybeClearOutputBeforeDelete = useCallback(async (nodeIds: Set<string>) => {
+            if (!outputVideoNodeId || !onClearOutputVideo) return
+            const outputInSet = nodesRef.current.find(n => nodeIds.has(n.id) && n.type === 'video' && n.id === outputVideoNodeId)
+            if (outputInSet) {
+                await onClearOutputVideo()
             }
+        }, [outputVideoNodeId, onClearOutputVideo])
+
+        const handleDelete = useCallback(async (nodeId: string) => {
+            if (isDeletingRef.current) return
+            isDeletingRef.current = true
+            try {
+                // Guard: if deleting an image node that is the current FV, only clear FV (keep node)
+                const targetNode = nodesRef.current.find(n => n.id === nodeId)
+                if (targetNode?.type === 'image' && currentFinalVisualId && (targetNode.data as any).promotedSelectionId === currentFinalVisualId) {
+                    const confirmed = window.confirm('This image is the current Final Visual.\n\nClearing Final Visual status. The image will be kept.')
+                    if (!confirmed) return
+                    onClearFinalVisual?.()
+                    return
+                }
+
+                // Step 1B: Clear video output before delete (awaited — DB must stay consistent)
+                await maybeClearOutputBeforeDelete(new Set([nodeId]))
 
             setNodes(p => {
                 const node = p.find(n => n.id === nodeId)
@@ -830,7 +851,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             })
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
-        }, [pushHistory, emitNodesChange, currentFinalVisualId, onClearFinalVisual])
+            } finally {
+                isDeletingRef.current = false
+            }
+        }, [pushHistory, emitNodesChange, currentFinalVisualId, onClearFinalVisual, maybeClearOutputBeforeDelete])
 
         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => { setSelectedNodeIds(new Set([nodeId])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('editing'); setEditingField(field) }, [])
         const handleFieldFocus = useCallback((f: 'title' | 'body') => setEditingField(f), [])
@@ -952,30 +976,41 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
                     if (selectedEdgeId) { e.preventDefault(); setEdges(p => p.filter(ed => ed.id !== selectedEdgeId)); setSelectedEdgeId(null); setEditingEdgeLabel(null); setTimeout(() => { pushHistory(); emitNodesChange() }, 0); return }
                     if (selectedNodeIdsRef.current.size > 0) {
-                        e.preventDefault(); const del = new Set(selectedNodeIdsRef.current)
-                        // If any selected node is the current FV image, clear FV and exclude it from deletion
-                        if (currentFinalVisualId) {
-                            const fvNodeId = nodesRef.current.find(n => del.has(n.id) && n.type === 'image' && (n.data as any).promotedSelectionId === currentFinalVisualId)?.id
-                            if (fvNodeId) {
-                                const ok = window.confirm('Selection includes the current Final Visual image.\n\nFinal Visual will be cleared. The FV image will be kept; other selected items will be deleted.')
-                                if (!ok) return
-                                onClearFinalVisual?.()
-                                del.delete(fvNodeId)
-                                if (del.size === 0) return
+                        e.preventDefault()
+                        if (isDeletingRef.current) return
+                        const del = new Set(selectedNodeIdsRef.current)
+                        ;(async () => {
+                            isDeletingRef.current = true
+                            try {
+                                // Step 1B: Clear video output before delete (awaited)
+                                await maybeClearOutputBeforeDelete(del)
+                                // If any selected node is the current FV image, clear FV and exclude it from deletion
+                                if (currentFinalVisualId) {
+                                    const fvNodeId = nodesRef.current.find(n => del.has(n.id) && n.type === 'image' && (n.data as any).promotedSelectionId === currentFinalVisualId)?.id
+                                    if (fvNodeId) {
+                                        const ok = window.confirm('Selection includes the current Final Visual image.\n\nFinal Visual will be cleared. The FV image will be kept; other selected items will be deleted.')
+                                        if (!ok) return
+                                        onClearFinalVisual?.()
+                                        del.delete(fvNodeId)
+                                        if (del.size === 0) return
+                                    }
+                                }
+                                nodesRef.current.forEach(n => {
+                                    if (n.type === 'column' && del.has(n.id)) {
+                                        nodesRef.current.forEach(c => { if ((c.data as any).parentId === n.id) del.add(c.id) })
+                                    }
+                                })
+                                setNodes(p => {
+                                    let u = p.filter(n => !del.has(n.id))
+                                    return u.map(n => n.type === 'column' && (n as ColumnNode).data.childOrder ? { ...n, data: { ...n.data, childOrder: (n as ColumnNode).data.childOrder!.filter(id => !del.has(id)) } } : n)
+                                })
+                                setEdges(p => p.filter(ed => !del.has(ed.from) && !del.has(ed.to)))
+                                setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
+                                setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                            } finally {
+                                isDeletingRef.current = false
                             }
-                        }
-                        nodesRef.current.forEach(n => {
-                            if (n.type === 'column' && del.has(n.id)) {
-                                nodesRef.current.forEach(c => { if ((c.data as any).parentId === n.id) del.add(c.id) })
-                            }
-                        })
-                        setNodes(p => {
-                            let u = p.filter(n => !del.has(n.id))
-                            return u.map(n => n.type === 'column' && (n as ColumnNode).data.childOrder ? { ...n, data: { ...n.data, childOrder: (n as ColumnNode).data.childOrder!.filter(id => !del.has(id)) } } : n)
-                        })
-                        setEdges(p => p.filter(ed => !del.has(ed.from) && !del.has(ed.to)))
-                        setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
-                        setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                        })()
                     }
                 }
             }
@@ -988,7 +1023,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             }
             window.addEventListener('keydown', kd); window.addEventListener('keyup', ku)
             return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku) }
-        }, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange, endInteraction])
+        }, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange, endInteraction, currentFinalVisualId, onClearFinalVisual, maybeClearOutputBeforeDelete])
 
         // ── Blocco 4C: Shot Selection Promotion ──
         const handlePromoteSelectedImage = useCallback(async () => {
@@ -1143,7 +1178,13 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 interactionMode={interactionMode}
                                 viewportScale={viewport.scale}
                                 onSelect={handleSelect} onPotentialDragStart={handlePotentialDragStart}
-                                onDelete={handleDelete} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}>
+                                onDelete={(id) => { void handleDelete(id) }} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}
+                                nodeType={node.type}
+                                isOutputVideo={node.type === 'video' && node.id === outputVideoNodeId}
+                                onToggleOutputVideo={node.type === 'video' ? () => {
+                                    if (node.id === outputVideoNodeId) { void onClearOutputVideo?.() }
+                                    else { void onSetOutputVideo?.(node.id) }
+                                } : undefined}>
                                 {node.type === 'note' ? <NoteContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldFocus={handleFieldFocus} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
                                     : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} isFinalVisual={!!currentFinalVisualId && (node.data as any).promotedSelectionId === currentFinalVisualId} onRemoveBadge={() => handleRemoveBadge(node.id)} onInspect={() => setInspectImage({ src: node.data.src, naturalWidth: node.data.naturalWidth, naturalHeight: node.data.naturalHeight, storagePath: node.data.storage_path })} />
                                         : node.type === 'video' ? <VideoContent data={node.data} viewportScale={viewport.scale} />
