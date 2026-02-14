@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useEffect, useCallback, useLayoutEffect } from 'react'
+import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
 
 // ===================================================
 // NODE CONTENT — SEMANTIC LAYER (R4-004b v7)
@@ -303,6 +303,112 @@ export function ColumnContent({
             {/* Body — transparent, children are canvas nodes rendered on top */}
             {!isCollapsed && (
                 <div className="flex-1" />
+            )}
+        </div>
+    )
+}
+
+// ── VIDEO (Step 1A: Foundation) ──
+// Inert by default — NodeShell receives all pointer events.
+// Click play button: activates <video controls> for playback.
+// Close button or Escape: returns to inert state.
+
+export interface VideoData {
+    src: string
+    storage_path: string
+    filename: string
+    mime_type: string
+    size?: number
+    duration?: number
+    thumbnail?: string
+}
+
+interface VideoContentProps {
+    data: VideoData
+}
+
+export function VideoContent({ data }: VideoContentProps) {
+    const [isPreview, setIsPreview] = useState(false)
+    const videoRef = useRef<HTMLVideoElement>(null)
+
+    useEffect(() => {
+        if (!isPreview) return
+        const handleKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') { e.stopPropagation(); setIsPreview(false) }
+        }
+        window.addEventListener('keydown', handleKey)
+        return () => window.removeEventListener('keydown', handleKey)
+    }, [isPreview])
+
+    if (!data.src) {
+        return (
+            <div className="w-full h-full flex items-center justify-center bg-black">
+                <span className="text-zinc-600 text-xs">No video source</span>
+            </div>
+        )
+    }
+
+    return (
+        <div className="w-full h-full bg-black relative">
+            {!isPreview && (
+                <>
+                    {data.thumbnail ? (
+                        <img
+                            src={data.thumbnail}
+                            className="w-full h-full object-contain pointer-events-none select-none"
+                            draggable={false}
+                            alt=""
+                        />
+                    ) : (
+                        <video
+                            src={data.src}
+                            preload="none"
+                            muted
+                            className="w-full h-full object-contain pointer-events-none select-none"
+                        />
+                    )}
+
+                    {/* Play button overlay */}
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <button
+                            className="w-12 h-12 rounded-full bg-black/60 border border-zinc-500 flex items-center justify-center pointer-events-auto hover:bg-black/80 hover:border-zinc-300 transition-colors cursor-pointer"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => { e.stopPropagation(); setIsPreview(true) }}
+                            title="Play video"
+                        >
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                                <path d="M6 4L16 10L6 16V4Z" fill="white" />
+                            </svg>
+                        </button>
+                    </div>
+
+                    {/* Filename label */}
+                    {data.filename && (
+                        <div className="absolute bottom-0 left-0 right-0 px-2 py-1 bg-black/70 pointer-events-none">
+                            <span className="text-[9px] text-zinc-400 truncate block">{data.filename}</span>
+                        </div>
+                    )}
+                </>
+            )}
+
+            {isPreview && (
+                <div className="w-full h-full relative">
+                    <video
+                        ref={videoRef}
+                        src={data.src}
+                        controls
+                        autoPlay
+                        className="w-full h-full object-contain"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => e.stopPropagation()}
+                    />
+                    <button
+                        className="absolute top-1 right-1 z-20 w-5 h-5 rounded bg-black/70 border border-zinc-600 text-zinc-400 hover:text-white text-[10px] flex items-center justify-center pointer-events-auto cursor-pointer"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => { e.stopPropagation(); setIsPreview(false) }}
+                        title="Close player"
+                    >✕</button>
+                </div>
             )}
         </div>
     )

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle, useMemo } from 'react'
 import { NodeShell } from './NodeShell'
-import { NoteContent, ImageContent, ColumnContent, type NoteData, type ImageData, type ColumnData } from './NodeContent'
+import { NoteContent, ImageContent, ColumnContent, VideoContent, type NoteData, type ImageData, type ColumnData, type VideoData } from './NodeContent'
 import { PromptContent, type PromptData, type PromptType } from './PromptContent'
 import { ImageInspectOverlay } from './ImageInspectOverlay'
 import {
@@ -46,6 +46,10 @@ const MIN_GAP = 15
 const PROMPT_DEFAULT_WIDTH = 280
 const PROMPT_DEFAULT_HEIGHT = 180
 
+// Step 1A — Video Node defaults
+const VIDEO_DEFAULT_WIDTH = 360
+const VIDEO_DEFAULT_HEIGHT = 240
+
 interface TakeCanvasProps {
     takeId: string
     initialNodes?: CanvasNode[]
@@ -61,10 +65,11 @@ interface TakeCanvasProps {
     shotSelections?: { selectionId: string; selectionNumber: number; storagePath: string; src: string }[]
 }
 
-export type CanvasNode = NoteNode | ImageNode | ColumnNode | PromptNode
+export type CanvasNode = NoteNode | ImageNode | VideoNode | ColumnNode | PromptNode
 
 interface NoteNode { id: string; type: 'note'; x: number; y: number; width: number; height: number; zIndex: number; data: NoteData & { parentId?: string | null } }
 interface ImageNode { id: string; type: 'image'; x: number; y: number; width: number; height: number; zIndex: number; data: ImageData & { parentId?: string | null; origin_prompt_id?: string; aspectRatio?: number; promotedSelectionId?: string; selectionNumber?: number } }
+interface VideoNode { id: string; type: 'video'; x: number; y: number; width: number; height: number; zIndex: number; data: VideoData & { parentId?: string | null } }
 interface ColumnNode { id: string; type: 'column'; x: number; y: number; width: number; height: number; zIndex: number; data: ColumnData & { expandedHeight?: number; childOrder?: string[] } }
 interface PromptNode { id: string; type: 'prompt'; x: number; y: number; width: number; height: number; zIndex: number; data: PromptData & { parentId?: string | null } }
 
@@ -74,12 +79,14 @@ export interface TakeCanvasHandle {
     getSnapshot: () => { nodes: CanvasNode[]; edges: CanvasEdge[] }
     createNodeAt: (x: number, y: number) => void
     createImageNodeAt: (x: number, y: number, imageData: ImageData) => void
+    createVideoNodeAt: (x: number, y: number, videoData: VideoData) => void
     createColumnNodeAt: (x: number, y: number) => void
     createPromptNodeAt: (x: number, y: number) => void
     // Screen-coordinate variants: caller passes screen-relative coords,
     // TakeCanvas converts to world internally. Sidebar should use these.
     createNodeAtScreen: (screenX: number, screenY: number) => void
     createImageNodeAtScreen: (screenX: number, screenY: number, imageData: ImageData) => void
+    createVideoNodeAtScreen: (screenX: number, screenY: number, videoData: VideoData) => void
     createColumnNodeAtScreen: (screenX: number, screenY: number) => void
     createPromptNodeAtScreen: (screenX: number, screenY: number) => void
     getCanvasRect: () => DOMRect | null
@@ -357,6 +364,13 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
+        // Step 1A — Video Node
+        const createVideoNodeAt = useCallback((x: number, y: number, vidData: VideoData) => {
+            const n: VideoNode = { id: crypto.randomUUID(), type: 'video', x: Math.round(x - VIDEO_DEFAULT_WIDTH / 2), y: Math.round(y - VIDEO_DEFAULT_HEIGHT / 2), width: VIDEO_DEFAULT_WIDTH, height: VIDEO_DEFAULT_HEIGHT, zIndex: nodesRef.current.length + 1, data: vidData }
+            setNodes(p => [...p, n]); setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
+
         const createColumnNodeAt = useCallback((x: number, y: number) => {
             const n: ColumnNode = { id: crypto.randomUUID(), type: 'column', x: Math.round(x - COLUMN_DEFAULT_WIDTH / 2), y: Math.round(y - COLUMN_DEFAULT_HEIGHT / 2), width: COLUMN_DEFAULT_WIDTH, height: COLUMN_DEFAULT_HEIGHT, zIndex: nodesRef.current.length + 1, data: { collapsed: false } }
             setNodes(p => [...p, n]); setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
@@ -385,6 +399,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const w = screenToWorldCoord(sx, sy); createImageNodeAt(w.x, w.y, imgData)
         }, [screenToWorldCoord, createImageNodeAt])
 
+        const createVideoNodeAtScreen = useCallback((sx: number, sy: number, vidData: VideoData) => {
+            const w = screenToWorldCoord(sx, sy); createVideoNodeAt(w.x, w.y, vidData)
+        }, [screenToWorldCoord, createVideoNodeAt])
+
         const createColumnNodeAtScreen = useCallback((sx: number, sy: number) => {
             const w = screenToWorldCoord(sx, sy); createColumnNodeAt(w.x, w.y)
         }, [screenToWorldCoord, createColumnNodeAt])
@@ -395,10 +413,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
         useImperativeHandle(ref, () => ({
             getSnapshot: () => ({ nodes: structuredClone(nodes), edges: structuredClone(edges) }),
-            createNodeAt, createImageNodeAt, createColumnNodeAt, createPromptNodeAt,
-            createNodeAtScreen, createImageNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen,
+            createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt,
+            createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen,
             getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
-        }), [nodes, edges, createNodeAt, createImageNodeAt, createColumnNodeAt, createPromptNodeAt, createNodeAtScreen, createImageNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen])
+        }), [nodes, edges, createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen])
 
         useEffect(() => {
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
@@ -662,7 +680,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const nd = nodesRef.current.find(n => n.id === nodeId); if (!nd) return
             if (nd.type !== 'column' && (nd.data as any).parentId) return
             if (nd.type === 'column' && (nd.data as ColumnData).collapsed) return
-            const ar = nd.type === 'image' ? nd.width / nd.height : null
+            const ar = (nd.type === 'image' || nd.type === 'video') ? nd.width / nd.height : null
             resizeRef.current = { nodeId, startWidth: nd.width, startHeight: nd.height, startMouseX: mx, startMouseY: my, aspectRatio: ar }
             setInteractionMode('resizing')
             window.addEventListener('mousemove', handleResizeMouseMove); window.addEventListener('mouseup', handleResizeMouseUp)
@@ -1128,8 +1146,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 onDelete={handleDelete} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}>
                                 {node.type === 'note' ? <NoteContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldFocus={handleFieldFocus} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
                                     : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} isFinalVisual={!!currentFinalVisualId && (node.data as any).promotedSelectionId === currentFinalVisualId} onRemoveBadge={() => handleRemoveBadge(node.id)} onInspect={() => setInspectImage({ src: node.data.src, naturalWidth: node.data.naturalWidth, naturalHeight: node.data.naturalHeight, storagePath: node.data.storage_path })} />
-                                        : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
-                                            : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
+                                        : node.type === 'video' ? <VideoContent data={node.data} />
+                                            : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
+                                                : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
                             </NodeShell>
                         )
                     })}

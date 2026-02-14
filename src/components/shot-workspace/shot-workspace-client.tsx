@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { ShotHeader } from './shot-header'
 import { TakeTabs } from './take-tabs'
 import { TakeCanvas, type TakeCanvasHandle, type CanvasNode, type CanvasEdge, type UndoHistory } from '@/components/canvas/TakeCanvas'
-import type { ImageData } from '@/components/canvas/NodeContent'
+import type { ImageData, VideoData } from '@/components/canvas/NodeContent'
 import {
   saveTakeSnapshotAction,
   loadLatestTakeSnapshotAction,
@@ -104,6 +104,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const undoHistoryByTakeRef = useRef<Map<string, UndoHistory>>(new Map())
   const imageInputRef = useRef<HTMLInputElement>(null)
+  const videoInputRef = useRef<HTMLInputElement>(null)
 
   const persistSnapshot = useCallback(async (nodes: CanvasNode[], edges: CanvasEdge[]) => {
     if (!currentTakeId) return
@@ -289,6 +290,57 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       canvas.createImageNodeAt(cx, cy, imageData)
     } catch (err) {
       console.error('Image upload failed:', err)
+    }
+  }, [projectId, shot.id])
+
+  // Step 1A — Video Upload
+  const handleVideoUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !canvasRef.current) return
+    e.target.value = ''
+
+    try {
+      const supabase = createClient()
+      const ext = file.name.split('.').pop() || 'mp4'
+      const storagePath = `${projectId}/${shot.id}/${crypto.randomUUID()}.${ext}`
+
+      const { error: uploadError } = await supabase.storage
+        .from('take-images')
+        .upload(storagePath, file, { cacheControl: '3600', upsert: false })
+
+      if (uploadError) {
+        console.error('Video upload failed:', uploadError)
+        return
+      }
+
+      const { data: urlData } = supabase.storage
+        .from('take-images')
+        .getPublicUrl(storagePath)
+
+      if (!urlData?.publicUrl) {
+        console.error('Failed to get public URL')
+        return
+      }
+
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      const rect = canvas.getCanvasRect()
+      if (!rect) return
+
+      const videoData: VideoData = {
+        src: urlData.publicUrl,
+        storage_path: storagePath,
+        filename: file.name,
+        mime_type: file.type || 'video/mp4',
+        size: file.size,
+      }
+
+      const cx = rect.width / 2
+      const cy = rect.height / 2
+      canvas.createVideoNodeAtScreen(cx, cy, videoData)
+    } catch (err) {
+      console.error('Video upload failed:', err)
     }
   }, [projectId, shot.id])
 
@@ -642,6 +694,21 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
             type="file"
             accept="image/*"
             onChange={handleImageUpload}
+            className="hidden"
+          />
+
+          <button
+            onClick={() => videoInputRef.current?.click()}
+            className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
+            title="Upload video to canvas"
+          >
+            <span className="text-xs text-zinc-400 pointer-events-none">Vid</span>
+          </button>
+          <input
+            ref={videoInputRef}
+            type="file"
+            accept="video/*"
+            onChange={handleVideoUpload}
             className="hidden"
           />
           {/* R4-004a: Column */}
