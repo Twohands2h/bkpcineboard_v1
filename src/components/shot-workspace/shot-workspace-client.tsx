@@ -305,7 +305,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       const storagePath = `${projectId}/${shot.id}/${crypto.randomUUID()}.${ext}`
 
       const { error: uploadError } = await supabase.storage
-        .from('take-images')
+        .from('take-videos')
         .upload(storagePath, file, { cacheControl: '3600', upsert: false })
 
       if (uploadError) {
@@ -314,7 +314,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       }
 
       const { data: urlData } = supabase.storage
-        .from('take-images')
+        .from('take-videos')
         .getPublicUrl(storagePath)
 
       if (!urlData?.publicUrl) {

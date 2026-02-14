@@ -325,9 +325,10 @@ export interface VideoData {
 
 interface VideoContentProps {
     data: VideoData
+    viewportScale?: number
 }
 
-export function VideoContent({ data }: VideoContentProps) {
+export function VideoContent({ data, viewportScale = 1 }: VideoContentProps) {
     const [isPreview, setIsPreview] = useState(false)
     const videoRef = useRef<HTMLVideoElement>(null)
 
@@ -362,7 +363,8 @@ export function VideoContent({ data }: VideoContentProps) {
                     ) : (
                         <video
                             src={data.src}
-                            preload="none"
+                            preload="metadata"
+
                             muted
                             className="w-full h-full object-contain pointer-events-none select-none"
                         />
@@ -371,6 +373,7 @@ export function VideoContent({ data }: VideoContentProps) {
                     {/* Play button overlay */}
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                         <button
+                            style={{ transform: `scale(${1 / viewportScale})` }}
                             className="w-12 h-12 rounded-full bg-black/60 border border-zinc-500 flex items-center justify-center pointer-events-auto hover:bg-black/80 hover:border-zinc-300 transition-colors cursor-pointer"
                             onMouseDown={(e) => e.stopPropagation()}
                             onClick={(e) => { e.stopPropagation(); setIsPreview(true) }}
@@ -403,6 +406,7 @@ export function VideoContent({ data }: VideoContentProps) {
                         onDoubleClick={(e) => e.stopPropagation()}
                     />
                     <button
+                        style={{ transform: `scale(${1 / viewportScale})`, transformOrigin: 'top right' }}
                         className="absolute top-1 right-1 z-20 w-5 h-5 rounded bg-black/70 border border-zinc-600 text-zinc-400 hover:text-white text-[10px] flex items-center justify-center pointer-events-auto cursor-pointer"
                         onMouseDown={(e) => e.stopPropagation()}
                         onClick={(e) => { e.stopPropagation(); setIsPreview(false) }}

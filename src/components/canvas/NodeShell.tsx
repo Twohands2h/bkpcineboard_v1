@@ -138,7 +138,7 @@ export function NodeShell({
                             bottom: -10,
                             right: -10,
                             transform: `scale(${cs})`,
-                            transformOrigin: 'top left',
+                            transformOrigin: 'bottom right',
                         }}
                     >
                         <div className="w-2 h-2 bg-blue-500 rounded-full" />
@@ -151,9 +151,9 @@ export function NodeShell({
                         style={{
                             top: '50%',
                             right: -12,
-                            marginTop: -8,
+                            marginTop: -8 * cs,
                             transform: `scale(${cs})`,
-                            transformOrigin: 'left center',
+                            transformOrigin: 'right center',
                         }}
                         title="Drag to connect"
                     >
