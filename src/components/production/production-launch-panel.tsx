@@ -3,12 +3,16 @@
 import { useState, useMemo, useCallback } from 'react'
 
 // ===================================================
-// PRODUCTION LAUNCH PANEL (PLP) v1
+// PRODUCTION LAUNCH PANEL (PLP) v2
 // ===================================================
 // Stateless production view of the current Take.
 // No DB writes, no server actions, no router.refresh().
 // No interaction with FV, Approved, Strip, Canvas key.
 // Reads exclusively from canvas snapshot nodes passed as props.
+//
+// v2: Pure reflection. Shows ALL prompt nodes as they exist
+//     in the Take canvas, ordered by createdAt ASC.
+//     No dedup, no bucket, no inference, no categorization.
 
 interface ExportNode {
     id: string
@@ -30,36 +34,25 @@ function asString(v: any): string {
     return String(v).trim()
 }
 
-function normalizeOrigin(raw: string, custom?: string): string {
-    const base = asString(raw)
-    const c = asString(custom)
-    if (!base && c) return `custom — ${c}`
-    if (base.toLowerCase() === 'altro' || base.toLowerCase() === 'other') {
-        return c ? `custom — ${c}` : 'custom'
-    }
-    return base || (c ? `custom — ${c}` : 'manual')
+// ── Prompt type labels (inline, no external dependency) ──
+// Matches PromptContent.tsx PromptType values exactly.
+
+const PROMPT_TYPE_LABELS: Record<string, string> = {
+    'master': 'Master Prompt',
+    'prompt': 'Prompt',
+    'negative': 'Negative Prompt',
+    'pre-prompt': 'Pre-Prompt',
+    'post-prompt': 'Post-Prompt',
 }
 
-// ── Prompt types in canonical order ──
-
-const PROMPT_ORDER = ['pre', 'master', 'negative', 'post'] as const
-type PromptCategory = typeof PROMPT_ORDER[number]
-
-const PROMPT_LABELS: Record<PromptCategory, string> = {
-    pre: 'PRE PROMPT',
-    master: 'MASTER PROMPT',
-    negative: 'NEGATIVE PROMPT',
-    post: 'POST PROMPT',
+function promptTypeLabel(raw: string): string {
+    const key = asString(raw)
+    return PROMPT_TYPE_LABELS[key] ?? (key || 'Prompt')
 }
 
-function categorizePromptType(raw: string): PromptCategory {
-    const s = asString(raw).toLowerCase()
-    if (s.includes('pre')) return 'pre'
-    if (s.includes('master')) return 'master'
-    if (s.includes('negative')) return 'negative'
-    if (s.includes('post')) return 'post'
-    // Default: treat as master if unrecognized
-    return 'master'
+function formatOrigin(raw: string): string {
+    const s = asString(raw)
+    return s || 'manual'
 }
 
 // ── Image role handling ──
@@ -71,64 +64,6 @@ function getImageRole(data: Record<string, any>): ImageRole {
     if (role === 'firstFrame') return 'firstFrame'
     if (role === 'lastFrame') return 'lastFrame'
     return 'reference'
-}
-
-// ── Prompt selection: pick primary per category ──
-
-interface PromptEntry {
-    node: ExportNode
-    category: PromptCategory
-    origin: string
-    body: string
-}
-
-function selectPrimaryPrompts(promptNodes: ExportNode[]): Map<PromptCategory, PromptEntry> {
-    // Group by category
-    const groups = new Map<PromptCategory, PromptEntry[]>()
-
-    for (const node of promptNodes) {
-        const typeRaw = asString(node.data.promptType ?? node.data.type ?? node.data.kind ?? '')
-        const category = categorizePromptType(typeRaw)
-        const originRaw = asString(node.data.origin ?? node.data.source ?? node.data.model ?? node.data.provider ?? '')
-        const originCustom = asString(node.data.originCustom ?? node.data.customOrigin ?? '')
-        const origin = normalizeOrigin(originRaw, originCustom)
-        const body = asString(node.data.body ?? node.data.text ?? node.data.content ?? '')
-
-        const entry: PromptEntry = { node, category, origin, body }
-
-        if (!groups.has(category)) {
-            groups.set(category, [])
-        }
-        groups.get(category)!.push(entry)
-    }
-
-    // Pick primary: most recent (by updated_at if available) or last in array
-    const result = new Map<PromptCategory, PromptEntry>()
-
-    for (const [category, entries] of groups) {
-        if (entries.length === 0) continue
-
-        if (entries.length === 1) {
-            result.set(category, entries[0])
-            continue
-        }
-
-        // Try to sort by updated_at or created_at
-        const withTime = entries.filter(e => e.node.data.updated_at || e.node.data.created_at)
-        if (withTime.length > 0) {
-            withTime.sort((a, b) => {
-                const ta = a.node.data.updated_at ?? a.node.data.created_at ?? ''
-                const tb = b.node.data.updated_at ?? b.node.data.created_at ?? ''
-                return tb.localeCompare(ta) // descending = most recent first
-            })
-            result.set(category, withTime[0])
-        } else {
-            // No timestamp: pick last in array
-            result.set(category, entries[entries.length - 1])
-        }
-    }
-
-    return result
 }
 
 // ── Image grouping ──
@@ -169,6 +104,37 @@ function groupImages(imageNodes: ExportNode[]): {
     return result
 }
 
+// ── Prompt entry (flat, no categorization) ──
+
+interface PromptEntry {
+    node: ExportNode
+    label: string
+    origin: string
+    body: string
+    createdAt: string
+}
+
+function buildPromptEntries(promptNodes: ExportNode[]): PromptEntry[] {
+    const entries: PromptEntry[] = promptNodes.map(node => {
+        const typeRaw = asString(node.data.promptType ?? node.data.type ?? node.data.kind ?? '')
+        const label = promptTypeLabel(typeRaw)
+        const origin = formatOrigin(asString(node.data.origin ?? node.data.source ?? node.data.model ?? node.data.provider ?? ''))
+        const body = asString(node.data.body ?? node.data.text ?? node.data.content ?? '')
+        const createdAt = asString(node.data.createdAt ?? node.data.created_at ?? '')
+        return { node, label, origin, body, createdAt }
+    })
+
+    // Sort by createdAt ASC. Nodes without timestamp go last (stable).
+    entries.sort((a, b) => {
+        if (!a.createdAt && !b.createdAt) return 0
+        if (!a.createdAt) return 1
+        if (!b.createdAt) return -1
+        return a.createdAt.localeCompare(b.createdAt)
+    })
+
+    return entries
+}
+
 // ── Copy helpers ──
 
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -207,7 +173,6 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 // ── Download helper (with cross-origin blob fallback) ──
 
 async function downloadImage(src: string, filename: string) {
-    // Try blob download first (works cross-origin, forces save dialog)
     try {
         const response = await fetch(src)
         if (response.ok) {
@@ -226,7 +191,6 @@ async function downloadImage(src: string, filename: string) {
         // Fetch failed (CORS etc.) — fall through to anchor method
     }
 
-    // Fallback: anchor download (may open in new tab for cross-origin)
     const a = document.createElement('a')
     a.href = src
     a.download = filename
@@ -244,28 +208,25 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
     const imageNodes = useMemo(() => nodes.filter(n => n.type === 'image'), [nodes])
     const noteNodes = useMemo(() => nodes.filter(n => n.type === 'note'), [nodes])
 
-    const primaryPrompts = useMemo(() => selectPrimaryPrompts(promptNodes), [promptNodes])
+    // v2: flat list, no dedup, no buckets
+    const promptEntries = useMemo(() => buildPromptEntries(promptNodes), [promptNodes])
     const images = useMemo(() => groupImages(imageNodes), [imageNodes])
 
     const [includeNotes, setIncludeNotes] = useState(false)
 
-    const hasPrompts = primaryPrompts.size > 0
+    const hasPrompts = promptEntries.length > 0
     const hasNotes = noteNodes.length > 0
     const hasImages = images.firstFrame || images.lastFrame || images.references.length > 0
 
-    // Build Prompt Pack: prompts in canonical order, optionally with notes between master and negative
+    // Build Prompt Pack: all prompts in createdAt order, optionally with notes at the end
     const promptPack = useMemo(() => {
         const blocks: string[] = []
 
-        // Pre
-        const pre = primaryPrompts.get('pre')
-        if (pre) blocks.push(`[${PROMPT_LABELS.pre}]\nOrigin: ${pre.origin}\n\n${pre.body}`)
+        for (const entry of promptEntries) {
+            blocks.push(`[${entry.label}]\nOrigin: ${entry.origin}\n\n${entry.body}`)
+        }
 
-        // Master
-        const master = primaryPrompts.get('master')
-        if (master) blocks.push(`[${PROMPT_LABELS.master}]\nOrigin: ${master.origin}\n\n${master.body}`)
-
-        // Notes (opt-in, between master and negative)
+        // Notes (opt-in, appended after all prompts)
         if (includeNotes && noteNodes.length > 0) {
             const notesBodies = noteNodes
                 .map(n => asString(n.data.body ?? n.data.text ?? ''))
@@ -275,16 +236,8 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
             }
         }
 
-        // Negative
-        const negative = primaryPrompts.get('negative')
-        if (negative) blocks.push(`[${PROMPT_LABELS.negative}]\nOrigin: ${negative.origin}\n\n${negative.body}`)
-
-        // Post
-        const post = primaryPrompts.get('post')
-        if (post) blocks.push(`[${PROMPT_LABELS.post}]\nOrigin: ${post.origin}\n\n${post.body}`)
-
         return blocks.join('\n\n---\n\n')
-    }, [primaryPrompts, includeNotes, noteNodes])
+    }, [promptEntries, includeNotes, noteNodes])
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
@@ -312,26 +265,30 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
                 {/* Body — two columns */}
                 <div className="flex-1 overflow-y-auto">
                     <div className="flex min-h-0">
-                        {/* Left Column: Prompts */}
+                        {/* Left Column: Prompts (pure reflection) */}
                         <div className="flex-1 border-r border-zinc-800 px-6 py-4 overflow-y-auto">
-                            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-4">Prompts</h3>
+                            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-4">
+                                Prompts {hasPrompts && <span className="text-zinc-600">({promptEntries.length})</span>}
+                            </h3>
 
                             {!hasPrompts && (
                                 <p className="text-xs text-zinc-600 italic">No prompts in this Take.</p>
                             )}
 
-                            {PROMPT_ORDER.map(category => {
-                                const entry = primaryPrompts.get(category)
-                                if (!entry) return null
-
-                                const copyBlock = `[${PROMPT_LABELS[category]}]\nOrigin: ${entry.origin}\n\n${entry.body}`
+                            {promptEntries.map((entry, idx) => {
+                                const copyBlock = `[${entry.label}]\nOrigin: ${entry.origin}\n\n${entry.body}`
 
                                 return (
-                                    <div key={category} className="mb-5">
+                                    <div key={entry.node.id} className="mb-5">
                                         <div className="flex items-center justify-between mb-1.5">
-                                            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
-                                                {PROMPT_LABELS[category]}
-                                            </span>
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                                                    {entry.label}
+                                                </span>
+                                                <span className="text-[9px] text-zinc-600">
+                                                    #{idx + 1}
+                                                </span>
+                                            </div>
                                             <span className="text-[9px] text-zinc-500">
                                                 Origin: {entry.origin}
                                             </span>
@@ -373,7 +330,7 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
                             )}
                         </div>
 
-                        {/* Right Column: Media Kit */}
+                        {/* Right Column: Media Kit (INVARIATO) */}
                         <div className="w-[360px] shrink-0 px-6 py-4 overflow-y-auto">
                             <h3 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-4">Media Kit</h3>
 
@@ -422,7 +379,7 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
     )
 }
 
-// ── Image thumbnail sub-component ──
+// ── Image thumbnail sub-component (INVARIATO) ──
 
 function ImageThumbnail({ entry, compact }: { entry: ImageEntry; compact?: boolean }) {
     const height = compact ? 'h-20' : 'h-32'

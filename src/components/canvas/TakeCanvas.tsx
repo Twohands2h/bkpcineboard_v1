@@ -62,9 +62,6 @@ interface TakeCanvasProps {
     onSetFinalVisual?: (selectionId: string) => Promise<void>
     onClearFinalVisual?: () => Promise<void>
     currentFinalVisualId?: string | null
-    outputVideoNodeId?: string | null
-    onSetOutputVideo?: (nodeId: string) => Promise<void>
-    onClearOutputVideo?: () => Promise<void>
     shotSelections?: { selectionId: string; selectionNumber: number; storagePath: string; src: string }[]
 }
 
@@ -183,6 +180,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
         const [selectionBoxRect, setSelectionBoxRect] = useState<SelectionBoxRect | null>(null)
         const [connectionGhost, setConnectionGhost] = useState<{ fromX: number; fromY: number; toX: number; toY: number } | null>(null)
+        const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
 
         // R4-005: Viewport state (NOT persisted, NOT in undo)
         const [viewport, setViewport] = useState<ViewportState>(VIEWPORT_INITIAL)
@@ -213,6 +211,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const edgesRef = useRef<CanvasEdge[]>(edges); useEffect(() => { edgesRef.current = edges }, [edges])
         const selectedNodeIdsRef = useRef<Set<string>>(selectedNodeIds); useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds }, [selectedNodeIds])
         const primarySelectedId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null
+        const activeNodeId = primarySelectedId ?? hoveredNodeId
 
         // Blocco 4C: Rehydrate selection badges from DB on mount
         // Two-way sync: ADD badges for active selections, STRIP stale badges from snapshot
@@ -802,33 +801,15 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             window.addEventListener('mousemove', handleWindowMouseMove); window.addEventListener('mouseup', handleWindowMouseUp)
         }, [handleWindowMouseMove, handleWindowMouseUp])
 
-        // Step 1B: Anti re-entrancy guard for async delete
-        const isDeletingRef = useRef(false)
-
-        // Step 1B: Shared guard — clear video output before deleting output node(s)
-        const maybeClearOutputBeforeDelete = useCallback(async (nodeIds: Set<string>) => {
-            if (!outputVideoNodeId || !onClearOutputVideo) return
-            const outputInSet = nodesRef.current.find(n => nodeIds.has(n.id) && n.type === 'video' && n.id === outputVideoNodeId)
-            if (outputInSet) {
-                await onClearOutputVideo()
+        const handleDelete = useCallback((nodeId: string) => {
+            // Guard: if deleting an image node that is the current FV, only clear FV (keep node)
+            const targetNode = nodesRef.current.find(n => n.id === nodeId)
+            if (targetNode?.type === 'image' && currentFinalVisualId && (targetNode.data as any).promotedSelectionId === currentFinalVisualId) {
+                const confirmed = window.confirm('This image is the current Final Visual.\n\nClearing Final Visual status. The image will be kept.')
+                if (!confirmed) return
+                onClearFinalVisual?.()
+                return
             }
-        }, [outputVideoNodeId, onClearOutputVideo])
-
-        const handleDelete = useCallback(async (nodeId: string) => {
-            if (isDeletingRef.current) return
-            isDeletingRef.current = true
-            try {
-                // Guard: if deleting an image node that is the current FV, only clear FV (keep node)
-                const targetNode = nodesRef.current.find(n => n.id === nodeId)
-                if (targetNode?.type === 'image' && currentFinalVisualId && (targetNode.data as any).promotedSelectionId === currentFinalVisualId) {
-                    const confirmed = window.confirm('This image is the current Final Visual.\n\nClearing Final Visual status. The image will be kept.')
-                    if (!confirmed) return
-                    onClearFinalVisual?.()
-                    return
-                }
-
-                // Step 1B: Clear video output before delete (awaited — DB must stay consistent)
-                await maybeClearOutputBeforeDelete(new Set([nodeId]))
 
             setNodes(p => {
                 const node = p.find(n => n.id === nodeId)
@@ -851,10 +832,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             })
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
-            } finally {
-                isDeletingRef.current = false
-            }
-        }, [pushHistory, emitNodesChange, currentFinalVisualId, onClearFinalVisual, maybeClearOutputBeforeDelete])
+        }, [pushHistory, emitNodesChange, currentFinalVisualId, onClearFinalVisual])
 
         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => { setSelectedNodeIds(new Set([nodeId])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('editing'); setEditingField(field) }, [])
         const handleFieldFocus = useCallback((f: 'title' | 'body') => setEditingField(f), [])
@@ -976,41 +954,30 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
                     if (selectedEdgeId) { e.preventDefault(); setEdges(p => p.filter(ed => ed.id !== selectedEdgeId)); setSelectedEdgeId(null); setEditingEdgeLabel(null); setTimeout(() => { pushHistory(); emitNodesChange() }, 0); return }
                     if (selectedNodeIdsRef.current.size > 0) {
-                        e.preventDefault()
-                        if (isDeletingRef.current) return
-                        const del = new Set(selectedNodeIdsRef.current)
-                        ;(async () => {
-                            isDeletingRef.current = true
-                            try {
-                                // Step 1B: Clear video output before delete (awaited)
-                                await maybeClearOutputBeforeDelete(del)
-                                // If any selected node is the current FV image, clear FV and exclude it from deletion
-                                if (currentFinalVisualId) {
-                                    const fvNodeId = nodesRef.current.find(n => del.has(n.id) && n.type === 'image' && (n.data as any).promotedSelectionId === currentFinalVisualId)?.id
-                                    if (fvNodeId) {
-                                        const ok = window.confirm('Selection includes the current Final Visual image.\n\nFinal Visual will be cleared. The FV image will be kept; other selected items will be deleted.')
-                                        if (!ok) return
-                                        onClearFinalVisual?.()
-                                        del.delete(fvNodeId)
-                                        if (del.size === 0) return
-                                    }
-                                }
-                                nodesRef.current.forEach(n => {
-                                    if (n.type === 'column' && del.has(n.id)) {
-                                        nodesRef.current.forEach(c => { if ((c.data as any).parentId === n.id) del.add(c.id) })
-                                    }
-                                })
-                                setNodes(p => {
-                                    let u = p.filter(n => !del.has(n.id))
-                                    return u.map(n => n.type === 'column' && (n as ColumnNode).data.childOrder ? { ...n, data: { ...n.data, childOrder: (n as ColumnNode).data.childOrder!.filter(id => !del.has(id)) } } : n)
-                                })
-                                setEdges(p => p.filter(ed => !del.has(ed.from) && !del.has(ed.to)))
-                                setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
-                                setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
-                            } finally {
-                                isDeletingRef.current = false
+                        e.preventDefault(); const del = new Set(selectedNodeIdsRef.current)
+                        // If any selected node is the current FV image, clear FV and exclude it from deletion
+                        if (currentFinalVisualId) {
+                            const fvNodeId = nodesRef.current.find(n => del.has(n.id) && n.type === 'image' && (n.data as any).promotedSelectionId === currentFinalVisualId)?.id
+                            if (fvNodeId) {
+                                const ok = window.confirm('Selection includes the current Final Visual image.\n\nFinal Visual will be cleared. The FV image will be kept; other selected items will be deleted.')
+                                if (!ok) return
+                                onClearFinalVisual?.()
+                                del.delete(fvNodeId)
+                                if (del.size === 0) return
                             }
-                        })()
+                        }
+                        nodesRef.current.forEach(n => {
+                            if (n.type === 'column' && del.has(n.id)) {
+                                nodesRef.current.forEach(c => { if ((c.data as any).parentId === n.id) del.add(c.id) })
+                            }
+                        })
+                        setNodes(p => {
+                            let u = p.filter(n => !del.has(n.id))
+                            return u.map(n => n.type === 'column' && (n as ColumnNode).data.childOrder ? { ...n, data: { ...n.data, childOrder: (n as ColumnNode).data.childOrder!.filter(id => !del.has(id)) } } : n)
+                        })
+                        setEdges(p => p.filter(ed => !del.has(ed.from) && !del.has(ed.to)))
+                        setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
+                        setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
                     }
                 }
             }
@@ -1023,7 +990,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             }
             window.addEventListener('keydown', kd); window.addEventListener('keyup', ku)
             return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku) }
-        }, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange, endInteraction, currentFinalVisualId, onClearFinalVisual, maybeClearOutputBeforeDelete])
+        }, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange, endInteraction])
 
         // ── Blocco 4C: Shot Selection Promotion ──
         const handlePromoteSelectedImage = useCallback(async () => {
@@ -1178,13 +1145,11 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 interactionMode={interactionMode}
                                 viewportScale={viewport.scale}
                                 onSelect={handleSelect} onPotentialDragStart={handlePotentialDragStart}
+                                onMouseEnter={() => setHoveredNodeId(node.id)}
+                                onMouseLeave={() => setHoveredNodeId(prev => prev === node.id ? null : prev)}
                                 onDelete={(id) => { void handleDelete(id) }} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}
-                                nodeType={node.type}
                                 isOutputVideo={node.type === 'video' && node.id === outputVideoNodeId}
-                                onToggleOutputVideo={node.type === 'video' ? () => {
-                                    if (node.id === outputVideoNodeId) { void onClearOutputVideo?.() }
-                                    else { void onSetOutputVideo?.(node.id) }
-                                } : undefined}>
+                                isFinalVisual={node.type === 'image' && !!currentFinalVisualId && (node.data as any).promotedSelectionId === currentFinalVisualId}>
                                 {node.type === 'note' ? <NoteContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldFocus={handleFieldFocus} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
                                     : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} isFinalVisual={!!currentFinalVisualId && (node.data as any).promotedSelectionId === currentFinalVisualId} onRemoveBadge={() => handleRemoveBadge(node.id)} onInspect={() => setInspectImage({ src: node.data.src, naturalWidth: node.data.naturalWidth, naturalHeight: node.data.naturalHeight, storagePath: node.data.storage_path })} />
                                         : node.type === 'video' ? <VideoContent data={node.data} viewportScale={viewport.scale} />
@@ -1201,11 +1166,11 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
                     {/* Blocco 4C: Selection Promote button — world space, under selected ImageNode */}
                     {/* Blocco 4C: "Select as Asset" button — for unpromoted images */}
-                    {onPromoteSelection && primarySelectedId && interactionMode === 'idle' && (() => {
-                        const node = nodes.find(n => n.id === primarySelectedId)
+                    {onPromoteSelection && activeNodeId && interactionMode === 'idle' && (() => {
+                        const node = nodes.find(n => n.id === activeNodeId)
                         if (!node || node.type !== 'image') return null
                         if ((node.data as any).promotedSelectionId) return null // already promoted
-                        const rect = renderRects.get(primarySelectedId)
+                        const rect = renderRects.get(activeNodeId)
                         if (!rect) return null
                         const s = 1 / viewport.scale
                         return (
@@ -1225,12 +1190,13 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     })()}
 
                     {/* Shot Final Visual: "Set as Final" button or "Final Visual ✓" indicator */}
-                    {onSetFinalVisual && primarySelectedId && interactionMode === 'idle' && (() => {
-                        const node = nodes.find(n => n.id === primarySelectedId)
-                        if (!node || node.type !== 'image') return null
-                        const selId = (node.data as any).promotedSelectionId
-                        if (!selId) return null // must be promoted first
-                        const rect = renderRects.get(primarySelectedId)
+                    {/* FV pill — bottom center outside node, toggle set/clear (images with promotedSelectionId only) */}
+                    {onSetFinalVisual && activeNodeId && interactionMode === 'idle' && (() => {
+                        const liveNode = nodesRef.current.find(n => n.id === activeNodeId)
+                        if (!liveNode || liveNode.type !== 'image') return null
+                        const selId = (liveNode.data as any).promotedSelectionId
+                        if (!selId) return null
+                        const rect = renderRects.get(activeNodeId)
                         if (!rect) return null
                         const s = 1 / viewport.scale
                         const isCurrentFV = selId === currentFinalVisualId
@@ -1239,19 +1205,51 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 className="absolute z-[9997] pointer-events-auto"
                                 style={{ left: rect.x + rect.width / 2, top: rect.y + rect.height + 8 * s, transform: `translateX(-50%) scale(${s})`, transformOrigin: 'top center' }}
                             >
-                                {isCurrentFV ? (
-                                    <span className="px-2 py-0.5 bg-emerald-900/60 border border-emerald-700 text-emerald-400 text-[10px] rounded whitespace-nowrap">
-                                        Final Visual ✓
-                                    </span>
-                                ) : (
-                                    <button
-                                        onClick={(e) => { e.stopPropagation(); onSetFinalVisual(selId) }}
-                                        onMouseDown={(e) => e.stopPropagation()}
-                                        className="px-2 py-0.5 bg-amber-900/80 border border-amber-600 hover:border-amber-400 text-amber-400 hover:text-amber-200 text-[10px] rounded whitespace-nowrap transition-colors"
-                                    >
-                                        Set as Final Visual
-                                    </button>
-                                )}
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        if (isCurrentFV) { void onClearFinalVisual?.() }
+                                        else { void onSetFinalVisual?.(selId) }
+                                    }}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    className={`px-2 py-0.5 text-[10px] font-medium border rounded whitespace-nowrap transition-colors ${isCurrentFV
+                                        ? 'bg-emerald-900/80 border-emerald-500 text-emerald-400 hover:bg-red-900/60 hover:border-red-500 hover:text-red-400'
+                                        : 'bg-zinc-800 border-zinc-600 text-zinc-400 hover:border-emerald-500 hover:text-emerald-400'
+                                        }`}
+                                >
+                                    {isCurrentFV ? 'Final Visual ✓' : 'Set Final Visual'}
+                                </button>
+                            </div>
+                        )
+                    })()}
+
+                    {/* Output pill — bottom center outside video node, toggle set/clear */}
+                    {onSetOutputVideo && activeNodeId && interactionMode === 'idle' && (() => {
+                        const node = nodesRef.current.find(n => n.id === activeNodeId)
+                        if (!node || node.type !== 'video') return null
+                        const rect = renderRects.get(activeNodeId)
+                        if (!rect) return null
+                        const s = 1 / viewport.scale
+                        const isOutput = node.id === outputVideoNodeId
+                        return (
+                            <div
+                                className="absolute z-[9997] pointer-events-auto"
+                                style={{ left: rect.x + rect.width / 2, top: rect.y + rect.height + 8 * s, transform: `translateX(-50%) scale(${s})`, transformOrigin: 'top center' }}
+                            >
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        if (isOutput) { void onClearOutputVideo?.() }
+                                        else { void onSetOutputVideo?.(node.id) }
+                                    }}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    className={`px-2 py-0.5 text-[10px] font-medium border rounded whitespace-nowrap transition-colors ${isOutput
+                                        ? 'bg-emerald-900/80 border-emerald-600 text-emerald-400 hover:bg-red-900/60 hover:border-red-500 hover:text-red-400'
+                                        : 'bg-zinc-800 border-zinc-600 text-zinc-400 hover:border-emerald-500 hover:text-emerald-400'
+                                        }`}
+                                >
+                                    {isOutput ? 'Output ✓' : 'Set Output'}
+                                </button>
                             </div>
                         )
                     })()}

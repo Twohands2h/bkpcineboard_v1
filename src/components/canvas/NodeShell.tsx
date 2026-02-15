@@ -7,10 +7,12 @@ import { useCallback } from 'react'
 // ===================================================
 // R4 Visual Language: ZERO ROUNDED. Angoli retti 90°.
 // R4-003: Connection handle per edge creation.
-// R4-005b: Controls counter-scaled with transformOrigin at anchor corner.
-//          Controls gated on idle — dimmed + non-interactive otherwise.
-//          interactionMode must always return to idle deterministically.
-// R4.0a: Delete ✕ button removed — deletion via Delete/Backspace only.
+// R4-005b: Controls counter-scaled. Gated on idle.
+// R4.0a: Delete ✕ removed — deletion via Delete/Backspace only.
+// Step 1B: Border-only visual state. No internal badges or toggles.
+//          Micro-tab + pills live in TakeCanvas render.
+// Handle anchoring: bottom:0/right:0 + translate(50%) + scale(cs).
+//                   No offset multiplication. No marginTop. Zero drift.
 
 interface NodeShellProps {
     nodeId: string
@@ -28,10 +30,9 @@ interface NodeShellProps {
     onDelete: (nodeId: string) => void
     onResizeStart: (nodeId: string, mouseX: number, mouseY: number) => void
     onConnectionStart?: (nodeId: string, mouseX: number, mouseY: number) => void
-    // Step 1B — Take Output (video nodes only)
-    nodeType?: string
+    // Passive visual state — border only
     isOutputVideo?: boolean
-    onToggleOutputVideo?: () => void
+    isFinalVisual?: boolean
     children: React.ReactNode
 }
 
@@ -51,17 +52,14 @@ export function NodeShell({
     onDelete,
     onResizeStart,
     onConnectionStart,
-    nodeType,
     isOutputVideo,
-    onToggleOutputVideo,
+    isFinalVisual,
     children,
 }: NodeShellProps) {
     const isResizing = interactionMode === 'resizing'
     const cs = 1 / viewportScale
 
-    // Controls visible when selected + not in active node manipulation
     const showControls = isSelected && !isDragging && interactionMode !== 'resizing' && interactionMode !== 'connecting'
-    // Interactive only when idle
     const controlsActive = interactionMode === 'idle'
 
     const handleMouseDown = useCallback(
@@ -110,7 +108,7 @@ export function NodeShell({
     return (
         <div
             data-node-shell
-            className={`absolute select-none bg-zinc-800 border ${isOutputVideo ? 'border-emerald-600' : 'border-zinc-700'} shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
+            className={`absolute select-none box-border bg-zinc-800 ${isFinalVisual ? 'border-2 border-emerald-500' : isOutputVideo ? 'border-2 border-emerald-600' : 'border border-zinc-700'} shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
             style={{
                 transform: `translate(${x}px, ${y}px)`,
                 width,
@@ -120,16 +118,21 @@ export function NodeShell({
             onMouseDown={handleMouseDown}
             onClick={handleClick}
         >
-            {/* VIEWPORT */}
+            {/* VIEWPORT — clean, no overlays */}
             <div className="w-full h-full overflow-hidden flex flex-col">
                 {children}
             </div>
+            {/* Passive dot — FV or Output indicator, always visible */}
+            {(isFinalVisual || isOutputVideo) && (
+                <div className="absolute top-1 right-1 pointer-events-none z-20">
+                    <div className="w-2 h-2 rounded-full bg-emerald-400/90 shadow-sm" />
+                </div>
+            )}
 
-            {/* CONTROLLI — R4-005b
-                Gated on idle: full opacity + interactive when idle,
-                dimmed + pointer-events:none otherwise.
-                Anchor: px offset from node corner.
-                Scale: 1/viewportScale, transformOrigin at anchor corner. */}
+            {/* CONTROLS — gated on idle, counter-scaled
+                Anchoring: position at exact node edge (bottom:0, right:0, top:50%)
+                then translate to center on the edge point, then scale(cs).
+                No offset multiplication, no marginTop, zero drift. */}
             {showControls && (
                 <div
                     style={{
@@ -137,77 +140,44 @@ export function NodeShell({
                         pointerEvents: controlsActive ? 'auto' : 'none',
                     }}
                 >
-                    {/* Resize handle — pinned to bottom-right corner */}
+                    {/* Resize handle — anchored at bottom-right corner */}
                     <div
                         onMouseDown={handleResizeMouseDown}
-                        className="absolute w-8 h-8 cursor-se-resize z-50 flex items-center justify-center"
+                        className="absolute z-50 cursor-se-resize flex items-center justify-center"
                         style={{
-                            bottom: -10,
-                            right: -10,
-                            transform: `scale(${cs})`,
-                            transformOrigin: 'bottom right',
+                            bottom: 0,
+                            right: 0,
+                            width: 16 * cs,
+                            height: 16 * cs,
+                            transform: `translate(50%, 50%) scale(${cs})`,
+                            transformOrigin: 'center',
                         }}
                     >
-                        <div className="w-2 h-2 bg-blue-500 rounded-full" />
+                        <div
+                            className="rounded-full bg-blue-500"
+                            style={{ width: 6, height: 6 }}
+                        />
                     </div>
 
-                    {/* Connection handle — pinned to mid-right edge */}
+                    {/* Connection handle — anchored at mid-right edge */}
                     <div
                         onMouseDown={handleConnectionMouseDown}
-                        className="absolute w-4 h-4 cursor-crosshair z-50 flex items-center justify-center group"
+                        className="absolute z-50 cursor-crosshair flex items-center justify-center group"
                         style={{
+                            right: 0,
                             top: '50%',
-                            right: -12,
-                            marginTop: -8 * cs,
-                            transform: `scale(${cs})`,
-                            transformOrigin: 'right center',
+                            width: 16 * cs,
+                            height: 16 * cs,
+                            transform: `translate(50%, -50%) scale(${cs})`,
+                            transformOrigin: 'center',
                         }}
                         title="Drag to connect"
                     >
-                        <div className="w-2.5 h-2.5 bg-emerald-500 group-hover:bg-emerald-400 group-hover:scale-125 rounded-full transition-transform" />
-                    </div>
-
-                    {/* Step 1B: Output toggle — video nodes only */}
-                    {nodeType === 'video' && onToggleOutputVideo && (
                         <div
-                            className="absolute z-50"
-                            style={{
-                                top: -4,
-                                left: -4,
-                                transform: `scale(${cs})`,
-                                transformOrigin: 'bottom right',
-                            }}
-                        >
-                            <button
-                                onMouseDown={(e) => { e.stopPropagation(); e.preventDefault() }}
-                                onClick={(e) => { e.stopPropagation(); onToggleOutputVideo() }}
-                                className={`px-1.5 py-0.5 text-[9px] font-medium border transition-colors ${isOutputVideo
-                                    ? 'bg-emerald-900/80 border-emerald-600 text-emerald-400 hover:bg-red-900/60 hover:border-red-500 hover:text-red-400'
-                                    : 'bg-zinc-800 border-zinc-600 text-zinc-400 hover:border-emerald-500 hover:text-emerald-400'
-                                    }`}
-                                title={isOutputVideo ? 'Remove Take Output' : 'Set as Take Output'}
-                            >
-                                {isOutputVideo ? 'Output ✓' : 'Output'}
-                            </button>
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {/* Step 1B: Output badge — always visible when is output and not showing controls */}
-            {isOutputVideo && !showControls && (
-                <div
-                    className="absolute z-40 pointer-events-none"
-                    style={{
-                        top: -2,
-                        right: -2,
-                        transform: `scale(${cs})`,
-                        transformOrigin: 'bottom left',
-                    }}
-                >
-                    <span className="px-1 py-0.5 text-[8px] font-medium bg-emerald-900/80 border border-emerald-700 text-emerald-400">
-                        Output
-                    </span>
+                            className="rounded-full bg-emerald-500 group-hover:bg-emerald-400 group-hover:scale-125 transition-transform"
+                            style={{ width: 8, height: 8 }}
+                        />
+                    </div>
                 </div>
             )}
 

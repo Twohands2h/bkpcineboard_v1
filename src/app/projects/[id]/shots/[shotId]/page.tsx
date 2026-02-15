@@ -45,6 +45,7 @@ export default async function ShotWorkspacePage({ params }: Props) {
     status: take.status,
     created_at: take.created_at,
     updated_at: take.created_at,
+    output_video_node_id: take.output_video_node_id ?? null,
   }))
 
   // ── Scene + Shot Strip data ──
