@@ -18,6 +18,7 @@ import {
   revokeTakeAction,
   deleteTakeWithGuardAction,
 } from '@/app/actions/shot-approved-take'
+import { setTakeOutputVideo, clearTakeOutputVideo } from '@/app/actions/take-output'
 import { ExportTakeModal } from '@/components/export/export-take-modal'
 import { ProductionLaunchPanel } from '@/components/production/production-launch-panel'
 import { createClient } from '@/lib/supabase/client'
@@ -49,6 +50,7 @@ interface Take {
   order_index: number
   created_at: string
   updated_at: string
+  output_video_node_id: string | null
 }
 
 interface StripData {
@@ -625,6 +627,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     )
   }
 
+  const currentTake = readyTakeId ? takes.find(t => t.id === readyTakeId) : null
   const currentUndoHistory = readyTakeId
     ? undoHistoryByTakeRef.current.get(readyTakeId)
     : undefined
@@ -803,6 +806,17 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 router.refresh()
               }}
               currentFinalVisualId={finalVisual?.selectionId ?? null}
+              outputVideoNodeId={currentTake?.output_video_node_id ?? null}
+              onSetOutputVideo={async (nodeId: string) => {
+                if (!readyTakeId) return
+                await setTakeOutputVideo(readyTakeId, nodeId)
+                setTakes(prev => prev.map(t => t.id === readyTakeId ? { ...t, output_video_node_id: nodeId } : t))
+              }}
+              onClearOutputVideo={async () => {
+                if (!readyTakeId) return
+                await clearTakeOutputVideo(readyTakeId)
+                setTakes(prev => prev.map(t => t.id === readyTakeId ? { ...t, output_video_node_id: null } : t))
+              }}
               shotSelections={shotSelections}
             />
           )}
