@@ -18,7 +18,7 @@ import {
   revokeTakeAction,
   deleteTakeWithGuardAction,
 } from '@/app/actions/shot-approved-take'
-import { setTakeOutputVideo, clearTakeOutputVideo } from '@/app/actions/take-output'
+import { setShotOutputVideo, clearShotOutputVideo } from '@/app/actions/shot-output'
 import { ExportTakeModal } from '@/components/export/export-take-modal'
 import { ProductionLaunchPanel } from '@/components/production/production-launch-panel'
 import { createClient } from '@/lib/supabase/client'
@@ -39,6 +39,9 @@ interface Shot {
   created_at: string
   updated_at: string
   approved_take_id: string | null
+  output_video_node_id: string | null
+  output_video_src: string | null
+  output_take_id: string | null
 }
 
 interface Take {
@@ -51,6 +54,7 @@ interface Take {
   created_at: string
   updated_at: string
   output_video_node_id: string | null
+  output_video_src: string | null
 }
 
 interface StripData {
@@ -101,8 +105,58 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [shotSelections, setShotSelections] = useState<ActiveSelection[]>([])
   const [finalVisual, setFinalVisual] = useState<{ selectionId: string; src: string; storagePath: string; selectionNumber: number; takeId: string | null } | null>(null)
   const [finalVisualTakeId, setFinalVisualTakeId] = useState<string | null>(null)
+  const [shotOutputSrc, setShotOutputSrc] = useState<string | null>(shot.output_video_src ?? null)
+  const [shotOutputNodeId, setShotOutputNodeId] = useState<string | null>(shot.output_video_node_id ?? null)
+  const [shotOutputTakeId, setShotOutputTakeId] = useState<string | null>(shot.output_take_id ?? null)
+
+  // Re-sync shot-level output state when shot prop changes (refresh / strip nav)
+  useEffect(() => {
+    setShotOutputSrc(shot.output_video_src ?? null)
+    setShotOutputNodeId(shot.output_video_node_id ?? null)
+    setShotOutputTakeId(shot.output_take_id ?? null)
+  }, [shot.id, shot.output_video_src, shot.output_video_node_id, shot.output_take_id])
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
+  const [lightbox, setLightbox] = useState<{ type: 'image' | 'video'; src: string } | null>(null)
+
+  // ── Film-first download naming ──
+  const pad2 = (n: number) => String(n).padStart(2, '0')
+
+  const sceneIndex = stripData
+    ? (stripData.scenes.find(s => s.id === stripData.currentSceneId)?.order_index ?? 0) + 1
+    : 1
+  const shotIndex = shot.order_index + 1
+
+  const extFromUrl = (url: string, fallback: string) => {
+    try {
+      const path = new URL(url).pathname
+      const dot = path.lastIndexOf('.')
+      if (dot >= 0) {
+        const ext = path.slice(dot + 1).toLowerCase().split('?')[0]
+        if (ext && ext.length <= 5) return ext
+      }
+    } catch { }
+    return fallback
+  }
+
+  // Max quality download — fetch blob to force download (cross-origin safe)
+  const triggerDownload = useCallback(async (url: string, filename: string) => {
+    try {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(blobUrl)
+    } catch (err) {
+      console.error('Download failed:', err)
+      window.open(url, '_blank')
+    }
+  }, [])
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const undoHistoryByTakeRef = useRef<Map<string, UndoHistory>>(new Map())
   const imageInputRef = useRef<HTMLInputElement>(null)
@@ -424,9 +478,14 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
     const targetTake = takes.find(t => t.id === takeId)
     const isFVTake = finalVisualTakeId === takeId
+    const isOutputTake = shotOutputTakeId === takeId
 
-    const message = isFVTake
-      ? `You're deleting "${targetTake?.name ?? 'this Take'}" which contains the Final Visual.\n\nThis will also clear the Shot Final Visual (header + strip + take indicators).\n\nThis action is irreversible.`
+    const warnings: string[] = []
+    if (isFVTake) warnings.push('contains the Final Visual')
+    if (isOutputTake) warnings.push('contains the Output Video')
+
+    const message = warnings.length > 0
+      ? `You're deleting "${targetTake?.name ?? 'this Take'}" which ${warnings.join(' and ')}.\n\nThis will also clear the Shot ${warnings.join(' and ')}.\n\nThis action is irreversible.`
       : `Eliminare "${targetTake?.name ?? 'questo Take'}"?\n\nQuesta azione è irreversibile.`
 
     if (!window.confirm(message)) return
@@ -439,6 +498,14 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       fvUndoStackRef.current = []
       setFvUndoCount(0)
       router.refresh()
+    }
+
+    // Output guard: clear shot output if this take owns it
+    if (isOutputTake) {
+      await clearShotOutputVideo(shot.id)
+      setShotOutputNodeId(null)
+      setShotOutputSrc(null)
+      setShotOutputTakeId(null)
     }
 
     const deletedId = takeId
@@ -621,8 +688,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
           approvedTakeIndex={(() => { const idx = takes.findIndex(t => t.id === shot.approved_take_id); return idx >= 0 ? idx + 1 : null })()}
           onApprovedTakeClick={shot.approved_take_id ? () => setCurrentTakeId(shot.approved_take_id!) : undefined}
-          hasFinalVisual={!!finalVisual?.selectionId}
-          hasOutput={!!takes.find(t => t.id === shot.approved_take_id)?.output_video_node_id}
+          outputVideoSrc={shotOutputSrc}
+          onPreviewFV={finalVisual?.src ? () => setLightbox({ type: 'image', src: finalVisual.src }) : undefined}
+          onPreviewOutput={shotOutputSrc ? () => setLightbox({ type: 'video', src: shotOutputSrc }) : undefined}
+          onDownloadFV={finalVisual?.src ? () => triggerDownload(finalVisual.src, `S${pad2(sceneIndex)}_SH${pad2(shotIndex)}_FV.${extFromUrl(finalVisual.src, 'png')}`) : undefined}
+          onDownloadOutput={shotOutputSrc ? () => triggerDownload(shotOutputSrc, `S${pad2(sceneIndex)}_SH${pad2(shotIndex)}_OUTPUT.${extFromUrl(shotOutputSrc, 'mp4')}`) : undefined}
         />
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
           <div className="text-center">
@@ -654,8 +724,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
         approvedTakeIndex={(() => { const idx = takes.findIndex(t => t.id === shot.approved_take_id); return idx >= 0 ? idx + 1 : null })()}
         onApprovedTakeClick={shot.approved_take_id ? () => setCurrentTakeId(shot.approved_take_id!) : undefined}
-        hasFinalVisual={!!finalVisual?.selectionId}
-        hasOutput={!!takes.find(t => t.id === shot.approved_take_id)?.output_video_node_id}
+        outputVideoSrc={shotOutputSrc}
+        onPreviewFV={finalVisual?.src ? () => setLightbox({ type: 'image', src: finalVisual.src }) : undefined}
+        onPreviewOutput={shotOutputSrc ? () => setLightbox({ type: 'video', src: shotOutputSrc }) : undefined}
+        onDownloadFV={finalVisual?.src ? () => triggerDownload(finalVisual.src, `S${pad2(sceneIndex)}_SH${pad2(shotIndex)}_FV.${extFromUrl(finalVisual.src, 'png')}`) : undefined}
+        onDownloadOutput={shotOutputSrc ? () => triggerDownload(shotOutputSrc, `S${pad2(sceneIndex)}_SH${pad2(shotIndex)}_OUTPUT.${extFromUrl(shotOutputSrc, 'mp4')}`) : undefined}
       />
 
       <TakeTabs
@@ -827,16 +900,19 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 router.refresh()
               }}
               currentFinalVisualId={finalVisual?.selectionId ?? null}
-              outputVideoNodeId={currentTake?.output_video_node_id ?? null}
-              onSetOutputVideo={async (nodeId: string) => {
+              outputVideoNodeId={shotOutputNodeId}
+              onSetOutputVideo={async (nodeId: string, videoSrc: string) => {
                 if (!readyTakeId) return
-                await setTakeOutputVideo(readyTakeId, nodeId)
-                setTakes(prev => prev.map(t => t.id === readyTakeId ? { ...t, output_video_node_id: nodeId } : t))
+                await setShotOutputVideo(shot.id, nodeId, videoSrc, readyTakeId)
+                setShotOutputNodeId(nodeId)
+                setShotOutputSrc(videoSrc)
+                setShotOutputTakeId(readyTakeId)
               }}
               onClearOutputVideo={async () => {
-                if (!readyTakeId) return
-                await clearTakeOutputVideo(readyTakeId)
-                setTakes(prev => prev.map(t => t.id === readyTakeId ? { ...t, output_video_node_id: null } : t))
+                await clearShotOutputVideo(shot.id)
+                setShotOutputNodeId(null)
+                setShotOutputSrc(null)
+                setShotOutputTakeId(null)
               }}
               shotSelections={shotSelections}
             />
@@ -856,7 +932,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           edges={plpEdges}
           isApproved={shot.approved_take_id === readyTakeId}
           currentFinalVisualId={finalVisual?.selectionId ?? null}
-          outputVideoNodeId={currentTake?.output_video_node_id ?? null}
+          outputVideoNodeId={shotOutputNodeId}
           onClose={() => setShowPLP(false)}
         />
       )}
@@ -877,6 +953,40 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           <div className="w-full h-full bg-zinc-800 border border-zinc-600 rounded-lg opacity-60 flex flex-col p-3">
             <span className="text-xs text-zinc-400">Untitled</span>
             <span className="text-[10px] text-zinc-600 mt-1">Double-click to edit</span>
+          </div>
+        </div>
+      )}
+
+      {/* Lightbox overlay — preview only, owned by workspace client */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center"
+          onClick={() => setLightbox(null)}
+        >
+          <div
+            className="relative max-w-[90vw] max-h-[90vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {lightbox.type === 'image' ? (
+              <img
+                src={lightbox.src}
+                alt="Final Visual preview"
+                className="max-w-[90vw] max-h-[90vh] object-contain"
+              />
+            ) : (
+              <video
+                src={lightbox.src}
+                controls
+                autoPlay
+                className="max-w-[90vw] max-h-[90vh] object-contain"
+              />
+            )}
+            <button
+              onClick={() => setLightbox(null)}
+              className="absolute top-2 right-2 w-8 h-8 bg-black/60 hover:bg-black/80 text-white rounded-full flex items-center justify-center text-sm transition-colors"
+            >
+              ✕
+            </button>
           </div>
         </div>
       )}

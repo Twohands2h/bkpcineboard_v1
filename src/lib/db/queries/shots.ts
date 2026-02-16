@@ -10,6 +10,11 @@ export interface Shot {
   status: string
   created_at: string
   updated_at: string
+  approved_take_id: string | null
+  final_visual_selection_id: string | null
+  output_video_node_id: string | null
+  output_video_src: string | null
+  output_take_id: string | null
 }
 
 /**

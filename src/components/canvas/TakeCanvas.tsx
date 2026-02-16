@@ -63,6 +63,9 @@ interface TakeCanvasProps {
     onClearFinalVisual?: () => Promise<void>
     currentFinalVisualId?: string | null
     shotSelections?: { selectionId: string; selectionNumber: number; storagePath: string; src: string }[]
+    outputVideoNodeId?: string | null
+    onSetOutputVideo?: (nodeId: string, videoSrc: string) => void
+    onClearOutputVideo?: () => void
 }
 
 export type CanvasNode = NoteNode | ImageNode | VideoNode | ColumnNode | PromptNode
@@ -811,6 +814,13 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 return
             }
 
+            // Guard: if deleting a video node that is the current Output, clear shot output first
+            if (targetNode?.type === 'video' && targetNode.id === outputVideoNodeId) {
+                const confirmed = window.confirm('This video is the current Shot Output.\n\nOutput will be cleared and the video will be deleted.')
+                if (!confirmed) return
+                void onClearOutputVideo?.()
+            }
+
             setNodes(p => {
                 const node = p.find(n => n.id === nodeId)
                 const deleteIds = new Set([nodeId])
@@ -832,7 +842,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             })
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
-        }, [pushHistory, emitNodesChange, currentFinalVisualId, onClearFinalVisual])
+        }, [pushHistory, emitNodesChange, currentFinalVisualId, onClearFinalVisual, outputVideoNodeId, onClearOutputVideo])
 
         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => { setSelectedNodeIds(new Set([nodeId])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('editing'); setEditingField(field) }, [])
         const handleFieldFocus = useCallback((f: 'title' | 'body') => setEditingField(f), [])
@@ -964,6 +974,15 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 onClearFinalVisual?.()
                                 del.delete(fvNodeId)
                                 if (del.size === 0) return
+                            }
+                        }
+                        // If any selected node is the current Output video, clear shot output first
+                        if (outputVideoNodeId && del.has(outputVideoNodeId)) {
+                            const outNode = nodesRef.current.find(n => n.id === outputVideoNodeId && n.type === 'video')
+                            if (outNode) {
+                                const ok = window.confirm('Selection includes the current Shot Output video.\n\nOutput will be cleared and the video will be deleted.')
+                                if (!ok) return
+                                void onClearOutputVideo?.()
                             }
                         }
                         nodesRef.current.forEach(n => {
@@ -1250,7 +1269,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                     onClick={(e) => {
                                         e.stopPropagation()
                                         if (isOutput) { void onClearOutputVideo?.() }
-                                        else { void onSetOutputVideo?.(node.id) }
+                                        else { void onSetOutputVideo?.(node.id, (node.data as any)?.src ?? '') }
                                     }}
                                     onMouseDown={(e) => e.stopPropagation()}
                                     className={`px-2 py-0.5 text-[10px] font-medium border rounded whitespace-nowrap transition-colors ${isOutput
