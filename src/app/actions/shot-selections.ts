@@ -18,6 +18,7 @@ export async function promoteAssetSelectionAction(params: {
     projectId: string
     shotId: string
     takeId?: string | null
+    imageNodeId?: string | null
     imageSnapshot: {
         src: string
         storage_path: string
@@ -31,7 +32,7 @@ export async function promoteAssetSelectionAction(params: {
         createdAt?: string
     } | null
 }): Promise<{ selectionId: string; selectionNumber: number }> {
-    const { projectId, shotId, takeId, imageSnapshot, promptSnapshot } = params
+    const { projectId, shotId, takeId, imageNodeId, imageSnapshot, promptSnapshot } = params
 
     if (!projectId) throw new Error('shot-selections: projectId missing')
     if (!shotId) throw new Error('shot-selections: shotId missing')
@@ -65,6 +66,7 @@ export async function promoteAssetSelectionAction(params: {
                 event: 'promote_asset',
                 selection_number: selectionNumber,
                 take_id: takeId ?? null,
+                image_node_id: imageNodeId ?? null,
                 image_snapshot: imageSnapshot,
                 prompt_snapshot: promptSnapshot ?? null,
                 created_at: new Date().toISOString(),
@@ -124,6 +126,7 @@ export interface ActiveSelection {
     storagePath: string
     src: string
     takeId: string | null
+    nodeId: string | null
 }
 
 /**
@@ -163,6 +166,7 @@ export async function getShotSelectionsAction(params: {
                     storagePath: p.image_snapshot?.storage_path ?? '',
                     src: p.image_snapshot?.src ?? '',
                     takeId: p.take_id ?? null,
+                    nodeId: p.image_node_id ?? null,
                 })
             } else if (p.event === 'discard_promote_asset' && p.selection_id) {
                 discarded.add(p.selection_id)

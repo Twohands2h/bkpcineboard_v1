@@ -512,6 +512,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         projectId,
         shotId: shot.id,
         takeId: currentTakeId,
+        imageNodeId,
         imageSnapshot: {
           src: imageData.src,
           storage_path: imageData.storage_path,

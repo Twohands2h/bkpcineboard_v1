@@ -62,7 +62,7 @@ interface TakeCanvasProps {
     onSetFinalVisual?: (selectionId: string) => Promise<void>
     onClearFinalVisual?: () => Promise<void>
     currentFinalVisualId?: string | null
-    shotSelections?: { selectionId: string; selectionNumber: number; storagePath: string; src: string }[]
+    shotSelections?: { selectionId: string; selectionNumber: number; storagePath: string; src: string; nodeId?: string }[]
     outputVideoNodeId?: string | null
     onSetOutputVideo?: (nodeId: string, videoSrc: string) => void
     onClearOutputVideo?: () => void
@@ -257,8 +257,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     // Add missing: active selection matches this image but no badge yet
                     if (!nodeData.promotedSelectionId && shotSelections?.length) {
                         const match = shotSelections.find(s =>
-                            s.storagePath === nodeData.storage_path ||
-                            s.src === nodeData.src
+                            // Prefer nodeId match (stable across sessions, immune to duplicate take)
+                            s.nodeId ? s.nodeId === n.id
+                                // Fallback: src/storagePath match (backward compat, no nodeId in old selections)
+                                : (s.storagePath === nodeData.storage_path || s.src === nodeData.src)
                         )
                         if (match) {
                             changed = true
@@ -309,7 +311,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 if (n.type !== 'image') return n
                 const nd = n.data as any
                 const match = shotSelections.find(s =>
-                    s.storagePath === nd.storage_path || s.src === nd.src
+                    s.nodeId ? s.nodeId === n.id
+                        : (s.storagePath === nd.storage_path || s.src === nd.src)
                 )
                 if (match && nd.promotedSelectionId !== match.selectionId) {
                     changed = true
