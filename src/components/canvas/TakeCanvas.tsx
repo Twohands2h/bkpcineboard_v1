@@ -174,8 +174,8 @@ interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: s
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
     function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, shotSelections }, ref) {
-        const [nodes, setNodes] = useState<CanvasNode[]>(() => initialNodes ?? [])
-        const [edges, setEdges] = useState<CanvasEdge[]>(() => initialEdges ?? [])
+        const [nodes, _setNodesRaw] = useState<CanvasNode[]>(() => initialNodes ?? [])
+        const [edges, _setEdgesRaw] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
         const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
         const [editingEdgeLabel, setEditingEdgeLabel] = useState<string | null>(null)
@@ -210,8 +210,24 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const shiftedNodesRef = useRef<Map<string, Map<string, number>>>(new Map())
         const dataChangeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-        const nodesRef = useRef<CanvasNode[]>(nodes); useEffect(() => { nodesRef.current = nodes }, [nodes])
-        const edgesRef = useRef<CanvasEdge[]>(edges); useEffect(() => { edgesRef.current = edges }, [edges])
+        const nodesRef = useRef<CanvasNode[]>(nodes)
+        const edgesRef = useRef<CanvasEdge[]>(edges)
+        // Eager ref sync: wrappers keep refs in sync inside the updater,
+        // before React renders, so setTimeout(emitNodesChange, 0) always reads fresh state.
+        const setNodes = useCallback((updater: CanvasNode[] | ((prev: CanvasNode[]) => CanvasNode[])) => {
+            _setNodesRaw(prev => {
+                const next = typeof updater === 'function' ? updater(prev) : updater
+                nodesRef.current = next
+                return next
+            })
+        }, [])
+        const setEdges = useCallback((updater: CanvasEdge[] | ((prev: CanvasEdge[]) => CanvasEdge[])) => {
+            _setEdgesRaw(prev => {
+                const next = typeof updater === 'function' ? updater(prev) : updater
+                edgesRef.current = next
+                return next
+            })
+        }, [])
         const selectedNodeIdsRef = useRef<Set<string>>(selectedNodeIds); useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds }, [selectedNodeIds])
         const primarySelectedId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null
         const activeNodeId = primarySelectedId ?? hoveredNodeId

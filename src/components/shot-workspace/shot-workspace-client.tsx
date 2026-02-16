@@ -18,7 +18,7 @@ import {
   revokeTakeAction,
   deleteTakeWithGuardAction,
 } from '@/app/actions/shot-approved-take'
-import { setShotOutputVideo, clearShotOutputVideo } from '@/app/actions/shot-output'
+import { setTakeOutputVideo, clearTakeOutputVideo } from '@/app/actions/take-output'
 import { ExportTakeModal } from '@/components/export/export-take-modal'
 import { ProductionLaunchPanel } from '@/components/production/production-launch-panel'
 import { createClient } from '@/lib/supabase/client'
@@ -39,9 +39,6 @@ interface Shot {
   created_at: string
   updated_at: string
   approved_take_id: string | null
-  output_video_node_id: string | null
-  output_video_src: string | null
-  output_take_id: string | null
 }
 
 interface Take {
@@ -54,7 +51,6 @@ interface Take {
   created_at: string
   updated_at: string
   output_video_node_id: string | null
-  output_video_src: string | null
 }
 
 interface StripData {
@@ -105,62 +101,15 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [shotSelections, setShotSelections] = useState<ActiveSelection[]>([])
   const [finalVisual, setFinalVisual] = useState<{ selectionId: string; src: string; storagePath: string; selectionNumber: number; takeId: string | null } | null>(null)
   const [finalVisualTakeId, setFinalVisualTakeId] = useState<string | null>(null)
-  const [shotOutputSrc, setShotOutputSrc] = useState<string | null>(shot.output_video_src ?? null)
-  const [shotOutputNodeId, setShotOutputNodeId] = useState<string | null>(shot.output_video_node_id ?? null)
-  const [shotOutputTakeId, setShotOutputTakeId] = useState<string | null>(shot.output_take_id ?? null)
-
-  // Re-sync shot-level output state when shot prop changes (refresh / strip nav)
-  useEffect(() => {
-    setShotOutputSrc(shot.output_video_src ?? null)
-    setShotOutputNodeId(shot.output_video_node_id ?? null)
-    setShotOutputTakeId(shot.output_take_id ?? null)
-  }, [shot.id, shot.output_video_src, shot.output_video_node_id, shot.output_take_id])
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
-  const [lightbox, setLightbox] = useState<{ type: 'image' | 'video'; src: string } | null>(null)
-
-  // ── Film-first download naming ──
-  const pad2 = (n: number) => String(n).padStart(2, '0')
-
-  const sceneIndex = stripData
-    ? (stripData.scenes.find(s => s.id === stripData.currentSceneId)?.order_index ?? 0) + 1
-    : 1
-  const shotIndex = shot.order_index + 1
-
-  const extFromUrl = (url: string, fallback: string) => {
-    try {
-      const path = new URL(url).pathname
-      const dot = path.lastIndexOf('.')
-      if (dot >= 0) {
-        const ext = path.slice(dot + 1).toLowerCase().split('?')[0]
-        if (ext && ext.length <= 5) return ext
-      }
-    } catch { }
-    return fallback
-  }
-
-  // Max quality download — fetch blob to force download (cross-origin safe)
-  const triggerDownload = useCallback(async (url: string, filename: string) => {
-    try {
-      const res = await fetch(url)
-      const blob = await res.blob()
-      const blobUrl = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = blobUrl
-      a.download = filename
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(blobUrl)
-    } catch (err) {
-      console.error('Download failed:', err)
-      window.open(url, '_blank')
-    }
-  }, [])
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const undoHistoryByTakeRef = useRef<Map<string, UndoHistory>>(new Map())
   const imageInputRef = useRef<HTMLInputElement>(null)
   const videoInputRef = useRef<HTMLInputElement>(null)
+  const pendingDropRef = useRef<{ type: 'image' | 'video'; screenX: number; screenY: number } | null>(null)
+  const [isDraggingFile, setIsDraggingFile] = useState(false)
+  const dragCounterRef = useRef(0)
 
   const persistSnapshot = useCallback(async (nodes: CanvasNode[], edges: CanvasEdge[]) => {
     if (!currentTakeId) return
@@ -295,8 +244,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   const handleImageUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file || !canvasRef.current) return
+    const drop = pendingDropRef.current
+    pendingDropRef.current = null
     e.target.value = ''
+
+    if (!file || !canvasRef.current || !drop) return
 
     try {
       const dimensions = await new Promise<{ w: number; h: number }>((resolve, reject) => {
@@ -315,7 +267,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         .upload(storagePath, file, { cacheControl: '3600', upsert: false })
 
       if (uploadError) {
-        console.error('Upload failed:', uploadError)
+        console.error('[DnD] Image upload failed:', uploadError)
         return
       }
 
@@ -323,37 +275,28 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         .from('take-images')
         .getPublicUrl(storagePath)
 
-      if (!urlData?.publicUrl) {
-        console.error('Failed to get public URL')
-        return
-      }
+      if (!urlData?.publicUrl) return
 
-      const canvas = canvasRef.current
-      if (!canvas) return
-
-      const rect = canvas.getCanvasRect()
-      if (!rect) return
-
-      const imageData: ImageData = {
+      if (!canvasRef.current) return
+      canvasRef.current.createImageNodeAtScreen(drop.screenX, drop.screenY, {
         src: urlData.publicUrl,
         storage_path: storagePath,
         naturalWidth: dimensions.w,
         naturalHeight: dimensions.h,
-      }
-
-      const cx = rect.width / 2
-      const cy = rect.height / 2
-      canvas.createImageNodeAt(cx, cy, imageData)
+      })
     } catch (err) {
-      console.error('Image upload failed:', err)
+      console.error('[DnD] Image upload failed:', err)
     }
   }, [projectId, shot.id])
 
   // Step 1A — Video Upload
   const handleVideoUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file || !canvasRef.current) return
+    const drop = pendingDropRef.current
+    pendingDropRef.current = null
     e.target.value = ''
+
+    if (!file || !canvasRef.current || !drop) return
 
     try {
       const supabase = createClient()
@@ -365,7 +308,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         .upload(storagePath, file, { cacheControl: '3600', upsert: false })
 
       if (uploadError) {
-        console.error('Video upload failed:', uploadError)
+        console.error('[DnD] Video upload failed:', uploadError)
         return
       }
 
@@ -373,30 +316,18 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         .from('take-videos')
         .getPublicUrl(storagePath)
 
-      if (!urlData?.publicUrl) {
-        console.error('Failed to get public URL')
-        return
-      }
+      if (!urlData?.publicUrl) return
 
-      const canvas = canvasRef.current
-      if (!canvas) return
-
-      const rect = canvas.getCanvasRect()
-      if (!rect) return
-
-      const videoData: VideoData = {
+      if (!canvasRef.current) return
+      canvasRef.current.createVideoNodeAtScreen(drop.screenX, drop.screenY, {
         src: urlData.publicUrl,
         storage_path: storagePath,
         filename: file.name,
         mime_type: file.type || 'video/mp4',
         size: file.size,
-      }
-
-      const cx = rect.width / 2
-      const cy = rect.height / 2
-      canvas.createVideoNodeAtScreen(cx, cy, videoData)
+      })
     } catch (err) {
-      console.error('Video upload failed:', err)
+      console.error('[DnD] Video upload failed:', err)
     }
   }, [projectId, shot.id])
 
@@ -430,14 +361,30 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     const snapshot = canvasRef.current.getSnapshot()
     const clonedPayload = structuredClone(snapshot)
 
-    // C) Sanitize: strip editorial markers from cloned nodes
+    // Duplicate Take Canon: new take is born neutral.
+    // 1. Regenerate all node IDs (prevents shot-level FV/Output matching by stale id)
+    const idMap = new Map<string, string>()
     if (clonedPayload.nodes) {
       for (const node of clonedPayload.nodes) {
+        const oldId = node.id
+        const newId = crypto.randomUUID()
+        idMap.set(oldId, newId)
+        node.id = newId
+
+        // 2. Strip all editorial markers from node.data
         if (node.data) {
           delete (node.data as any).promotedSelectionId
           delete (node.data as any).selectionNumber
           delete (node.data as any).isFinalVisual
         }
+      }
+    }
+
+    // 3. Remap edge references to new node IDs
+    if (clonedPayload.edges) {
+      for (const edge of clonedPayload.edges) {
+        edge.from = idMap.get(edge.from) ?? edge.from
+        edge.to = idMap.get(edge.to) ?? edge.to
       }
     }
 
@@ -478,14 +425,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
     const targetTake = takes.find(t => t.id === takeId)
     const isFVTake = finalVisualTakeId === takeId
-    const isOutputTake = shotOutputTakeId === takeId
 
-    const warnings: string[] = []
-    if (isFVTake) warnings.push('contains the Final Visual')
-    if (isOutputTake) warnings.push('contains the Output Video')
-
-    const message = warnings.length > 0
-      ? `You're deleting "${targetTake?.name ?? 'this Take'}" which ${warnings.join(' and ')}.\n\nThis will also clear the Shot ${warnings.join(' and ')}.\n\nThis action is irreversible.`
+    const message = isFVTake
+      ? `You're deleting "${targetTake?.name ?? 'this Take'}" which contains the Final Visual.\n\nThis will also clear the Shot Final Visual (header + strip + take indicators).\n\nThis action is irreversible.`
       : `Eliminare "${targetTake?.name ?? 'questo Take'}"?\n\nQuesta azione è irreversibile.`
 
     if (!window.confirm(message)) return
@@ -498,14 +440,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       fvUndoStackRef.current = []
       setFvUndoCount(0)
       router.refresh()
-    }
-
-    // Output guard: clear shot output if this take owns it
-    if (isOutputTake) {
-      await clearShotOutputVideo(shot.id)
-      setShotOutputNodeId(null)
-      setShotOutputSrc(null)
-      setShotOutputTakeId(null)
     }
 
     const deletedId = takeId
@@ -681,19 +615,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     return (
       <div className="flex-1 flex flex-col">
         {renderStrip()}
-        <ShotHeader
-          shot={shot}
-          projectId={projectId}
-          finalVisual={finalVisual}
-          onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
-          approvedTakeIndex={(() => { const idx = takes.findIndex(t => t.id === shot.approved_take_id); return idx >= 0 ? idx + 1 : null })()}
-          onApprovedTakeClick={shot.approved_take_id ? () => setCurrentTakeId(shot.approved_take_id!) : undefined}
-          outputVideoSrc={shotOutputSrc}
-          onPreviewFV={finalVisual?.src ? () => setLightbox({ type: 'image', src: finalVisual.src }) : undefined}
-          onPreviewOutput={shotOutputSrc ? () => setLightbox({ type: 'video', src: shotOutputSrc }) : undefined}
-          onDownloadFV={finalVisual?.src ? () => triggerDownload(finalVisual.src, `S${pad2(sceneIndex)}_SH${pad2(shotIndex)}_FV.${extFromUrl(finalVisual.src, 'png')}`) : undefined}
-          onDownloadOutput={shotOutputSrc ? () => triggerDownload(shotOutputSrc, `S${pad2(sceneIndex)}_SH${pad2(shotIndex)}_OUTPUT.${extFromUrl(shotOutputSrc, 'mp4')}`) : undefined}
-        />
+        <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual} onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined} />
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
           <div className="text-center">
             <p className="text-zinc-500 text-sm mb-4">Nessun Take presente per questo Shot</p>
@@ -717,19 +639,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   return (
     <div className="flex-1 flex flex-col">
       {renderStrip()}
-      <ShotHeader
-        shot={shot}
-        projectId={projectId}
-        finalVisual={finalVisual}
-        onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
-        approvedTakeIndex={(() => { const idx = takes.findIndex(t => t.id === shot.approved_take_id); return idx >= 0 ? idx + 1 : null })()}
-        onApprovedTakeClick={shot.approved_take_id ? () => setCurrentTakeId(shot.approved_take_id!) : undefined}
-        outputVideoSrc={shotOutputSrc}
-        onPreviewFV={finalVisual?.src ? () => setLightbox({ type: 'image', src: finalVisual.src }) : undefined}
-        onPreviewOutput={shotOutputSrc ? () => setLightbox({ type: 'video', src: shotOutputSrc }) : undefined}
-        onDownloadFV={finalVisual?.src ? () => triggerDownload(finalVisual.src, `S${pad2(sceneIndex)}_SH${pad2(shotIndex)}_FV.${extFromUrl(finalVisual.src, 'png')}`) : undefined}
-        onDownloadOutput={shotOutputSrc ? () => triggerDownload(shotOutputSrc, `S${pad2(sceneIndex)}_SH${pad2(shotIndex)}_OUTPUT.${extFromUrl(shotOutputSrc, 'mp4')}`) : undefined}
-      />
+      <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual} onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined} />
 
       <TakeTabs
         takes={takes}
@@ -780,9 +690,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           </button>
 
           <button
-            onClick={() => imageInputRef.current?.click()}
-            className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
-            title="Upload image to canvas"
+            draggable
+            onDragStart={(e) => { e.dataTransfer.setData('application/cineboard-type', 'image'); e.dataTransfer.effectAllowed = 'copy' }}
+            className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none cursor-grab active:cursor-grabbing"
+            title="Drag to canvas to add Image"
           >
             <span className="text-xs text-zinc-400 pointer-events-none">Img</span>
           </button>
@@ -795,9 +706,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           />
 
           <button
-            onClick={() => videoInputRef.current?.click()}
-            className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
-            title="Upload video to canvas"
+            draggable
+            onDragStart={(e) => { e.dataTransfer.setData('application/cineboard-type', 'video'); e.dataTransfer.effectAllowed = 'copy' }}
+            className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none cursor-grab active:cursor-grabbing"
+            title="Drag to canvas to add Video"
           >
             <span className="text-xs text-zinc-400 pointer-events-none">Vid</span>
           </button>
@@ -877,7 +789,101 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           </button>
         </aside>
 
-        <div className="flex-1 flex relative">
+        <div
+          className={`flex-1 flex relative${isDraggingFile ? ' ring-2 ring-inset ring-zinc-500/50' : ''}`}
+          onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
+          onDragEnter={(e) => { e.preventDefault(); dragCounterRef.current++; setIsDraggingFile(true) }}
+          onDragLeave={() => { dragCounterRef.current--; if (dragCounterRef.current <= 0) { setIsDraggingFile(false); dragCounterRef.current = 0 } }}
+          onDrop={async (e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            setIsDraggingFile(false)
+            dragCounterRef.current = 0
+
+            const canvas = canvasRef.current
+            if (!canvas) return
+            const rect = canvas.getCanvasRect()
+            if (!rect) return
+            const screenX = e.clientX - rect.left
+            const screenY = e.clientY - rect.top
+
+            // Case A: Sidebar drag (Img/Vid button)
+            const cineboardType = e.dataTransfer.getData('application/cineboard-type')
+            if (cineboardType === 'image' || cineboardType === 'video') {
+              pendingDropRef.current = { type: cineboardType, screenX, screenY }
+              // Sync click — no async before this
+              if (cineboardType === 'image') imageInputRef.current?.click()
+              else videoInputRef.current?.click()
+              return
+            }
+
+            // Case B: External file drop (from OS) — call upload pipeline directly
+            const files = Array.from(e.dataTransfer.files)
+            if (files.length === 0) return
+            const file = files[0]
+            const isImage = file.type.startsWith('image/')
+            const isVideo = file.type.startsWith('video/')
+            if (!isImage && !isVideo) {
+              console.warn('[DnD] Unsupported file type:', file.type)
+              return
+            }
+            pendingDropRef.current = { type: isImage ? 'image' : 'video', screenX, screenY }
+
+            // Upload directly — same pipeline as picker onChange
+            const drop = pendingDropRef.current
+            pendingDropRef.current = null
+
+            try {
+              const supabase = createClient()
+
+              if (isImage) {
+                const dimensions = await new Promise<{ w: number; h: number }>((resolve, reject) => {
+                  const img = new window.Image()
+                  img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
+                  img.onerror = reject
+                  img.src = URL.createObjectURL(file)
+                })
+
+                const ext = file.name.split('.').pop() || 'png'
+                const storagePath = `${projectId}/${shot.id}/${crypto.randomUUID()}.${ext}`
+                const { error: uploadError } = await supabase.storage
+                  .from('take-images')
+                  .upload(storagePath, file, { cacheControl: '3600', upsert: false })
+                if (uploadError) { console.error('[DnD] Image upload failed:', uploadError); return }
+
+                const { data: urlData } = supabase.storage.from('take-images').getPublicUrl(storagePath)
+                if (!urlData?.publicUrl) return
+
+                canvasRef.current?.createImageNodeAtScreen(drop.screenX, drop.screenY, {
+                  src: urlData.publicUrl,
+                  storage_path: storagePath,
+                  naturalWidth: dimensions.w,
+                  naturalHeight: dimensions.h,
+                })
+              } else {
+                const ext = file.name.split('.').pop() || 'mp4'
+                const storagePath = `${projectId}/${shot.id}/${crypto.randomUUID()}.${ext}`
+                const { error: uploadError } = await supabase.storage
+                  .from('take-videos')
+                  .upload(storagePath, file, { cacheControl: '3600', upsert: false })
+                if (uploadError) { console.error('[DnD] Video upload failed:', uploadError); return }
+
+                const { data: urlData } = supabase.storage.from('take-videos').getPublicUrl(storagePath)
+                if (!urlData?.publicUrl) return
+
+                canvasRef.current?.createVideoNodeAtScreen(drop.screenX, drop.screenY, {
+                  src: urlData.publicUrl,
+                  storage_path: storagePath,
+                  filename: file.name,
+                  mime_type: file.type || 'video/mp4',
+                  size: file.size,
+                })
+              }
+            } catch (err) {
+              console.error('[DnD] Upload failed:', err)
+            }
+          }}
+        >
           {readyTakeId && (
             <TakeCanvas
               ref={canvasRef}
@@ -900,19 +906,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 router.refresh()
               }}
               currentFinalVisualId={finalVisual?.selectionId ?? null}
-              outputVideoNodeId={shotOutputNodeId}
-              onSetOutputVideo={async (nodeId: string, videoSrc: string) => {
+              outputVideoNodeId={currentTake?.output_video_node_id ?? null}
+              onSetOutputVideo={async (nodeId: string) => {
                 if (!readyTakeId) return
-                await setShotOutputVideo(shot.id, nodeId, videoSrc, readyTakeId)
-                setShotOutputNodeId(nodeId)
-                setShotOutputSrc(videoSrc)
-                setShotOutputTakeId(readyTakeId)
+                await setTakeOutputVideo(readyTakeId, nodeId)
+                setTakes(prev => prev.map(t => t.id === readyTakeId ? { ...t, output_video_node_id: nodeId } : t))
               }}
               onClearOutputVideo={async () => {
-                await clearShotOutputVideo(shot.id)
-                setShotOutputNodeId(null)
-                setShotOutputSrc(null)
-                setShotOutputTakeId(null)
+                if (!readyTakeId) return
+                await clearTakeOutputVideo(readyTakeId)
+                setTakes(prev => prev.map(t => t.id === readyTakeId ? { ...t, output_video_node_id: null } : t))
               }}
               shotSelections={shotSelections}
             />
@@ -932,7 +935,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           edges={plpEdges}
           isApproved={shot.approved_take_id === readyTakeId}
           currentFinalVisualId={finalVisual?.selectionId ?? null}
-          outputVideoNodeId={shotOutputNodeId}
+          outputVideoNodeId={currentTake?.output_video_node_id ?? null}
           onClose={() => setShowPLP(false)}
         />
       )}
@@ -953,40 +956,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           <div className="w-full h-full bg-zinc-800 border border-zinc-600 rounded-lg opacity-60 flex flex-col p-3">
             <span className="text-xs text-zinc-400">Untitled</span>
             <span className="text-[10px] text-zinc-600 mt-1">Double-click to edit</span>
-          </div>
-        </div>
-      )}
-
-      {/* Lightbox overlay — preview only, owned by workspace client */}
-      {lightbox && (
-        <div
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center"
-          onClick={() => setLightbox(null)}
-        >
-          <div
-            className="relative max-w-[90vw] max-h-[90vh]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {lightbox.type === 'image' ? (
-              <img
-                src={lightbox.src}
-                alt="Final Visual preview"
-                className="max-w-[90vw] max-h-[90vh] object-contain"
-              />
-            ) : (
-              <video
-                src={lightbox.src}
-                controls
-                autoPlay
-                className="max-w-[90vw] max-h-[90vh] object-contain"
-              />
-            )}
-            <button
-              onClick={() => setLightbox(null)}
-              className="absolute top-2 right-2 w-8 h-8 bg-black/60 hover:bg-black/80 text-white rounded-full flex items-center justify-center text-sm transition-colors"
-            >
-              ✕
-            </button>
           </div>
         </div>
       )}
