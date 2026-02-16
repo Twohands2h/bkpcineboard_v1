@@ -1,0 +1,48 @@
+diff --git a/src/components/canvas/NodeShell.tsx b/src/components/canvas/NodeShell.tsx
+index 1c08a44..355fb2b 100644
+--- a/src/components/canvas/NodeShell.tsx
++++ b/src/components/canvas/NodeShell.tsx
+@@ -31,6 +31,7 @@ interface NodeShellProps {
+     // Step 1B — Take Output (video nodes only)
+     nodeType?: string
+     isOutputVideo?: boolean
++    isFinalVisual?: boolean
+     onToggleOutputVideo?: () => void
+     children: React.ReactNode
+ }
+@@ -53,6 +54,7 @@ export function NodeShell({
+     onConnectionStart,
+     nodeType,
+     isOutputVideo,
++    isFinalVisual,
+     onToggleOutputVideo,
+     children,
+ }: NodeShellProps) {
+@@ -110,7 +112,7 @@ export function NodeShell({
+     return (
+         <div
+             data-node-shell
+-            className={`absolute select-none bg-zinc-800 border ${isOutputVideo ? 'border-emerald-600' : 'border-zinc-700'} shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
++            className={`absolute select-none bg-zinc-800 border ${isFinalVisual ? 'border-emerald-500' : isOutputVideo ? 'border-emerald-600' : 'border-zinc-700'} shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
+             style={{
+                 transform: `translate(${x}px, ${y}px)`,
+                 width,
+@@ -167,15 +169,15 @@ export function NodeShell({
+                         <div className="w-2.5 h-2.5 bg-emerald-500 group-hover:bg-emerald-400 group-hover:scale-125 rounded-full transition-transform" />
+                     </div>
+ 
+-                    {/* Step 1B: Output toggle — video nodes only */}
++                    {/* Step 1B: Output toggle — video nodes only, top-right */}
+                     {nodeType === 'video' && onToggleOutputVideo && (
+                         <div
+                             className="absolute z-50"
+                             style={{
+                                 top: -4,
+-                                left: -4,
++                                right: -4,
+                                 transform: `scale(${cs})`,
+-                                transformOrigin: 'bottom right',
++                                transformOrigin: 'bottom left',
+                             }}
+                         >
+                             <button

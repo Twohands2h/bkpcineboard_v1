@@ -3,16 +3,16 @@
 import { useState, useMemo, useCallback } from 'react'
 
 // ===================================================
-// PRODUCTION LAUNCH PANEL (PLP) v2
+// PRODUCTION LAUNCH PANEL (PLP) v2.1
 // ===================================================
 // Stateless production view of the current Take.
 // No DB writes, no server actions, no router.refresh().
 // No interaction with FV, Approved, Strip, Canvas key.
-// Reads exclusively from canvas snapshot nodes passed as props.
+// Reads exclusively from canvas snapshot nodes + edges passed as props.
 //
-// v2: Pure reflection. Shows ALL prompt nodes as they exist
-//     in the Take canvas, ordered by createdAt ASC.
-//     No dedup, no bucket, no inference, no categorization.
+// v2:   Pure reflection — all prompt nodes, createdAt ASC, no dedup.
+// v2.1: Prompt References — for each prompt, show directly linked nodes
+//       via edges (1 hop). Ranked: FV > Output > Asset > others.
 
 interface ExportNode {
     id: string
@@ -20,9 +20,19 @@ interface ExportNode {
     data: Record<string, any>
 }
 
+interface ExportEdge {
+    id: string
+    from: string
+    to: string
+    label?: string
+}
+
 interface ProductionLaunchPanelProps {
     nodes: ExportNode[]
+    edges?: ExportEdge[]
     isApproved: boolean
+    currentFinalVisualId?: string | null
+    outputVideoNodeId?: string | null
     onClose: () => void
 }
 
@@ -34,8 +44,7 @@ function asString(v: any): string {
     return String(v).trim()
 }
 
-// ── Prompt type labels (inline, no external dependency) ──
-// Matches PromptContent.tsx PromptType values exactly.
+// ── Prompt type labels (inline, matches PromptContent.tsx) ──
 
 const PROMPT_TYPE_LABELS: Record<string, string> = {
     'master': 'Master Prompt',
@@ -53,6 +62,20 @@ function promptTypeLabel(raw: string): string {
 function formatOrigin(raw: string): string {
     const s = asString(raw)
     return s || 'manual'
+}
+
+// ── Node type display labels ──
+
+const NODE_TYPE_LABELS: Record<string, string> = {
+    'image': 'Image',
+    'video': 'Video',
+    'note': 'Note',
+    'prompt': 'Prompt',
+    'column': 'Column',
+}
+
+function nodeTypeLabel(type: string): string {
+    return NODE_TYPE_LABELS[type] ?? type
 }
 
 // ── Image role handling ──
@@ -135,6 +158,186 @@ function buildPromptEntries(promptNodes: ExportNode[]): PromptEntry[] {
     return entries
 }
 
+// ── Prompt References (1-hop via edges) ──
+
+interface PromptRef {
+    node: ExportNode
+    rank: number  // lower = higher priority
+    src?: string  // for image/video thumbnail
+}
+
+function resolvePromptRefs(
+    promptNodeId: string,
+    edges: ExportEdge[],
+    nodeMap: Map<string, ExportNode>,
+    currentFinalVisualId: string | null,
+    outputVideoNodeId: string | null,
+): PromptRef[] {
+    // Collect incoming-only neighbors (media → prompt).
+    // Outgoing edges (prompt → media) are outputs/derivati — excluded from refs.
+    const neighborIds = new Set<string>()
+    for (const edge of edges) {
+        if (edge.to === promptNodeId && edge.from !== promptNodeId) neighborIds.add(edge.from)
+    }
+
+    const refs: PromptRef[] = []
+    for (const nid of neighborIds) {
+        const node = nodeMap.get(nid)
+        if (!node) continue
+        // Media refs only — image and video. Notes/columns/prompts excluded.
+        if (node.type !== 'image' && node.type !== 'video') continue
+
+        // Rank: FV=0, Output=1, Asset(promoted)=2, others=3
+        let rank = 3
+        if (node.type === 'image' && currentFinalVisualId && (node.data as any).promotedSelectionId === currentFinalVisualId) {
+            rank = 0
+        } else if (node.type === 'video' && node.id === outputVideoNodeId) {
+            rank = 1
+        } else if (node.type === 'image' && (node.data as any).promotedSelectionId) {
+            rank = 2
+        }
+
+        const src = (node.type === 'image' || node.type === 'video')
+            ? asString(node.data.src ?? node.data.url ?? node.data.publicUrl ?? node.data.storage_path ?? node.data.thumbnail ?? '')
+            : undefined
+
+        refs.push({ node, rank, src })
+    }
+
+    // Sort: rank ASC, then createdAt ASC as tiebreaker
+    refs.sort((a, b) => {
+        if (a.rank !== b.rank) return a.rank - b.rank
+        const ca = asString(a.node.data.createdAt ?? a.node.data.created_at ?? '')
+        const cb = asString(b.node.data.createdAt ?? b.node.data.created_at ?? '')
+        return ca.localeCompare(cb)
+    })
+
+    return refs
+}
+
+function refRoleTag(ref: PromptRef, currentFinalVisualId: string | null, outputVideoNodeId: string | null): string | null {
+    if (ref.node.type === 'image' && currentFinalVisualId && (ref.node.data as any).promotedSelectionId === currentFinalVisualId) return 'FV'
+    if (ref.node.type === 'video' && ref.node.id === outputVideoNodeId) return 'Output'
+    if (ref.node.type === 'image' && (ref.node.data as any).promotedSelectionId) return 'Asset'
+    return null
+}
+
+// ── Prompt Pack v3 — Canon formatting ──
+
+const SECTION_LINE = '────────────────────────────────────────'
+const PROMPT_SEPARATOR = '════════════════════════════════════════'
+
+/**
+ * Breathe body: if body contains (Label): patterns, expand them.
+ * Light touch — only replaces `(Label):` with `\nLabel:\n`.
+ * Everything else stays verbatim.
+ */
+function breatheBody(body: string): string {
+    if (!body) return ''
+    // Match patterns like "(Shot Type):" or "(Action):" at start of line or after ". "
+    return body.replace(/\(([A-Za-z][A-Za-z0-9 ]*)\)\s*:\s*/g, '\n$1:\n')
+        .replace(/^\n/, '') // trim leading newline if pattern was at start
+        .trim()
+}
+
+// Format refs section for Prompt Pack v3
+function formatRefsForPack(refs: PromptRef[], currentFinalVisualId: string | null, outputVideoNodeId: string | null): string {
+    if (refs.length === 0) return ''
+    const lines = refs.map(ref => {
+        const tag = refRoleTag(ref, currentFinalVisualId, outputVideoNodeId)
+        let name = asString(ref.node.data.filename ?? ref.node.data.originalFileName ?? ref.node.data.name ?? ref.node.data.title ?? ref.node.data.label ?? '')
+        // Derive filename from storage_path basename if missing
+        if (!name) {
+            const sp = asString(ref.node.data.storage_path ?? '')
+            if (sp) name = sp.split('/').pop() ?? ''
+        }
+        if (!name) name = 'untitled'
+        // URL priority: publicUrl > src > url > resolved storage_path
+        const url = asString(ref.node.data.publicUrl ?? ref.node.data.src ?? ref.node.data.url ?? ref.node.data.storage_path ?? '')
+        const typeStr = nodeTypeLabel(ref.node.type)
+        const tagStr = tag ? ` [${tag}]` : ''
+        let line = `• ${typeStr}${tagStr}`
+        line += `\n  File: ${name}`
+        if (url) line += `\n  URL:  ${url}`
+        return line
+    })
+    return `\nINPUT REFERENCES\n${SECTION_LINE}\n${lines.join('\n\n')}`
+}
+
+// Format notes section for Prompt Pack v3
+function formatNotesForBlock(notes: ExportNode[]): string {
+    if (notes.length === 0) return ''
+    const bodies = notes
+        .map(n => asString(n.data.body ?? n.data.text ?? n.data.content ?? ''))
+        .filter(Boolean)
+    if (bodies.length === 0) return ''
+    return `\nNOTES (incoming)\n${SECTION_LINE}\n${bodies.map(b => `• ${b}`).join('\n\n')}`
+}
+
+/**
+ * Format a single prompt block for Copy Block / Prompt Pack.
+ */
+function formatPromptBlock(
+    entry: PromptEntry,
+    index: number,
+    refs: PromptRef[],
+    incomingNotes: ExportNode[],
+    notesOn: boolean,
+    fvId: string | null,
+    outId: string | null,
+): string {
+    const parts: string[] = []
+
+    // Header — compact single line
+    parts.push(`PROMPT #${index + 1}  |  ${entry.label}  |  Origin: ${entry.origin}`)
+    parts.push(SECTION_LINE)
+    parts.push('')
+
+    // Body (breathed)
+    parts.push(breatheBody(entry.body))
+
+    // Input References
+    const refSection = formatRefsForPack(refs, fvId, outId)
+    if (refSection) {
+        parts.push('')
+        parts.push(refSection)
+    }
+
+    // Notes (opt-in)
+    if (notesOn) {
+        const noteSection = formatNotesForBlock(incomingNotes)
+        if (noteSection) {
+            parts.push('')
+            parts.push(noteSection)
+        }
+    }
+
+    return parts.join('\n')
+}
+
+// ── Prompt Notes (incoming note → prompt, opt-in) ──
+
+function resolvePromptNotes(
+    promptNodeId: string,
+    edges: ExportEdge[],
+    nodeMap: Map<string, ExportNode>,
+): ExportNode[] {
+    const noteIds = new Set<string>()
+    for (const edge of edges) {
+        if (edge.to === promptNodeId && edge.from !== promptNodeId) {
+            const node = nodeMap.get(edge.from)
+            if (node && node.type === 'note') noteIds.add(edge.from)
+        }
+    }
+    const notes = Array.from(noteIds).map(id => nodeMap.get(id)!).filter(Boolean)
+    notes.sort((a, b) => {
+        const ca = asString(a.data.createdAt ?? a.data.created_at ?? '')
+        const cb = asString(b.data.createdAt ?? b.data.created_at ?? '')
+        return ca.localeCompare(cb)
+    })
+    return notes
+}
+
 // ── Copy helpers ──
 
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -145,8 +348,6 @@ async function copyToClipboard(text: string): Promise<boolean> {
         return false
     }
 }
-
-// ── Copy feedback button ──
 
 function CopyButton({ text, label }: { text: string; label: string }) {
     const [copied, setCopied] = useState(false)
@@ -170,7 +371,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
     )
 }
 
-// ── Download helper (with cross-origin blob fallback) ──
+// ── Download helper ──
 
 async function downloadImage(src: string, filename: string) {
     try {
@@ -188,7 +389,7 @@ async function downloadImage(src: string, filename: string) {
             return
         }
     } catch {
-        // Fetch failed (CORS etc.) — fall through to anchor method
+        // fall through
     }
 
     const a = document.createElement('a')
@@ -203,41 +404,78 @@ async function downloadImage(src: string, filename: string) {
 
 // ── Component ──
 
-export function ProductionLaunchPanel({ nodes, isApproved, onClose }: ProductionLaunchPanelProps) {
+export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVisualId, outputVideoNodeId, onClose }: ProductionLaunchPanelProps) {
     const promptNodes = useMemo(() => nodes.filter(n => n.type === 'prompt'), [nodes])
     const imageNodes = useMemo(() => nodes.filter(n => n.type === 'image'), [nodes])
     const noteNodes = useMemo(() => nodes.filter(n => n.type === 'note'), [nodes])
 
-    // v2: flat list, no dedup, no buckets
+    const nodeMap = useMemo(() => {
+        const m = new Map<string, ExportNode>()
+        for (const n of nodes) m.set(n.id, n)
+        return m
+    }, [nodes])
+
     const promptEntries = useMemo(() => buildPromptEntries(promptNodes), [promptNodes])
     const images = useMemo(() => groupImages(imageNodes), [imageNodes])
 
-    const [includeNotes, setIncludeNotes] = useState(false)
+    // Resolve references per prompt (memoized as a Map)
+    const promptRefsMap = useMemo(() => {
+        const edgeList = edges ?? []
+        const m = new Map<string, PromptRef[]>()
+        for (const entry of promptEntries) {
+            m.set(entry.node.id, resolvePromptRefs(
+                entry.node.id, edgeList, nodeMap,
+                currentFinalVisualId ?? null, outputVideoNodeId ?? null,
+            ))
+        }
+        return m
+    }, [promptEntries, edges, nodeMap, currentFinalVisualId, outputVideoNodeId])
+
+    const [includeNotes, setIncludeNotes] = useState(true)
+
+    // Per-prompt notes toggle (opt-in, default OFF)
+    const [blockNotesToggle, setBlockNotesToggle] = useState<Record<string, boolean>>({})
+
+    // Resolve incoming notes per prompt (memoized)
+    const promptNotesMap = useMemo(() => {
+        const edgeList = edges ?? []
+        const m = new Map<string, ExportNode[]>()
+        for (const entry of promptEntries) {
+            m.set(entry.node.id, resolvePromptNotes(entry.node.id, edgeList, nodeMap))
+        }
+        return m
+    }, [promptEntries, edges, nodeMap])
 
     const hasPrompts = promptEntries.length > 0
     const hasNotes = noteNodes.length > 0
     const hasImages = images.firstFrame || images.lastFrame || images.references.length > 0
 
-    // Build Prompt Pack: all prompts in createdAt order, optionally with notes at the end
+    const fvId = currentFinalVisualId ?? null
+    const outId = outputVideoNodeId ?? null
+
+    // Build Prompt Pack v3 — canon format
     const promptPack = useMemo(() => {
         const blocks: string[] = []
 
-        for (const entry of promptEntries) {
-            blocks.push(`[${entry.label}]\nOrigin: ${entry.origin}\n\n${entry.body}`)
-        }
+        promptEntries.forEach((entry, idx) => {
+            const refs = promptRefsMap.get(entry.node.id) ?? []
+            const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
+            // Prompt Pack uses global includeNotes toggle for notes
+            blocks.push(formatPromptBlock(entry, idx, refs, incomingNotes, includeNotes, fvId, outId))
+        })
 
-        // Notes (opt-in, appended after all prompts)
         if (includeNotes && noteNodes.length > 0) {
+            // Also append unlinked notes (not connected to any prompt) at the end
             const notesBodies = noteNodes
                 .map(n => asString(n.data.body ?? n.data.text ?? ''))
                 .filter(Boolean)
             if (notesBodies.length > 0) {
-                blocks.push(`[MOTION / PRODUCTION NOTES]\n\n${notesBodies.join('\n\n')}`)
+                blocks.push(`PRODUCTION NOTES\n${SECTION_LINE}\n${notesBodies.map(b => `• ${b}`).join('\n\n')}`)
             }
         }
 
-        return blocks.join('\n\n---\n\n')
-    }, [promptEntries, includeNotes, noteNodes])
+        return blocks.join(`\n\n${PROMPT_SEPARATOR}\n\n`)
+    }, [promptEntries, promptRefsMap, promptNotesMap, includeNotes, noteNodes, fvId, outId])
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
@@ -265,7 +503,7 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
                 {/* Body — two columns */}
                 <div className="flex-1 overflow-y-auto">
                     <div className="flex min-h-0">
-                        {/* Left Column: Prompts (pure reflection) */}
+                        {/* Left Column: Prompts (pure reflection + references) */}
                         <div className="flex-1 border-r border-zinc-800 px-6 py-4 overflow-y-auto">
                             <h3 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-4">
                                 Prompts {hasPrompts && <span className="text-zinc-600">({promptEntries.length})</span>}
@@ -276,7 +514,10 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
                             )}
 
                             {promptEntries.map((entry, idx) => {
-                                const copyBlock = `[${entry.label}]\nOrigin: ${entry.origin}\n\n${entry.body}`
+                                const refs = promptRefsMap.get(entry.node.id) ?? []
+                                const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
+                                const notesOn = !!blockNotesToggle[entry.node.id]
+                                const copyBlock = formatPromptBlock(entry, idx, refs, incomingNotes, notesOn, fvId, outId)
 
                                 return (
                                     <div key={entry.node.id} className="mb-5">
@@ -301,9 +542,36 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
                                             rows={Math.min(Math.max(entry.body.split('\n').length, 3), 10)}
                                         />
 
-                                        <div className="flex gap-2 mt-1.5">
+                                        {/* Prompt References — 1-hop linked media nodes */}
+                                        {refs.length > 0 && (
+                                            <div className="flex flex-wrap gap-1.5 mt-2">
+                                                {refs.map(ref => (
+                                                    <RefChip
+                                                        key={ref.node.id}
+                                                        ref_={ref}
+                                                        currentFinalVisualId={fvId}
+                                                        outputVideoNodeId={outId}
+                                                    />
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        <div className="flex items-center gap-2 mt-1.5">
                                             <CopyButton text={entry.body} label="Copy Content" />
                                             <CopyButton text={copyBlock} label="Copy Block" />
+                                            {incomingNotes.length > 0 && (
+                                                <label className="flex items-center gap-1 cursor-pointer select-none ml-1">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={notesOn}
+                                                        onChange={(e) => setBlockNotesToggle(prev => ({ ...prev, [entry.node.id]: e.target.checked }))}
+                                                        className="w-3 h-3 rounded border-zinc-600 bg-zinc-800 text-amber-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                                    />
+                                                    <span className="text-[10px] text-zinc-500">
+                                                        + Notes ({incomingNotes.length})
+                                                    </span>
+                                                </label>
+                                            )}
                                         </div>
                                     </div>
                                 )
@@ -338,7 +606,6 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
                                 <p className="text-xs text-zinc-600 italic">No images in this Take.</p>
                             )}
 
-                            {/* First Frame */}
                             {images.firstFrame && (
                                 <div className="mb-4">
                                     <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400 block mb-2">
@@ -348,7 +615,6 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
                                 </div>
                             )}
 
-                            {/* Last Frame */}
                             {images.lastFrame && (
                                 <div className="mb-4">
                                     <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400 block mb-2">
@@ -358,7 +624,6 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
                                 </div>
                             )}
 
-                            {/* References */}
                             {images.references.length > 0 && (
                                 <div>
                                     <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 block mb-2">
@@ -375,6 +640,63 @@ export function ProductionLaunchPanel({ nodes, isApproved, onClose }: Production
                     </div>
                 </div>
             </div>
+        </div>
+    )
+}
+
+// ── RefChip — small chip for a linked reference node ──
+
+function RefChip({ ref_, currentFinalVisualId, outputVideoNodeId }: {
+    ref_: PromptRef
+    currentFinalVisualId: string | null
+    outputVideoNodeId: string | null
+}) {
+    const tag = refRoleTag(ref_, currentFinalVisualId, outputVideoNodeId)
+    let name = asString(ref_.node.data.filename ?? ref_.node.data.originalFileName ?? ref_.node.data.name ?? ref_.node.data.title ?? ref_.node.data.label ?? '')
+    if (!name) {
+        const sp = asString(ref_.node.data.storage_path ?? '')
+        if (sp) name = sp.split('/').pop() ?? ''
+    }
+    const typeStr = nodeTypeLabel(ref_.node.type)
+    const hasThumbnail = ref_.src && (ref_.node.type === 'image' || ref_.node.type === 'video')
+
+    // Tag color
+    const tagColor = tag === 'FV'
+        ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
+        : tag === 'Output'
+            ? 'text-emerald-400 bg-emerald-500/10 border-emerald-600/20'
+            : tag === 'Asset'
+                ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
+                : ''
+
+    return (
+        <div className="flex items-center gap-1.5 bg-zinc-800/70 border border-zinc-700 rounded px-1.5 py-1 max-w-[180px]">
+            {/* Thumbnail (image/video only) */}
+            {hasThumbnail && (
+                <div className="w-6 h-6 shrink-0 rounded overflow-hidden bg-zinc-700">
+                    <img
+                        src={ref_.src}
+                        alt=""
+                        className="w-full h-full object-cover"
+                        loading="lazy"
+                    />
+                </div>
+            )}
+
+            {/* Type + name */}
+            <div className="flex items-center gap-1 min-w-0 overflow-hidden">
+                <span className="text-[9px] text-zinc-500 shrink-0">{typeStr}</span>
+                {name && (
+                    <span className="text-[9px] text-zinc-400 truncate">{name}</span>
+                )}
+            </div>
+
+            {/* Role tag */}
+            {tag && (
+                <span className={`text-[8px] font-medium px-1 py-0.5 rounded border shrink-0 ${tagColor}`}>
+                    {tag}
+                </span>
+            )}
         </div>
     )
 }

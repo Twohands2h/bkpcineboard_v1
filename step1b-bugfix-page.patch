@@ -1,0 +1,12 @@
+diff --git a/src/app/projects/[id]/shots/[shotId]/page.tsx b/src/app/projects/[id]/shots/[shotId]/page.tsx
+index fc39d8b..5e64fda 100644
+--- a/src/app/projects/[id]/shots/[shotId]/page.tsx
++++ b/src/app/projects/[id]/shots/[shotId]/page.tsx
+@@ -45,6 +45,7 @@ export default async function ShotWorkspacePage({ params }: Props) {
+     status: take.status,
+     created_at: take.created_at,
+     updated_at: take.created_at,
++    output_video_node_id: take.output_video_node_id ?? null,
+   }))
+ 
+   // ── Scene + Shot Strip data ──

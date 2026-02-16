@@ -1,0 +1,20 @@
+diff --git a/src/components/canvas/TakeCanvas.tsx b/src/components/canvas/TakeCanvas.tsx
+index 94f4c46..74fdacc 100644
+--- a/src/components/canvas/TakeCanvas.tsx
++++ b/src/components/canvas/TakeCanvas.tsx
+@@ -1204,7 +1204,14 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
+                                     </span>
+                                 ) : (
+                                     <button
+-                                        onClick={(e) => { e.stopPropagation(); onSetFinalVisual(selId) }}
++                                        onClick={(e) => {
++                                            e.stopPropagation()
++                                            // Read node live — guard against stale closure after rehydration
++                                            const liveNode = nodesRef.current.find(n => n.id === primarySelectedId)
++                                            const liveSelId = liveNode ? (liveNode.data as any).promotedSelectionId : null
++                                            if (!liveSelId) return
++                                            onSetFinalVisual(liveSelId)
++                                        }}
+                                         onMouseDown={(e) => e.stopPropagation()}
+                                         className="px-2 py-0.5 bg-amber-900/80 border border-amber-600 hover:border-amber-400 text-amber-400 hover:text-amber-200 text-[10px] rounded whitespace-nowrap transition-colors"
+                                     >

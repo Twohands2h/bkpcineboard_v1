@@ -1,0 +1,43 @@
+diff --git a/src/components/canvas/TakeCanvas.tsx b/src/components/canvas/TakeCanvas.tsx
+index 6b91645..6759cf2 100644
+--- a/src/components/canvas/TakeCanvas.tsx
++++ b/src/components/canvas/TakeCanvas.tsx
+@@ -1053,11 +1053,13 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
+             if (!result) return
+ 
+             pushHistory()
+-            setNodes(prev => prev.map(n =>
++            const nextNodes = nodesRef.current.map(n =>
+                 n.id === imageNode.id && n.type === 'image'
+                     ? { ...n, data: { ...n.data, promotedSelectionId: result.selectionId, selectionNumber: result.selectionNumber } }
+                     : n
+-            ))
++            )
++            nodesRef.current = nextNodes
++            setNodes(nextNodes)
+             emitNodesChange()
+         }, [onPromoteSelection, primarySelectedId, selectedNodeIds, pushHistory, emitNodesChange])
+ 
+@@ -1181,6 +1183,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
+                                 onDelete={(id) => { void handleDelete(id) }} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}
+                                 nodeType={node.type}
+                                 isOutputVideo={node.type === 'video' && node.id === outputVideoNodeId}
++                                isFinalVisual={node.type === 'image' && !!currentFinalVisualId && (node.data as any).promotedSelectionId === currentFinalVisualId}
+                                 onToggleOutputVideo={node.type === 'video' ? () => {
+                                     if (node.id === outputVideoNodeId) { void onClearOutputVideo?.() }
+                                     else { void onSetOutputVideo?.(node.id) }
+@@ -1245,7 +1248,13 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
+                                     </span>
+                                 ) : (
+                                     <button
+-                                        onClick={(e) => { e.stopPropagation(); onSetFinalVisual(selId) }}
++                                        onClick={(e) => {
++                                            e.stopPropagation()
++                                            const liveNode = nodesRef.current.find(n => n.id === primarySelectedId)
++                                            const liveSelId = liveNode ? (liveNode.data as any).promotedSelectionId : null
++                                            if (!liveSelId) return
++                                            onSetFinalVisual(liveSelId)
++                                        }}
+                                         onMouseDown={(e) => e.stopPropagation()}
+                                         className="px-2 py-0.5 bg-amber-900/80 border border-amber-600 hover:border-amber-400 text-amber-400 hover:text-amber-200 text-[10px] rounded whitespace-nowrap transition-colors"
+                                     >

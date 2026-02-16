@@ -15,9 +15,13 @@ interface ShotHeaderProps {
   projectId: string
   finalVisual?: FinalVisualData | null
   onUndoFinalVisual?: () => void
+  approvedTakeIndex?: number | null
+  onApprovedTakeClick?: () => void
+  hasFinalVisual?: boolean
+  hasOutput?: boolean
 }
 
-export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual }: ShotHeaderProps) {
+export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual, approvedTakeIndex, onApprovedTakeClick, hasFinalVisual, hasOutput }: ShotHeaderProps) {
   return (
     <div className="border-b border-zinc-800 bg-zinc-900 px-6 py-4 shrink-0">
       {/* Breadcrumb minimale */}
@@ -41,6 +45,45 @@ export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual }: 
             Decided
           </span>
         )}
+
+        {/* Inline status indicators — only render what exists */}
+        {(() => {
+          const items: React.ReactNode[] = []
+
+          if (approvedTakeIndex != null && onApprovedTakeClick) {
+            items.push(
+              <span
+                key="approved"
+                onClick={onApprovedTakeClick}
+                className="text-zinc-300 hover:text-zinc-100 cursor-pointer transition-colors"
+                title="Approved take"
+              >
+                T{approvedTakeIndex}
+              </span>
+            )
+          }
+
+          if (hasFinalVisual) {
+            items.push(
+              <span key="fv" className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Final Visual" />
+            )
+          }
+
+          if (hasOutput) {
+            items.push(
+              <span key="out" className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Output" />
+            )
+          }
+
+          if (items.length === 0) return null
+
+          return items.map((item, i) => (
+            <span key={i} className="inline-flex items-center gap-2">
+              <span className="text-zinc-600">·</span>
+              {item}
+            </span>
+          ))
+        })()}
       </nav>
 
       {/* Contenuto + Final Visual thumbnail */}

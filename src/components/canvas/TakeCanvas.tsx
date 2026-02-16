@@ -1067,8 +1067,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             if (!fn || !tn || nodeHidden(fn, nodes) || nodeHidden(tn, nodes)) return null
             const fr = renderRects.get(edge.from), tr = renderRects.get(edge.to); if (!fr || !tr) return null
             const fc = rectCenter(fr), tc = rectCenter(tr)
-            return { edge, from: edgeAnchor(fr, tc.x, tc.y), to: edgeAnchor(tr, fc.x, fc.y) }
-        }).filter(Boolean) as { edge: CanvasEdge; from: { x: number; y: number }; to: { x: number; y: number } }[], [edges, nodes, renderRects])
+            return { edge, from: edgeAnchor(fr, tc.x, tc.y), to: edgeAnchor(tr, fc.x, fc.y), fromType: fn.type, toType: tn.type }
+        }).filter(Boolean) as { edge: CanvasEdge; from: { x: number; y: number }; to: { x: number; y: number }; fromType: string; toType: string }[], [edges, nodes, renderRects])
 
         return (
             <div
@@ -1106,11 +1106,21 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         <defs>
                             <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#71717a" /></marker>
                             <marker id="arrowhead-selected" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#3b82f6" /></marker>
+                            <marker id="arrowhead-in" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#60a5fa" /></marker>
+                            <marker id="arrowhead-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#34d399" /></marker>
                         </defs>
                         <g style={{ pointerEvents: 'stroke' }} onClick={handleSvgClick as any}>
                             {edgeLines.map(({ edge, from, to }) => <line key={`h-${edge.id}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="transparent" strokeWidth={EDGE_HIT_DISTANCE * 2} style={{ cursor: 'pointer', pointerEvents: 'stroke' }} />)}
                         </g>
-                        {edgeLines.map(({ edge, from, to }) => { const s = edge.id === selectedEdgeId; return <line key={edge.id} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={s ? '#3b82f6' : '#71717a'} strokeWidth={s ? 2 : 1.5} markerEnd={s ? 'url(#arrowhead-selected)' : 'url(#arrowhead)'} /> })}
+                        {edgeLines.map(({ edge, from, to, fromType, toType }) => {
+                            const s = edge.id === selectedEdgeId
+                            // Edge Grammar v1: semantic coloring only for prompt ↔ image/video
+                            const isPromptIn = toType === 'prompt' && fromType !== 'prompt' && (fromType === 'image' || fromType === 'video')
+                            const isPromptOut = fromType === 'prompt' && (toType === 'image' || toType === 'video')
+                            const strokeColor = s ? '#3b82f6' : isPromptIn ? '#60a5fa' : isPromptOut ? '#34d399' : '#71717a'
+                            const marker = s ? 'url(#arrowhead-selected)' : isPromptIn ? 'url(#arrowhead-in)' : isPromptOut ? 'url(#arrowhead-out)' : 'url(#arrowhead)'
+                            return <line key={edge.id} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={strokeColor} strokeWidth={s ? 2 : 1.5} strokeDasharray={!s && (isPromptIn || isPromptOut) ? '6 4' : undefined} markerEnd={marker} />
+                        })}
                         {connectionGhost && <line x1={connectionGhost.fromX} y1={connectionGhost.fromY} x2={connectionGhost.toX} y2={connectionGhost.toY} stroke="#10b981" strokeWidth={2} strokeDasharray="6 3" markerEnd="url(#arrowhead)" />}
                     </svg>
 

@@ -490,10 +490,13 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   // ── Production Launch Panel ──
   const [showPLP, setShowPLP] = useState(false)
   const [plpNodes, setPlpNodes] = useState<CanvasNode[]>([])
+  const [plpEdges, setPlpEdges] = useState<CanvasEdge[]>([])
 
   const handleOpenPLP = () => {
     if (!canvasRef.current) return
-    setPlpNodes(canvasRef.current.getSnapshot().nodes)
+    const snap = canvasRef.current.getSnapshot()
+    setPlpNodes(snap.nodes)
+    setPlpEdges(snap.edges)
     setShowPLP(true)
   }
 
@@ -611,7 +614,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     return (
       <div className="flex-1 flex flex-col">
         {renderStrip()}
-        <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual} onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined} />
+        <ShotHeader
+          shot={shot}
+          projectId={projectId}
+          finalVisual={finalVisual}
+          onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
+          approvedTakeIndex={(() => { const idx = takes.findIndex(t => t.id === shot.approved_take_id); return idx >= 0 ? idx + 1 : null })()}
+          onApprovedTakeClick={shot.approved_take_id ? () => setCurrentTakeId(shot.approved_take_id!) : undefined}
+          hasFinalVisual={!!finalVisual?.selectionId}
+          hasOutput={!!takes.find(t => t.id === shot.approved_take_id)?.output_video_node_id}
+        />
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
           <div className="text-center">
             <p className="text-zinc-500 text-sm mb-4">Nessun Take presente per questo Shot</p>
@@ -635,7 +647,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   return (
     <div className="flex-1 flex flex-col">
       {renderStrip()}
-      <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual} onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined} />
+      <ShotHeader
+        shot={shot}
+        projectId={projectId}
+        finalVisual={finalVisual}
+        onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
+        approvedTakeIndex={(() => { const idx = takes.findIndex(t => t.id === shot.approved_take_id); return idx >= 0 ? idx + 1 : null })()}
+        onApprovedTakeClick={shot.approved_take_id ? () => setCurrentTakeId(shot.approved_take_id!) : undefined}
+        hasFinalVisual={!!finalVisual?.selectionId}
+        hasOutput={!!takes.find(t => t.id === shot.approved_take_id)?.output_video_node_id}
+      />
 
       <TakeTabs
         takes={takes}
@@ -787,7 +808,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           {readyTakeId && (
             <TakeCanvas
               ref={canvasRef}
-              key={`${readyTakeId}-${finalVisual?.selectionId ?? 'none'}`}
+              key={readyTakeId}
               takeId={readyTakeId}
               initialNodes={readyPayload?.nodes}
               initialEdges={readyPayload?.edges}
@@ -832,7 +853,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       {showPLP && (
         <ProductionLaunchPanel
           nodes={plpNodes}
+          edges={plpEdges}
           isApproved={shot.approved_take_id === readyTakeId}
+          currentFinalVisualId={finalVisual?.selectionId ?? null}
+          outputVideoNodeId={currentTake?.output_video_node_id ?? null}
           onClose={() => setShowPLP(false)}
         />
       )}
