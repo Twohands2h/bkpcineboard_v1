@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ShotHeader } from './shot-header'
 import { TakeTabs } from './take-tabs'
 import { TakeCanvas, type TakeCanvasHandle, type CanvasNode, type CanvasEdge, type UndoHistory } from '@/components/canvas/TakeCanvas'
+import { VIEWPORT_INITIAL, type ViewportState } from '@/utils/screenToWorld'
 import type { ImageData, VideoData } from '@/components/canvas/NodeContent'
 import {
   saveTakeSnapshotAction,
@@ -126,6 +127,21 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   const [readyTakeId, setReadyTakeId] = useState<string | null>(null)
   const [readyPayload, setReadyPayload] = useState<SnapshotPayload | undefined>(undefined)
+
+  // Viewport persist: restore from sessionStorage, driven only by readyTakeId
+  const readyViewport = useMemo<ViewportState>(() => {
+    if (!readyTakeId) return VIEWPORT_INITIAL
+    try {
+      const raw = sessionStorage.getItem(`cineboard:viewport:take:${readyTakeId}`)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (typeof parsed.offsetX === 'number' && typeof parsed.offsetY === 'number' && typeof parsed.scale === 'number') {
+          return parsed
+        }
+      }
+    } catch { }
+    return VIEWPORT_INITIAL
+  }, [readyTakeId]) // eslint-disable-line react-hooks/exhaustive-deps
   const [isLoading, setIsLoading] = useState(true)
   const [shotSelections, setShotSelections] = useState<ActiveSelection[]>([])
   const [finalVisual, setFinalVisual] = useState<{ selectionId: string; src: string; storagePath: string; selectionNumber: number; takeId: string | null } | null>(null)
@@ -1108,6 +1124,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               takeId={readyTakeId}
               initialNodes={readyPayload?.nodes}
               initialEdges={readyPayload?.edges}
+              initialViewport={readyViewport}
               onNodesChange={handleNodesChange}
               initialUndoHistory={currentUndoHistory}
               onUndoHistoryChange={handleUndoHistoryChange}

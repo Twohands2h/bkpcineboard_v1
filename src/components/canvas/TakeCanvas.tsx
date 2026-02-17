@@ -54,6 +54,7 @@ interface TakeCanvasProps {
     takeId: string
     initialNodes?: CanvasNode[]
     initialEdges?: CanvasEdge[]
+    initialViewport?: ViewportState
     onNodesChange?: (nodes: CanvasNode[], edges: CanvasEdge[]) => void
     initialUndoHistory?: UndoHistory
     onUndoHistoryChange?: (history: UndoHistory) => void
@@ -92,6 +93,8 @@ export interface TakeCanvasHandle {
     createPromptNodeAtScreen: (screenX: number, screenY: number) => void
     getCanvasRect: () => DOMRect | null
     getViewportScale: () => number
+    getViewport: () => ViewportState
+    setViewport: (vp: ViewportState) => void
     updateNodeData: (nodeId: string, patch: Record<string, any>) => void
     beginBatch: () => void
     endBatch: () => void
@@ -175,7 +178,7 @@ interface SelectionBoxRect { left: number; top: number; width: number; height: n
 interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, shotSelections }, ref) {
+    function TakeCanvas({ takeId, initialNodes, initialEdges, initialViewport, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, shotSelections }, ref) {
         const [nodes, _setNodesRaw] = useState<CanvasNode[]>(() => initialNodes ?? [])
         const [edges, _setEdgesRaw] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
@@ -187,10 +190,20 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const [connectionGhost, setConnectionGhost] = useState<{ fromX: number; fromY: number; toX: number; toY: number } | null>(null)
         const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
 
-        // R4-005: Viewport state (NOT persisted, NOT in undo)
-        const [viewport, setViewport] = useState<ViewportState>(VIEWPORT_INITIAL)
-        const viewportRef = useRef<ViewportState>(VIEWPORT_INITIAL)
+        // R4-005: Viewport state (NOT persisted to DB, NOT in undo)
+        const [viewport, setViewport] = useState<ViewportState>(() => initialViewport ?? VIEWPORT_INITIAL)
+        const viewportRef = useRef<ViewportState>(initialViewport ?? VIEWPORT_INITIAL)
         useEffect(() => { viewportRef.current = viewport }, [viewport])
+
+        // Viewport persist: debounced save to sessionStorage (UI-only, no DB)
+        const vpPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+        useEffect(() => {
+            if (vpPersistTimerRef.current) clearTimeout(vpPersistTimerRef.current)
+            vpPersistTimerRef.current = setTimeout(() => {
+                try { sessionStorage.setItem(`cineboard:viewport:take:${takeId}`, JSON.stringify(viewport)) } catch { }
+            }, 300)
+            return () => { if (vpPersistTimerRef.current) clearTimeout(vpPersistTimerRef.current) }
+        }, [viewport, takeId])
         const spaceDownRef = useRef(false)
         const panRef = useRef<{ startMouseX: number; startMouseY: number; startOffsetX: number; startOffsetY: number } | null>(null)
 
@@ -462,6 +475,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen,
             getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
             getViewportScale: () => viewportRef.current.scale,
+            getViewport: () => ({ ...viewportRef.current }),
+            setViewport: (vp: ViewportState) => { setViewport(vp); viewportRef.current = vp },
             updateNodeData, beginBatch, endBatch,
         }), [nodes, edges, createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen, updateNodeData, beginBatch, endBatch])
 
@@ -471,7 +486,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             detachingRef.current = null; setDetachingOffset(null); setFrozenColumnId(null); frozenRectsRef.current = null
             shiftedNodesRef.current = new Map()
             if (dataChangeTimerRef.current) { clearTimeout(dataChangeTimerRef.current); dataChangeTimerRef.current = null }
-            setViewport(VIEWPORT_INITIAL) // Reset viewport on Take change
             setSelectionBoxRect(null); setConnectionGhost(null)
         }, [takeId])
 
