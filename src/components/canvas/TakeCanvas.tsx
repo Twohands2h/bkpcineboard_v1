@@ -1127,12 +1127,49 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         // R4-005b: Only on truly empty canvas — not on nodes, columns, or their children
         const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
             const target = e.target as HTMLElement
-            // Block if clicking on a node or anything inside a node
             if (target.closest('[data-node-shell]')) return
-            // Block if clicking on interactive elements (buttons, inputs)
             if (target.closest('button') || target.closest('input') || target.closest('textarea')) return
-            setViewport(VIEWPORT_INITIAL)
-        }, [])
+
+            const visible = nodesRef.current.filter(n => !nodeHidden(n, nodesRef.current))
+            if (visible.length === 0) { setViewport(VIEWPORT_INITIAL); return }
+
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+            for (const n of visible) {
+                minX = Math.min(minX, n.x)
+                minY = Math.min(minY, n.y)
+                maxX = Math.max(maxX, n.x + n.width)
+                maxY = Math.max(maxY, n.y + n.height)
+            }
+            const bboxW = maxX - minX
+            const bboxH = maxY - minY
+            const bboxCx = minX + bboxW / 2
+            const bboxCy = minY + bboxH / 2
+
+            const cr = canvasRef.current?.getBoundingClientRect()
+            if (!cr) { setViewport(VIEWPORT_INITIAL); return }
+
+            const vp = viewportRef.current
+            const isFarFromOne = Math.abs(vp.scale - 1) > 0.05
+
+            if (isFarFromOne) {
+                setViewport({
+                    scale: 1,
+                    offsetX: cr.width / 2 - bboxCx,
+                    offsetY: cr.height / 2 - bboxCy,
+                })
+            } else {
+                const padding = 80
+                const scaleX = (cr.width - padding * 2) / Math.max(bboxW, 1)
+                const scaleY = (cr.height - padding * 2) / Math.max(bboxH, 1)
+                const fitScale = Math.min(scaleX, scaleY, ZOOM_MAX)
+                const clampedScale = Math.max(fitScale, ZOOM_MIN)
+                setViewport({
+                    scale: clampedScale,
+                    offsetX: cr.width / 2 - bboxCx * clampedScale,
+                    offsetY: cr.height / 2 - bboxCy * clampedScale,
+                })
+            }
+        }, [setViewport])
 
         const visibleNodes = nodes.filter(n => !nodeHidden(n, nodes))
         const edgeLines = useMemo(() => edges.map(edge => {
