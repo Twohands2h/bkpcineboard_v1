@@ -30,23 +30,23 @@ export default async function ShotWorkspacePage({ params }: Props) {
   // Fetch takes from DB (real schema)
   const rawTakes = await listShotTakes(shotId)
 
-  // Sort by created_at
+  // Sort by take_number (immutable, monotonic — canonical order)
   const sortedRawTakes = [...rawTakes].sort((a, b) => {
-    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    return (a.take_number ?? 0) - (b.take_number ?? 0)
   })
 
   // ✅ ADAPTER: DB schema → Component interface
   const takes = sortedRawTakes.map((take, index) => ({
     id: take.id,
     shot_id: take.shot_id!,
-    name: `Take ${index + 1}`,
+    name: `Take ${take.take_number}`,
     order_index: index,
+    take_number: take.take_number as number,
     description: null,
     status: take.status,
     created_at: take.created_at,
     updated_at: take.created_at,
     output_video_node_id: take.output_video_node_id ?? null,
-    output_video_src: take.output_video_src ?? null,
   }))
 
   // ── Scene + Shot Strip data ──

@@ -48,6 +48,7 @@ interface Take {
   description: string | null
   status: string
   order_index: number
+  take_number: number
   created_at: string
   updated_at: string
   output_video_node_id: string | null
@@ -334,18 +335,20 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const handleNewTake = async () => {
     try {
       const newTake = await createTakeAction({ projectId, shotId: shot.id })
+      if (!newTake.take_number) throw new Error('Server did not return take_number')
 
       setTakes(prev => {
-        const nextIndex = prev.length
         const localTake: Take = {
           id: newTake.id,
           shot_id: newTake.shot_id ?? shot.id,
-          name: `Take ${nextIndex + 1}`,
+          name: `Take ${newTake.take_number}`,
           description: null,
           status: newTake.status,
-          order_index: nextIndex,
+          order_index: prev.length,
+          take_number: newTake.take_number,
           created_at: newTake.created_at,
           updated_at: newTake.created_at,
+          output_video_node_id: null,
         }
         return [...prev, localTake]
       })
@@ -390,6 +393,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
     try {
       const newTake = await createTakeAction({ projectId, shotId: shot.id })
+      if (!newTake.take_number) throw new Error('Server did not return take_number')
 
       await saveTakeSnapshotAction({
         project_id: projectId,
@@ -401,16 +405,17 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       })
 
       setTakes(prev => {
-        const nextIndex = prev.length
         const localTake: Take = {
           id: newTake.id,
           shot_id: newTake.shot_id ?? shot.id,
-          name: `Take ${nextIndex + 1}`,
+          name: `Take ${newTake.take_number}`,
           description: null,
           status: newTake.status,
-          order_index: nextIndex,
+          order_index: prev.length,
+          take_number: newTake.take_number,
           created_at: newTake.created_at,
           updated_at: newTake.created_at,
+          output_video_node_id: null,
         }
         return [...prev, localTake]
       })
