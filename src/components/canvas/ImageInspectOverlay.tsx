@@ -54,34 +54,40 @@ export function ImageInspectOverlay({ src, naturalWidth, naturalHeight, onClose 
         return () => document.removeEventListener('wheel', handler, { capture: true })
     }, [])
 
-    // Compute fit scale
-    const getFitScale = useCallback(() => {
-        if (!containerRef.current) return 1
-        const cr = containerRef.current.getBoundingClientRect()
-        const pad = 48
-        const maxW = cr.width - pad * 2
-        const maxH = cr.height - pad * 2
-        return Math.min(maxW / naturalWidth, maxH / naturalHeight, 1)
+    // Compute fit scale: ratio of CSS-fitted size to natural size (for label + 100% button)
+    const [fitScale, setFitScale] = useState(1)
+    useEffect(() => {
+        const compute = () => {
+            if (!containerRef.current) return
+            const cr = containerRef.current.getBoundingClientRect()
+            const pad = 32
+            const maxW = cr.width - pad * 2
+            const maxH = cr.height - pad * 2
+            if (maxW > 0 && maxH > 0) setFitScale(Math.min(maxW / naturalWidth, maxH / naturalHeight))
+        }
+        compute()
+        window.addEventListener('resize', compute)
+        return () => window.removeEventListener('resize', compute)
     }, [naturalWidth, naturalHeight])
 
     // Switch modes
     const handleFit = useCallback(() => {
         setMode('fit')
-        setZoom(getFitScale())
-        setPan({ x: 0, y: 0 })
-    }, [getFitScale])
-
-    const handleActualSize = useCallback(() => {
-        setMode('100')
         setZoom(1)
         setPan({ x: 0, y: 0 })
     }, [])
 
+    const handleActualSize = useCallback(() => {
+        // 100% mode = show at natural pixels, so zoom relative to fit
+        setMode('100')
+        setZoom(fitScale > 0 ? 1 / fitScale : 1)
+        setPan({ x: 0, y: 0 })
+    }, [fitScale])
+
     // Init fit on mount
     useEffect(() => {
-        const t = setTimeout(() => setZoom(getFitScale()), 0)
-        return () => clearTimeout(t)
-    }, [getFitScale])
+        setZoom(1)
+    }, [])
 
     // Pan with drag
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -133,7 +139,7 @@ export function ImageInspectOverlay({ src, naturalWidth, naturalHeight, onClose 
                         onClick={handleActualSize}
                         className={`px-3 py-1 text-xs rounded transition-colors ${mode === '100' ? 'bg-zinc-700 text-zinc-200' : 'text-zinc-400 hover:text-zinc-200'}`}
                     >100%</button>
-                    <span className="text-zinc-600 text-xs ml-2">{Math.round(zoom * 100)}% · {naturalWidth}×{naturalHeight}</span>
+                    <span className="text-zinc-600 text-xs ml-2">{Math.round(zoom * fitScale * 100)}% · {naturalWidth}×{naturalHeight}</span>
                 </div>
                 <button
                     onClick={onClose}
@@ -151,8 +157,9 @@ export function ImageInspectOverlay({ src, naturalWidth, naturalHeight, onClose 
                 <div
                     onClick={(e) => e.stopPropagation()}
                     style={{
-                        width: naturalWidth,
-                        height: naturalHeight,
+                        maxWidth: 'calc(100vw - 64px)',
+                        maxHeight: 'calc(100vh - 104px)', // 64px padding + ~40px toolbar
+                        aspectRatio: `${naturalWidth} / ${naturalHeight}`,
                         transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
                         transformOrigin: 'center center',
                     }}
@@ -161,7 +168,7 @@ export function ImageInspectOverlay({ src, naturalWidth, naturalHeight, onClose 
                         src={src}
                         alt=""
                         draggable={false}
-                        className="select-none w-full h-full"
+                        className="select-none w-full h-full object-contain"
                         style={{
                             imageRendering: zoom >= 2 ? 'pixelated' : 'auto',
                         }}
