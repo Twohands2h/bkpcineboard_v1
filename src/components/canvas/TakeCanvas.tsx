@@ -1031,6 +1031,101 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 const mod = e.metaKey || e.ctrlKey
                 if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
                 if (mod && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo() }
+
+                // Copy: selected nodes + internal edges, strip editorial fields
+                if (mod && e.key === 'c' && !e.shiftKey && interactionMode === 'idle') {
+                    const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
+                    const sel = selectedNodeIdsRef.current; if (sel.size === 0) return
+                    e.preventDefault()
+                    // Expand selection: include column descendants by parentId
+                    const ids = new Set<string>(sel)
+                    let added = true
+                    while (added) {
+                        added = false
+                        for (const n of nodesRef.current) {
+                            const pid = (n.data as any)?.parentId
+                            if (pid && ids.has(pid) && !ids.has(n.id)) { ids.add(n.id); added = true }
+                        }
+                    }
+                    const selNodes = nodesRef.current.filter(n => ids.has(n.id))
+                    const stripped = selNodes.map(n => {
+                        const d = { ...n.data } as any
+                        delete d.promotedSelectionId
+                        delete d.selectionNumber
+                        delete d.isFinalVisual
+
+                        return { ...n, data: d }
+                    })
+                    const intEdges = edgesRef.current.filter(ed => ids.has(ed.from) && ids.has(ed.to))
+                    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+                    for (const n of stripped) {
+                        minX = Math.min(minX, n.x); minY = Math.min(minY, n.y)
+                        maxX = Math.max(maxX, n.x + n.width); maxY = Math.max(maxY, n.y + n.height)
+                    }
+                    try {
+                        sessionStorage.setItem('cineboard.clipboard.v1', JSON.stringify({
+                            version: 1, nodes: stripped, edges: intEdges,
+                            bbox: { minX, minY, maxX, maxY },
+                        }))
+                    } catch { }
+                }
+
+                // Paste: fresh IDs, remap edges, center in viewport, 1 undo step
+                if (mod && e.key === 'v' && !e.shiftKey && interactionMode === 'idle') {
+                    const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
+                    let clip: any
+                    try { clip = JSON.parse(sessionStorage.getItem('cineboard.clipboard.v1') || '') } catch { return }
+                    if (!clip?.nodes?.length) return
+                    e.preventDefault()
+
+                    const idMap = new Map<string, string>()
+                    for (const n of clip.nodes) idMap.set(n.id, crypto.randomUUID())
+
+                    const vp = viewportRef.current
+                    const cr = canvasRef.current?.getBoundingClientRect()
+                    const cw = cr?.width ?? 800, ch = cr?.height ?? 600
+                    const worldCx = (cw / 2 - vp.offsetX) / vp.scale
+                    const worldCy = (ch / 2 - vp.offsetY) / vp.scale
+
+                    const bboxCx = (clip.bbox.minX + clip.bbox.maxX) / 2
+                    const bboxCy = (clip.bbox.minY + clip.bbox.maxY) / 2
+                    const nudge = 24
+                    const dx = worldCx - bboxCx + nudge
+                    const dy = worldCy - bboxCy + nudge
+
+                    const maxZ = nodesRef.current.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0)
+                    let zi = maxZ + 1
+
+                    const newNodes: CanvasNode[] = clip.nodes.map((n: any) => {
+                        const oldParentId = n.data?.parentId ?? null
+                        const newParentId = oldParentId ? (idMap.get(oldParentId) ?? null) : null
+                        const nd = { ...n.data, parentId: newParentId }
+                        // Remap childOrder for columns
+                        if (n.type === 'column' && nd.childOrder) {
+                            nd.childOrder = (nd.childOrder as string[]).map((cid: string) => idMap.get(cid) ?? cid)
+                        }
+                        return {
+                            ...n,
+                            id: idMap.get(n.id)!,
+                            x: n.x + dx,
+                            y: n.y + dy,
+                            zIndex: zi++,
+                            data: nd,
+                        }
+                    })
+                    const newEdges: CanvasEdge[] = (clip.edges || []).map((ed: any) => ({
+                        ...ed,
+                        id: crypto.randomUUID(),
+                        from: idMap.get(ed.from) ?? ed.from,
+                        to: idMap.get(ed.to) ?? ed.to,
+                    }))
+
+                    setNodes(p => [...p, ...newNodes])
+                    setEdges(p => [...p, ...newEdges])
+                    setSelectedNodeIds(new Set(newNodes.map(n => n.id)))
+                    setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                }
+
                 if (e.key === 'Escape') { endInteraction(); setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setEditingField(null) }
                 if ((e.key === 'Delete' || e.key === 'Backspace') && interactionMode === 'idle') {
                     const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
