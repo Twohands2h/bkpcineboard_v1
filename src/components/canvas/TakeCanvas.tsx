@@ -1069,17 +1069,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     const idMap = new Map<string, string>()
                     for (const n of clip.nodes) idMap.set(n.id, crypto.randomUUID())
 
-                    const vp = viewportRef.current
-                    const cr = canvasRef.current?.getBoundingClientRect()
-                    const cw = cr?.width ?? 800, ch = cr?.height ?? 600
-                    const worldCx = (cw / 2 - vp.offsetX) / vp.scale
-                    const worldCy = (ch / 2 - vp.offsetY) / vp.scale
-
-                    const bboxCx = (clip.bbox.minX + clip.bbox.maxX) / 2
-                    const bboxCy = (clip.bbox.minY + clip.bbox.maxY) / 2
-                    const nudge = 24
-                    const dx = worldCx - bboxCx + nudge
-                    const dy = worldCy - bboxCy + nudge
+                    const nudge = 20
+                    const dx = nudge
+                    const dy = nudge
 
                     const maxZ = nodesRef.current.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0)
                     let zi = maxZ + 1
