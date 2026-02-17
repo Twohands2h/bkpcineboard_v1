@@ -275,10 +275,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     // Add missing: active selection matches this image but no badge yet
                     if (!nodeData.promotedSelectionId && shotSelections?.length) {
                         const match = shotSelections.find(s =>
-                            // Prefer nodeId match (stable across sessions, immune to duplicate take)
-                            s.nodeId ? s.nodeId === n.id
-                                // Fallback: src/storagePath match (backward compat, no nodeId in old selections)
-                                : (s.storagePath === nodeData.storage_path || s.src === nodeData.src)
+                            // Match ONLY by nodeId (stable, immune to duplicate take cloning)
+                            s.nodeId ? s.nodeId === n.id : false
                         )
                         if (match) {
                             changed = true
@@ -329,8 +327,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 if (n.type !== 'image') return n
                 const nd = n.data as any
                 const match = shotSelections.find(s =>
-                    s.nodeId ? s.nodeId === n.id
-                        : (s.storagePath === nd.storage_path || s.src === nd.src)
+                    // Match ONLY by nodeId (stable, immune to duplicate take cloning)
+                    s.nodeId ? s.nodeId === n.id : false
                 )
                 if (match && nd.promotedSelectionId !== match.selectionId) {
                     changed = true

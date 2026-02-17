@@ -20,6 +20,7 @@ import {
   deleteTakeWithGuardAction,
 } from '@/app/actions/shot-approved-take'
 import { setTakeOutputVideo, clearTakeOutputVideo } from '@/app/actions/take-output'
+import { setShotOutputVideo, clearShotOutputVideo } from '@/app/actions/shot-output'
 import { ExportTakeModal } from '@/components/export/export-take-modal'
 import { ProductionLaunchPanel } from '@/components/production/production-launch-panel'
 import { createClient } from '@/lib/supabase/client'
@@ -149,6 +150,30 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [inspectMedia, setInspectMedia] = useState<{ type: 'image' | 'video'; src: string } | null>(null)
+
+  // ESC to close inspect overlay
+  useEffect(() => {
+    if (!inspectMedia) return
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setInspectMedia(null) }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [inspectMedia])
+
+  // Download helper (fetch→blob, cross-origin safe)
+  const triggerDownload = useCallback(async (url: string, filename: string) => {
+    try {
+      const res = await fetch(url); const blob = await res.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href = blobUrl; a.download = filename
+      document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      URL.revokeObjectURL(blobUrl)
+    } catch { window.open(url, '_blank') }
+  }, [])
+  const pad2 = (n: number) => String(n).padStart(2, '0')
+  const extFromUrl = (url: string, fb: string) => { try { const e = new URL(url).pathname.split('.').pop(); return e && e.length <= 5 ? e : fb } catch { return fb } }
+  const sceneIdx = stripData?.scenes?.findIndex(s => s.shots?.some(sh => sh.id === shot.id)) ?? 0
+  const shotPrefix = `S${pad2(sceneIdx + 1)}_SH${pad2(shot.order_index + 1)}`
 
   // Auto-dismiss upload error toast after 6s
   useEffect(() => {
@@ -740,7 +765,14 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           </div>
         )}
         {renderStrip()}
-        <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual} onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined} />
+        <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual}
+          onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
+          outputVideoSrc={shot.output_video_src ?? null}
+          onPreviewFV={finalVisual?.src ? () => setInspectMedia({ type: 'image', src: finalVisual.src }) : undefined}
+          onPreviewOutput={shot.output_video_src ? () => setInspectMedia({ type: 'video', src: shot.output_video_src! }) : undefined}
+          onDownloadFV={finalVisual?.src ? () => triggerDownload(finalVisual.src, `${shotPrefix}_FV.${extFromUrl(finalVisual.src, 'png')}`) : undefined}
+          onDownloadOutput={shot.output_video_src ? () => triggerDownload(shot.output_video_src!, `${shotPrefix}_OUTPUT.${extFromUrl(shot.output_video_src!, 'mp4')}`) : undefined}
+        />
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
           <div className="text-center">
             <p className="text-zinc-500 text-sm mb-4">Nessun Take presente per questo Shot</p>
@@ -776,7 +808,14 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         </div>
       )}
       {renderStrip()}
-      <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual} onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined} />
+      <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual}
+        onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
+        outputVideoSrc={shot.output_video_src ?? null}
+        onPreviewFV={finalVisual?.src ? () => setInspectMedia({ type: 'image', src: finalVisual.src }) : undefined}
+        onPreviewOutput={shot.output_video_src ? () => setInspectMedia({ type: 'video', src: shot.output_video_src! }) : undefined}
+        onDownloadFV={finalVisual?.src ? () => triggerDownload(finalVisual.src, `${shotPrefix}_FV.${extFromUrl(finalVisual.src, 'png')}`) : undefined}
+        onDownloadOutput={shot.output_video_src ? () => triggerDownload(shot.output_video_src!, `${shotPrefix}_OUTPUT.${extFromUrl(shot.output_video_src!, 'mp4')}`) : undefined}
+      />
 
       <TakeTabs
         takes={takes}
@@ -1145,11 +1184,15 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 if (!readyTakeId) return
                 await setTakeOutputVideo(readyTakeId, nodeId)
                 setTakes(prev => prev.map(t => t.id === readyTakeId ? { ...t, output_video_node_id: nodeId } : t))
+                await setShotOutputVideo(shot.id, nodeId, readyTakeId)
+                router.refresh()
               }}
               onClearOutputVideo={async () => {
                 if (!readyTakeId) return
                 await clearTakeOutputVideo(readyTakeId)
                 setTakes(prev => prev.map(t => t.id === readyTakeId ? { ...t, output_video_node_id: null } : t))
+                await clearShotOutputVideo(shot.id)
+                router.refresh()
               }}
               shotSelections={shotSelections}
             />
@@ -1190,6 +1233,26 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           <div className="w-full h-full bg-zinc-800 border border-zinc-600 rounded-lg opacity-60 flex flex-col p-3">
             <span className="text-xs text-zinc-400">Untitled</span>
             <span className="text-[10px] text-zinc-600 mt-1">Double-click to edit</span>
+          </div>
+        </div>
+      )}
+
+      {/* Media inspect overlay — FV image or Output video */}
+      {inspectMedia && (
+        <div
+          className="fixed inset-0 z-[99999] bg-black/90 flex items-center justify-center cursor-pointer"
+          onClick={() => setInspectMedia(null)}
+        >
+          <div
+            style={{ maxWidth: 'calc(100vw - 64px)', maxHeight: 'calc(100vh - 64px)' }}
+            onClick={e => e.stopPropagation()}
+            className="cursor-default"
+          >
+            {inspectMedia.type === 'image' ? (
+              <img src={inspectMedia.src} alt="" className="max-w-full max-h-[calc(100vh-64px)] object-contain rounded" />
+            ) : (
+              <video src={inspectMedia.src} controls muted className="max-w-full max-h-[calc(100vh-64px)] object-contain rounded" />
+            )}
           </div>
         </div>
       )}
