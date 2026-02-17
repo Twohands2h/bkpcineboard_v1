@@ -47,7 +47,7 @@ export function TakeTabs({
   onOpenProduction,
   isProductionReady,
 }: TakeTabsProps) {
-  const canDelete = takes.length > 1
+  const canDelete = true
 
   return (
     <nav className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between px-4 shrink-0">

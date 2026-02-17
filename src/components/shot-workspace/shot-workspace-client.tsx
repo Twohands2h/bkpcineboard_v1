@@ -426,8 +426,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   }
 
   const handleDeleteTake = async (takeId: string) => {
-    if (takes.length <= 1) return
-
     const targetTake = takes.find(t => t.id === takeId)
     const isFVTake = finalVisualTakeId === takeId
 
@@ -452,9 +450,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
     setTakes(remainingTakes)
 
-    const deletedIndex = takes.findIndex(t => t.id === deletedId)
-    const nextTake = remainingTakes[Math.min(deletedIndex, remainingTakes.length - 1)]
-    setCurrentTakeId(nextTake.id)
+    if (remainingTakes.length > 0) {
+      const deletedIndex = takes.findIndex(t => t.id === deletedId)
+      const nextTake = remainingTakes[Math.min(deletedIndex, remainingTakes.length - 1)]
+      setCurrentTakeId(nextTake.id)
+    } else {
+      // Zero-takes state: clear current take, canvas won't mount
+      setCurrentTakeId(null as any)
+      setReadyTakeId(null)
+      setReadyPayload(undefined)
+    }
 
     undoHistoryByTakeRef.current.delete(deletedId)
 
