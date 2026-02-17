@@ -108,7 +108,7 @@ export function NodeShell({
     return (
         <div
             data-node-shell
-            className={`absolute select-none box-border bg-zinc-800 ${isFinalVisual ? 'border-2 border-emerald-500' : isOutputVideo ? 'border-2 border-emerald-600' : 'border border-zinc-700'} shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
+            className={`absolute select-none box-border bg-zinc-800 ${isFinalVisual ? 'border-2 border-emerald-500' : isOutputVideo ? 'border-2 border-emerald-600' : 'border border-zinc-700'} shadow-lg ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isDragging ? 'opacity-90' : ''}`}
             style={{
                 transform: `translate(${x}px, ${y}px)`,
                 width,
