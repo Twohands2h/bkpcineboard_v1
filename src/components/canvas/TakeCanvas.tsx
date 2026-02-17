@@ -557,12 +557,14 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         if (colRect && insideColBodyRect(colRect, cx, cy)) { targetColId = n.id; break }
                     }
                     const insertIdx = targetColId ? getInsertionIndex(prev, rects, targetColId, cy, det.nodeId) : 0
+                    const maxZ = prev.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0)
 
                     return prev.map(n => {
                         if (n.id === det.nodeId) {
-                            return targetColId
+                            const base = targetColId
                                 ? { ...n, data: { ...n.data, parentId: targetColId } }
                                 : { ...n, x: fx, y: fy, width: det.frozenRect.width, data: { ...n.data, parentId: null } }
+                            return { ...base, zIndex: maxZ + 1 }
                         }
                         if (n.type === 'column') {
                             const col = n as ColumnNode; let order = [...(col.data.childOrder || [])]
@@ -597,6 +599,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                             })
                         }
                     }
+                    // Raise-on-drop: bump all dragged nodes above everything else
+                    const maxZ = u.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0)
+                    let zi = maxZ + 1
+                    u = u.map(n => ids.has(n.id) ? { ...n, zIndex: zi++ } : n)
                     return u
                 })
             }
