@@ -81,18 +81,20 @@ export interface CanvasEdge { id: string; from: string; to: string; label?: stri
 export interface TakeCanvasHandle {
     getSnapshot: () => { nodes: CanvasNode[]; edges: CanvasEdge[] }
     createNodeAt: (x: number, y: number) => void
-    createImageNodeAt: (x: number, y: number, imageData: ImageData) => void
-    createVideoNodeAt: (x: number, y: number, videoData: VideoData) => void
+    createImageNodeAt: (x: number, y: number, imageData: ImageData) => string
+    createVideoNodeAt: (x: number, y: number, videoData: VideoData) => string
     createColumnNodeAt: (x: number, y: number) => void
     createPromptNodeAt: (x: number, y: number) => void
-    // Screen-coordinate variants: caller passes screen-relative coords,
-    // TakeCanvas converts to world internally. Sidebar should use these.
     createNodeAtScreen: (screenX: number, screenY: number) => void
-    createImageNodeAtScreen: (screenX: number, screenY: number, imageData: ImageData) => void
-    createVideoNodeAtScreen: (screenX: number, screenY: number, videoData: VideoData) => void
+    createImageNodeAtScreen: (screenX: number, screenY: number, imageData: ImageData) => string
+    createVideoNodeAtScreen: (screenX: number, screenY: number, videoData: VideoData) => string
     createColumnNodeAtScreen: (screenX: number, screenY: number) => void
     createPromptNodeAtScreen: (screenX: number, screenY: number) => void
     getCanvasRect: () => DOMRect | null
+    getViewportScale: () => number
+    updateNodeData: (nodeId: string, patch: Record<string, any>) => void
+    beginBatch: () => void
+    endBatch: () => void
 }
 
 type InteractionMode = 'idle' | 'dragging' | 'editing' | 'resizing' | 'selecting' | 'connecting' | 'panning'
@@ -191,6 +193,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         useEffect(() => { viewportRef.current = viewport }, [viewport])
         const spaceDownRef = useRef(false)
         const panRef = useRef<{ startMouseX: number; startMouseY: number; startOffsetX: number; startOffsetY: number } | null>(null)
+
+        // Batch mode: suppress per-node pushHistory/emitNodesChange during multi-create
+        const batchRef = useRef(false)
 
         const detachingRef = useRef<DetachingState | null>(null)
         const detachingOffsetRef = useRef<{ dx: number; dy: number } | null>(null)
@@ -379,20 +384,22 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
-        const createImageNodeAt = useCallback((x: number, y: number, imgData: ImageData) => {
+        const createImageNodeAt = useCallback((x: number, y: number, imgData: ImageData): string => {
             const { naturalWidth: nw, naturalHeight: nh } = imgData; const r = nw / nh
             let w: number, h: number
             if (nw > MAX_INITIAL_IMAGE_WIDTH || nh > MAX_INITIAL_IMAGE_HEIGHT) { if (r > MAX_INITIAL_IMAGE_WIDTH / MAX_INITIAL_IMAGE_HEIGHT) { w = MAX_INITIAL_IMAGE_WIDTH; h = w / r } else { h = MAX_INITIAL_IMAGE_HEIGHT; w = h * r } } else { w = nw; h = nh }
             const n: ImageNode = { id: crypto.randomUUID(), type: 'image', x: Math.round(x - w / 2), y: Math.round(y - h / 2), width: Math.round(w), height: Math.round(h), zIndex: nodesRef.current.length + 1, data: imgData }
             setNodes(p => [...p, n]); setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
-            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+            if (!batchRef.current) setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+            return n.id
         }, [pushHistory, emitNodesChange])
 
         // Step 1A — Video Node
-        const createVideoNodeAt = useCallback((x: number, y: number, vidData: VideoData) => {
+        const createVideoNodeAt = useCallback((x: number, y: number, vidData: VideoData): string => {
             const n: VideoNode = { id: crypto.randomUUID(), type: 'video', x: Math.round(x - VIDEO_DEFAULT_WIDTH / 2), y: Math.round(y - VIDEO_DEFAULT_HEIGHT / 2), width: VIDEO_DEFAULT_WIDTH, height: VIDEO_DEFAULT_HEIGHT, zIndex: nodesRef.current.length + 1, data: vidData }
             setNodes(p => [...p, n]); setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
-            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+            if (!batchRef.current) setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+            return n.id
         }, [pushHistory, emitNodesChange])
 
         const createColumnNodeAt = useCallback((x: number, y: number) => {
@@ -419,12 +426,12 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const w = screenToWorldCoord(sx, sy); createNodeAt(w.x, w.y)
         }, [screenToWorldCoord, createNodeAt])
 
-        const createImageNodeAtScreen = useCallback((sx: number, sy: number, imgData: ImageData) => {
-            const w = screenToWorldCoord(sx, sy); createImageNodeAt(w.x, w.y, imgData)
+        const createImageNodeAtScreen = useCallback((sx: number, sy: number, imgData: ImageData): string => {
+            const w = screenToWorldCoord(sx, sy); return createImageNodeAt(w.x, w.y, imgData)
         }, [screenToWorldCoord, createImageNodeAt])
 
-        const createVideoNodeAtScreen = useCallback((sx: number, sy: number, vidData: VideoData) => {
-            const w = screenToWorldCoord(sx, sy); createVideoNodeAt(w.x, w.y, vidData)
+        const createVideoNodeAtScreen = useCallback((sx: number, sy: number, vidData: VideoData): string => {
+            const w = screenToWorldCoord(sx, sy); return createVideoNodeAt(w.x, w.y, vidData)
         }, [screenToWorldCoord, createVideoNodeAt])
 
         const createColumnNodeAtScreen = useCallback((sx: number, sy: number) => {
@@ -435,12 +442,28 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const w = screenToWorldCoord(sx, sy); createPromptNodeAt(w.x, w.y)
         }, [screenToWorldCoord, createPromptNodeAt])
 
+        const updateNodeData = useCallback((nodeId: string, patch: Record<string, any>) => {
+            setNodes(p => p.map(n => n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n))
+            setTimeout(emitNodesChange, 0)
+        }, [emitNodesChange])
+
+        const beginBatch = useCallback(() => { batchRef.current = true }, [])
+        const endBatch = useCallback(() => {
+            batchRef.current = false
+            // Defer to next microtask: React 18 batches setState updaters,
+            // nodesRef.current is only synced when updaters execute during commit.
+            // setTimeout(0) ensures we read the fully-updated nodesRef.
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
+
         useImperativeHandle(ref, () => ({
             getSnapshot: () => ({ nodes: structuredClone(nodes), edges: structuredClone(edges) }),
             createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt,
             createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen,
             getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
-        }), [nodes, edges, createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen])
+            getViewportScale: () => viewportRef.current.scale,
+            updateNodeData, beginBatch, endBatch,
+        }), [nodes, edges, createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen, updateNodeData, beginBatch, endBatch])
 
         useEffect(() => {
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)

@@ -40,6 +40,22 @@ function checkFileSize(file: File): string | null {
   return null
 }
 
+/** Pre-generate deterministic storage path + public URL before upload starts.
+ *  This ensures the node always has a valid storage_path, even if persist happens mid-upload. */
+function precomputeMediaPath(
+  supabase: ReturnType<typeof createClient>,
+  projectId: string,
+  shotId: string,
+  file: File,
+  type: 'image' | 'video',
+) {
+  const ext = file.name.split('.').pop() || (type === 'image' ? 'png' : 'mp4')
+  const storagePath = `${projectId}/${shotId}/${crypto.randomUUID()}.${ext}`
+  const bucket = type === 'image' ? 'take-images' : 'take-videos'
+  const { data } = supabase.storage.from(bucket).getPublicUrl(storagePath)
+  return { storagePath, bucket, publicUrl: data?.publicUrl ?? '' }
+}
+
 interface Shot {
   id: string
   order_index: number
@@ -126,6 +142,19 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   }, [uploadError])
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const undoHistoryByTakeRef = useRef<Map<string, UndoHistory>>(new Map())
+  const pendingUploadsRef = useRef(0)
+  const [uploadsInProgress, setUploadsInProgress] = useState(false)
+
+  // Prevent navigation (shot change via strip, browser back/close) during uploads
+  useEffect(() => {
+    if (!uploadsInProgress) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [uploadsInProgress])
   const imageInputRef = useRef<HTMLInputElement>(null)
   const videoInputRef = useRef<HTMLInputElement>(null)
   const pendingDropRef = useRef<{ type: 'image' | 'video'; screenX: number; screenY: number } | null>(null)
@@ -135,12 +164,32 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const persistSnapshot = useCallback(async (nodes: CanvasNode[], edges: CanvasEdge[]) => {
     if (!currentTakeId) return
     try {
+      // Sanitize: never persist blob: URLs in src.
+      // storage_path is pre-generated and always valid → derive publicUrl from it.
+      const sanitizedNodes = nodes.map(n => {
+        if (n.type === 'image' || n.type === 'video') {
+          const src = (n.data as any)?.src
+          if (typeof src === 'string' && src.startsWith('blob:')) {
+            const sp = (n.data as any)?.storage_path
+            if (sp) {
+              // Derive public URL from storage_path (deterministic, no network call)
+              const bucket = n.type === 'image' ? 'take-images' : 'take-videos'
+              const supabase = createClient()
+              const { data } = supabase.storage.from(bucket).getPublicUrl(sp)
+              return { ...n, data: { ...n.data, src: data?.publicUrl ?? '' } }
+            }
+            // Fallback: no storage_path (should not happen with precompute pattern)
+            return { ...n, data: { ...n.data, src: '' } }
+          }
+        }
+        return n
+      })
       await saveTakeSnapshotAction({
         project_id: projectId,
         scene_id: shot.scene_id,
         shot_id: shot.id,
         take_id: currentTakeId,
-        payload: { nodes, edges },
+        payload: { nodes: sanitizedNodes, edges },
         reason: 'manual_save',
       })
     } catch (err) {
@@ -275,19 +324,29 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     if (sizeErr) { setUploadError(sizeErr); return }
 
     try {
+      const supabase = createClient()
+      const { storagePath, bucket, publicUrl } = precomputeMediaPath(supabase, projectId, shot.id, file, 'image')
+
+      // 1. Measure dimensions + blob preview
+      const previewUrl = URL.createObjectURL(file)
       const dimensions = await new Promise<{ w: number; h: number }>((resolve, reject) => {
         const img = new window.Image()
         img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
         img.onerror = reject
-        img.src = URL.createObjectURL(file)
+        img.src = previewUrl
       })
 
-      const supabase = createClient()
-      const ext = file.name.split('.').pop() || 'png'
-      const storagePath = `${projectId}/${shot.id}/${crypto.randomUUID()}.${ext}`
+      // 2. Create node with real storage_path + blob src (persist-safe)
+      const nodeId = canvasRef.current.createImageNodeAtScreen(drop.screenX, drop.screenY, {
+        src: previewUrl,
+        storage_path: storagePath,
+        naturalWidth: dimensions.w,
+        naturalHeight: dimensions.h,
+      })
 
+      // 3. Upload async to pre-determined path
       const { error: uploadError } = await supabase.storage
-        .from('take-images')
+        .from(bucket)
         .upload(storagePath, file, { cacheControl: '3600', upsert: false })
 
       if (uploadError) {
@@ -295,19 +354,13 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         return
       }
 
-      const { data: urlData } = supabase.storage
-        .from('take-images')
-        .getPublicUrl(storagePath)
+      // 4. Swap blob → public URL (storage_path already correct)
+      if (canvasRef.current) {
+        canvasRef.current.updateNodeData(nodeId, { src: publicUrl })
+      }
 
-      if (!urlData?.publicUrl) return
-
-      if (!canvasRef.current) return
-      canvasRef.current.createImageNodeAtScreen(drop.screenX, drop.screenY, {
-        src: urlData.publicUrl,
-        storage_path: storagePath,
-        naturalWidth: dimensions.w,
-        naturalHeight: dimensions.h,
-      })
+      // 5. Revoke blob
+      setTimeout(() => URL.revokeObjectURL(previewUrl), 2000)
     } catch (err) {
       setUploadError('Image upload failed: ' + (err instanceof Error ? err.message : 'unknown error'))
     }
@@ -327,11 +380,21 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
     try {
       const supabase = createClient()
-      const ext = file.name.split('.').pop() || 'mp4'
-      const storagePath = `${projectId}/${shot.id}/${crypto.randomUUID()}.${ext}`
+      const { storagePath, bucket, publicUrl } = precomputeMediaPath(supabase, projectId, shot.id, file, 'video')
 
+      // 1. Create node with real storage_path + blob src
+      const previewUrl = URL.createObjectURL(file)
+      const nodeId = canvasRef.current.createVideoNodeAtScreen(drop.screenX, drop.screenY, {
+        src: previewUrl,
+        storage_path: storagePath,
+        filename: file.name,
+        mime_type: file.type || 'video/mp4',
+        size: file.size,
+      })
+
+      // 2. Upload async
       const { error: uploadError } = await supabase.storage
-        .from('take-videos')
+        .from(bucket)
         .upload(storagePath, file, { cacheControl: '3600', upsert: false })
 
       if (uploadError) {
@@ -339,20 +402,13 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         return
       }
 
-      const { data: urlData } = supabase.storage
-        .from('take-videos')
-        .getPublicUrl(storagePath)
+      // 3. Swap blob → public URL
+      if (canvasRef.current) {
+        canvasRef.current.updateNodeData(nodeId, { src: publicUrl })
+      }
 
-      if (!urlData?.publicUrl) return
-
-      if (!canvasRef.current) return
-      canvasRef.current.createVideoNodeAtScreen(drop.screenX, drop.screenY, {
-        src: urlData.publicUrl,
-        storage_path: storagePath,
-        filename: file.name,
-        mime_type: file.type || 'video/mp4',
-        size: file.size,
-      })
+      // 4. Revoke blob
+      setTimeout(() => URL.revokeObjectURL(previewUrl), 2000)
     } catch (err) {
       setUploadError('Video upload failed: ' + (err instanceof Error ? err.message : 'unknown error'))
     }
@@ -637,14 +693,22 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const renderStrip = () => {
     if (!stripData || stripData.scenes.length === 0) return null
     return (
-      <SceneShotStrip
-        key={shot.id}
-        projectId={projectId}
-        scenes={stripData.scenes}
-        currentSceneId={stripData.currentSceneId}
-        currentShotId={shot.id}
-        sceneShots={stripData.sceneShots}
-      />
+      <div className="relative">
+        <SceneShotStrip
+          key={shot.id}
+          projectId={projectId}
+          scenes={stripData.scenes}
+          currentSceneId={stripData.currentSceneId}
+          currentShotId={shot.id}
+          sceneShots={stripData.sceneShots}
+        />
+        {uploadsInProgress && (
+          <div
+            className="absolute inset-0 z-50 cursor-not-allowed"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setUploadError('Wait for uploads to finish before switching shot') }}
+          />
+        )}
+      </div>
     )
   }
 
@@ -701,7 +765,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       <TakeTabs
         takes={takes}
         currentTakeId={currentTakeId}
-        onTakeChange={setCurrentTakeId}
+        onTakeChange={(id) => {
+          if (uploadsInProgress && !window.confirm('Uploads in progress. Switch take? Unfinished uploads may appear empty.')) return
+          setCurrentTakeId(id)
+        }}
         onNewTake={handleNewTake}
         onDuplicate={handleDuplicateTake}
         onDelete={handleDeleteTake}
@@ -874,74 +941,163 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               return
             }
 
-            // Case B: External file drop (from OS) — call upload pipeline directly
+            // Case B: External file drop (from OS)
             const files = Array.from(e.dataTransfer.files)
             if (files.length === 0) return
-            const file = files[0]
-            const isImage = file.type.startsWith('image/')
-            const isVideo = file.type.startsWith('video/')
-            if (!isImage && !isVideo) {
-              console.warn('[DnD] Unsupported file type:', file.type)
+
+            // Filter supported + size check
+            const supported: { file: File; type: 'image' | 'video' }[] = []
+            let skippedCount = 0
+            const sizeErrors: string[] = []
+
+            for (const file of files) {
+              const isImage = file.type.startsWith('image/')
+              const isVideo = file.type.startsWith('video/')
+              if (!isImage && !isVideo) { skippedCount++; continue }
+              const sizeErr = checkFileSize(file)
+              if (sizeErr) { sizeErrors.push(sizeErr); continue }
+              supported.push({ file, type: isImage ? 'image' : 'video' })
+            }
+
+            if (sizeErrors.length > 0) setUploadError(sizeErrors[0] + (sizeErrors.length > 1 ? ` (+${sizeErrors.length - 1} more)` : ''))
+            if (skippedCount > 0 && sizeErrors.length === 0) setUploadError(`${skippedCount} unsupported file(s) skipped`)
+            if (supported.length === 0) return
+
+            // ── Single file: blob preview + exact drop position ──
+            if (supported.length === 1) {
+              const { file, type } = supported[0]
+              try {
+                const previewUrl = URL.createObjectURL(file)
+                const supabase = createClient()
+                const { storagePath, bucket, publicUrl } = precomputeMediaPath(supabase, projectId, shot.id, file, type)
+
+                if (type === 'image') {
+                  const dimensions = await new Promise<{ w: number; h: number }>((resolve, reject) => {
+                    const img = new window.Image()
+                    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
+                    img.onerror = reject
+                    img.src = previewUrl
+                  })
+                  const nodeId = canvasRef.current?.createImageNodeAtScreen(screenX, screenY, {
+                    src: previewUrl, storage_path: storagePath,
+                    naturalWidth: dimensions.w, naturalHeight: dimensions.h,
+                  })
+                  const { error: uploadError } = await supabase.storage
+                    .from(bucket)
+                    .upload(storagePath, file, { cacheControl: '3600', upsert: false })
+                  if (uploadError) { setUploadError('Image upload failed: ' + uploadError.message); return }
+                  if (nodeId && canvasRef.current) {
+                    canvasRef.current.updateNodeData(nodeId, { src: publicUrl })
+                  }
+                  setTimeout(() => URL.revokeObjectURL(previewUrl), 2000)
+                } else {
+                  const nodeId = canvasRef.current?.createVideoNodeAtScreen(screenX, screenY, {
+                    src: previewUrl, storage_path: storagePath,
+                    filename: file.name, mime_type: file.type || 'video/mp4', size: file.size,
+                  })
+                  const { error: uploadError } = await supabase.storage
+                    .from(bucket)
+                    .upload(storagePath, file, { cacheControl: '3600', upsert: false })
+                  if (uploadError) { setUploadError('Video upload failed: ' + uploadError.message); return }
+                  if (nodeId && canvasRef.current) {
+                    canvasRef.current.updateNodeData(nodeId, { src: publicUrl })
+                  }
+                  setTimeout(() => URL.revokeObjectURL(previewUrl), 2000)
+                }
+              } catch (err) {
+                setUploadError('Upload failed: ' + (err instanceof Error ? err.message : 'unknown error'))
+              }
               return
             }
 
-            const sizeErr = checkFileSize(file)
-            if (sizeErr) { setUploadError(sizeErr); return }
+            // ── Multi-file: all nodes created immediately, uploads in background ──
+            const rawScale = canvasRef.current?.getViewportScale?.() ?? 1
+            const scale = Math.max(0.2, rawScale)
+            const GRID_COLS = 4
+            const GRID_GAP = Math.round(32 * scale)
+            const CELL_W = Math.round(440 * scale)
+            const CELL_H = Math.round(248 * scale)
 
-            pendingDropRef.current = { type: isImage ? 'image' : 'video', screenX, screenY }
-
-            // Upload directly — same pipeline as picker onChange
-            const drop = pendingDropRef.current
-            pendingDropRef.current = null
-
-            try {
-              const supabase = createClient()
-
-              if (isImage) {
-                const dimensions = await new Promise<{ w: number; h: number }>((resolve, reject) => {
+            // Phase 1a: Precompute paths + blob URLs + measure dimensions in parallel
+            const supabase = createClient()
+            const prepared = supported.map(({ file, type }) => {
+              const previewUrl = URL.createObjectURL(file)
+              const { storagePath, bucket, publicUrl } = precomputeMediaPath(supabase, projectId, shot.id, file, type)
+              const dimPromise: Promise<{ w: number; h: number }> = type === 'image'
+                ? new Promise(resolve => {
                   const img = new window.Image()
                   img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
-                  img.onerror = reject
-                  img.src = URL.createObjectURL(file)
+                  img.onerror = () => resolve({ w: 400, h: 225 })
+                  img.src = previewUrl
+                })
+                : Promise.resolve({ w: 400, h: 225 })
+              return { file, type, previewUrl, storagePath, bucket, publicUrl, dimPromise }
+            })
+
+            const dimensions = await Promise.all(prepared.map(p => p.dimPromise))
+
+            // Phase 1b: Create ALL nodes in batch with real storage_path + blob src
+            const items: typeof prepared = []
+
+            canvas.beginBatch()
+            for (let i = 0; i < prepared.length; i++) {
+              const p = prepared[i]
+              const dim = dimensions[i]
+              const col = i % GRID_COLS
+              const row = Math.floor(i / GRID_COLS)
+              const sx = screenX + col * (CELL_W + GRID_GAP)
+              const sy = screenY + row * (CELL_H + GRID_GAP)
+
+              const nodeId = p.type === 'image'
+                ? canvasRef.current?.createImageNodeAtScreen(sx, sy, {
+                  src: p.previewUrl, storage_path: p.storagePath,
+                  naturalWidth: dim.w, naturalHeight: dim.h,
+                })
+                : canvasRef.current?.createVideoNodeAtScreen(sx, sy, {
+                  src: p.previewUrl, storage_path: p.storagePath,
+                  filename: p.file.name, mime_type: p.file.type || 'video/mp4', size: p.file.size,
                 })
 
-                const ext = file.name.split('.').pop() || 'png'
-                const storagePath = `${projectId}/${shot.id}/${crypto.randomUUID()}.${ext}`
-                const { error: uploadError } = await supabase.storage
-                  .from('take-images')
-                  .upload(storagePath, file, { cacheControl: '3600', upsert: false })
-                if (uploadError) { setUploadError('Image upload failed: ' + uploadError.message); return }
+              if (nodeId) items.push({ ...p, nodeId } as any)
+            }
+            canvas.endBatch()
 
-                const { data: urlData } = supabase.storage.from('take-images').getPublicUrl(storagePath)
-                if (!urlData?.publicUrl) return
+            // Phase 2: Upload in background, swap blob → publicUrl (storage_path already set)
+            pendingUploadsRef.current = items.length
+            setUploadsInProgress(true)
 
-                canvasRef.current?.createImageNodeAtScreen(drop.screenX, drop.screenY, {
-                  src: urlData.publicUrl,
-                  storage_path: storagePath,
-                  naturalWidth: dimensions.w,
-                  naturalHeight: dimensions.h,
-                })
-              } else {
-                const ext = file.name.split('.').pop() || 'mp4'
-                const storagePath = `${projectId}/${shot.id}/${crypto.randomUUID()}.${ext}`
-                const { error: uploadError } = await supabase.storage
-                  .from('take-videos')
-                  .upload(storagePath, file, { cacheControl: '3600', upsert: false })
-                if (uploadError) { setUploadError('Video upload failed: ' + uploadError.message); return }
+            let failCount = 0
 
-                const { data: urlData } = supabase.storage.from('take-videos').getPublicUrl(storagePath)
-                if (!urlData?.publicUrl) return
-
-                canvasRef.current?.createVideoNodeAtScreen(drop.screenX, drop.screenY, {
-                  src: urlData.publicUrl,
-                  storage_path: storagePath,
-                  filename: file.name,
-                  mime_type: file.type || 'video/mp4',
-                  size: file.size,
-                })
+            const uploadOne = async (item: typeof items[0] & { nodeId: string }) => {
+              try {
+                const { error: err } = await supabase.storage
+                  .from(item.bucket)
+                  .upload(item.storagePath, item.file, { cacheControl: '3600', upsert: false })
+                if (err) throw err
+                if (canvasRef.current) {
+                  canvasRef.current.updateNodeData(item.nodeId, { src: item.publicUrl })
+                }
+                setTimeout(() => URL.revokeObjectURL(item.previewUrl), 2000)
+              } catch (err) {
+                failCount++
+                URL.revokeObjectURL(item.previewUrl)
+              } finally {
+                pendingUploadsRef.current--
+                if (pendingUploadsRef.current <= 0) setUploadsInProgress(false)
               }
-            } catch (err) {
-              setUploadError('Upload failed: ' + (err instanceof Error ? err.message : 'unknown error'))
+            }
+
+            const queue = [...items] as (typeof items[0] & { nodeId: string })[]
+            const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+              while (queue.length > 0) {
+                const item = queue.shift()!
+                await uploadOne(item)
+              }
+            })
+            await Promise.all(workers)
+
+            if (failCount > 0) {
+              setUploadError(`${failCount} file(s) failed to upload`)
             }
           }}
         >
