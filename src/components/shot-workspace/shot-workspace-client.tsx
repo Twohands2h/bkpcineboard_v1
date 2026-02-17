@@ -28,6 +28,18 @@ import { SceneShotStrip, setLastTakeForShot, type StripScene, type StripShot } f
 // SHOT WORKSPACE CLIENT — ORCHESTRATOR (R4-003)
 // ===================================================
 
+// Upload limit: configurable via env, fallback 50MB (Supabase Free plan)
+const MAX_UPLOAD_BYTES = (parseInt(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? '50', 10)) * 1024 * 1024
+const MAX_UPLOAD_LABEL = `${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))}MB`
+
+/** Returns error message if file exceeds limit, null if OK */
+function checkFileSize(file: File): string | null {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return `File "${file.name}" (${(file.size / (1024 * 1024)).toFixed(1)}MB) exceeds the ${MAX_UPLOAD_LABEL} upload limit.`
+  }
+  return null
+}
+
 interface Shot {
   id: string
   order_index: number
@@ -104,6 +116,14 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [finalVisualTakeId, setFinalVisualTakeId] = useState<string | null>(null)
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+
+  // Auto-dismiss upload error toast after 6s
+  useEffect(() => {
+    if (!uploadError) return
+    const t = setTimeout(() => setUploadError(null), 6000)
+    return () => clearTimeout(t)
+  }, [uploadError])
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const undoHistoryByTakeRef = useRef<Map<string, UndoHistory>>(new Map())
   const imageInputRef = useRef<HTMLInputElement>(null)
@@ -251,6 +271,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
     if (!file || !canvasRef.current || !drop) return
 
+    const sizeErr = checkFileSize(file)
+    if (sizeErr) { setUploadError(sizeErr); return }
+
     try {
       const dimensions = await new Promise<{ w: number; h: number }>((resolve, reject) => {
         const img = new window.Image()
@@ -268,7 +291,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         .upload(storagePath, file, { cacheControl: '3600', upsert: false })
 
       if (uploadError) {
-        console.error('[DnD] Image upload failed:', uploadError)
+        setUploadError('Image upload failed: ' + uploadError.message)
         return
       }
 
@@ -286,7 +309,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         naturalHeight: dimensions.h,
       })
     } catch (err) {
-      console.error('[DnD] Image upload failed:', err)
+      setUploadError('Image upload failed: ' + (err instanceof Error ? err.message : 'unknown error'))
     }
   }, [projectId, shot.id])
 
@@ -299,6 +322,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
     if (!file || !canvasRef.current || !drop) return
 
+    const sizeErr = checkFileSize(file)
+    if (sizeErr) { setUploadError(sizeErr); return }
+
     try {
       const supabase = createClient()
       const ext = file.name.split('.').pop() || 'mp4'
@@ -309,7 +335,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         .upload(storagePath, file, { cacheControl: '3600', upsert: false })
 
       if (uploadError) {
-        console.error('[DnD] Video upload failed:', uploadError)
+        setUploadError('Video upload failed: ' + uploadError.message)
         return
       }
 
@@ -328,7 +354,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         size: file.size,
       })
     } catch (err) {
-      console.error('[DnD] Video upload failed:', err)
+      setUploadError('Video upload failed: ' + (err instanceof Error ? err.message : 'unknown error'))
     }
   }, [projectId, shot.id])
 
@@ -625,6 +651,14 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   if (takes.length === 0) {
     return (
       <div className="flex-1 flex flex-col">
+        {uploadError && (
+          <div className="fixed top-4 right-4 z-[9999] max-w-sm">
+            <div className="bg-red-900/95 border border-red-700 text-red-100 px-4 py-3 rounded-lg shadow-lg flex items-start gap-3">
+              <span className="text-sm flex-1">{uploadError}</span>
+              <button onClick={() => setUploadError(null)} className="text-red-300 hover:text-red-100 text-lg leading-none shrink-0">×</button>
+            </div>
+          </div>
+        )}
         {renderStrip()}
         <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual} onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined} />
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
@@ -649,6 +683,18 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   return (
     <div className="flex-1 flex flex-col">
+      {/* Upload error toast */}
+      {uploadError && (
+        <div className="fixed top-4 right-4 z-[9999] max-w-sm animate-in fade-in slide-in-from-top-2">
+          <div className="bg-red-900/95 border border-red-700 text-red-100 px-4 py-3 rounded-lg shadow-lg flex items-start gap-3">
+            <span className="text-sm flex-1">{uploadError}</span>
+            <button
+              onClick={() => setUploadError(null)}
+              className="text-red-300 hover:text-red-100 text-lg leading-none shrink-0"
+            >×</button>
+          </div>
+        </div>
+      )}
       {renderStrip()}
       <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual} onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined} />
 
@@ -838,6 +884,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               console.warn('[DnD] Unsupported file type:', file.type)
               return
             }
+
+            const sizeErr = checkFileSize(file)
+            if (sizeErr) { setUploadError(sizeErr); return }
+
             pendingDropRef.current = { type: isImage ? 'image' : 'video', screenX, screenY }
 
             // Upload directly — same pipeline as picker onChange
@@ -860,7 +910,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 const { error: uploadError } = await supabase.storage
                   .from('take-images')
                   .upload(storagePath, file, { cacheControl: '3600', upsert: false })
-                if (uploadError) { console.error('[DnD] Image upload failed:', uploadError); return }
+                if (uploadError) { setUploadError('Image upload failed: ' + uploadError.message); return }
 
                 const { data: urlData } = supabase.storage.from('take-images').getPublicUrl(storagePath)
                 if (!urlData?.publicUrl) return
@@ -877,7 +927,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 const { error: uploadError } = await supabase.storage
                   .from('take-videos')
                   .upload(storagePath, file, { cacheControl: '3600', upsert: false })
-                if (uploadError) { console.error('[DnD] Video upload failed:', uploadError); return }
+                if (uploadError) { setUploadError('Video upload failed: ' + uploadError.message); return }
 
                 const { data: urlData } = supabase.storage.from('take-videos').getPublicUrl(storagePath)
                 if (!urlData?.publicUrl) return
@@ -891,7 +941,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 })
               }
             } catch (err) {
-              console.error('[DnD] Upload failed:', err)
+              setUploadError('Upload failed: ' + (err instanceof Error ? err.message : 'unknown error'))
             }
           }}
         >
