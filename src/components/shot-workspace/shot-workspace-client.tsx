@@ -235,7 +235,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
       if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
 
-      canvas.createNodeAt(x, y)
+      canvas.createNodeAtScreen(x, y)
     }
 
     window.addEventListener('mousemove', handleMouseMove)
@@ -743,7 +743,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 const x = upEvent.clientX - rect.left
                 const y = upEvent.clientY - rect.top
                 if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
-                canvas.createColumnNodeAt(x, y)
+                canvas.createColumnNodeAtScreen(x, y)
               }
 
               window.addEventListener('mousemove', handleMouseMove)
@@ -777,7 +777,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 const x = upEvent.clientX - rect.left
                 const y = upEvent.clientY - rect.top
                 if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
-                canvas.createPromptNodeAt(x, y)
+                canvas.createPromptNodeAtScreen(x, y)
               }
 
               window.addEventListener('mousemove', handleMouseMove)
