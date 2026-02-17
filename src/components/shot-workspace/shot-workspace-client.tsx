@@ -789,6 +789,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   }
 
   const currentTake = readyTakeId ? takes.find(t => t.id === readyTakeId) : null
+  const shotOutputNodeId = shot.output_take_id === readyTakeId ? (shot.output_video_node_id ?? null) : null
   const currentUndoHistory = readyTakeId
     ? undoHistoryByTakeRef.current.get(readyTakeId)
     : undefined
@@ -1179,7 +1180,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 router.refresh()
               }}
               currentFinalVisualId={finalVisual?.selectionId ?? null}
-              outputVideoNodeId={currentTake?.output_video_node_id ?? null}
+              outputVideoNodeId={shotOutputNodeId}
               onSetOutputVideo={async (nodeId: string) => {
                 if (!readyTakeId) return
                 await setTakeOutputVideo(readyTakeId, nodeId)
@@ -1212,7 +1213,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           edges={plpEdges}
           isApproved={shot.approved_take_id === readyTakeId}
           currentFinalVisualId={finalVisual?.selectionId ?? null}
-          outputVideoNodeId={currentTake?.output_video_node_id ?? null}
+          outputVideoNodeId={shotOutputNodeId}
           onClose={() => setShowPLP(false)}
         />
       )}
