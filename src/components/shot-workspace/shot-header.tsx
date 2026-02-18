@@ -4,10 +4,8 @@ import { Database } from '@/lib/db/schema'
 type Shot = Database['public']['Tables']['shots']['Row']
 
 interface FinalVisualData {
-  selectionId: string
   src: string
   storagePath: string
-  selectionNumber: number
 }
 
 interface ShotHeaderProps {
@@ -75,7 +73,7 @@ export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual, ap
           {finalVisual?.src && (
             <img
               src={finalVisual.src}
-              alt={`Final Visual S${finalVisual.selectionNumber}`}
+              alt="Final Visual"
               className="w-full h-full object-cover"
             />
           )}
