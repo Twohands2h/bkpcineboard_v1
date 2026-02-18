@@ -25,7 +25,7 @@ import { ExportTakeModal } from '@/components/export/export-take-modal'
 import { ProductionLaunchPanel } from '@/components/production/production-launch-panel'
 import { createClient } from '@/lib/supabase/client'
 import { SceneShotStrip, setLastTakeForShot, type StripScene, type StripShot } from './scene-shot-strip'
-
+import { ConfirmModal } from '@/components/ui/ConfirmModal'
 // ===================================================
 // SHOT WORKSPACE CLIENT — ORCHESTRATOR (R4-003)
 // ===================================================
@@ -151,6 +151,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [inspectMedia, setInspectMedia] = useState<{ type: 'image' | 'video'; src: string } | null>(null)
+  const [confirmState, setConfirmState] = useState<{
+    title: string; body: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; onConfirm: () => void
+  } | null>(null)
 
   // ESC to close inspect overlay
   useEffect(() => {
@@ -548,16 +551,28 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     }
   }
 
-  const handleDeleteTake = async (takeId: string) => {
+  const handleDeleteTake = (takeId: string) => {
     const targetTake = takes.find(t => t.id === takeId)
     const isFVTake = finalVisualTakeId === takeId
 
-    const message = isFVTake
+    const title = isFVTake ? 'Delete Take + Clear Final Visual' : 'Delete Take'
+    const body = isFVTake
       ? `You're deleting "${targetTake?.name ?? 'this Take'}" which contains the Final Visual.\n\nThis will also clear the Shot Final Visual (header + strip + take indicators).\n\nThis action is irreversible.`
-      : `Eliminare "${targetTake?.name ?? 'questo Take'}"?\n\nQuesta azione è irreversibile.`
+      : `Delete "${targetTake?.name ?? 'this Take'}"?\n\nThis action is irreversible.`
 
-    if (!window.confirm(message)) return
+    setConfirmState({
+      title,
+      body,
+      confirmLabel: isFVTake ? 'Delete + Clear FV' : 'Delete',
+      danger: true,
+      onConfirm: () => {
+        setConfirmState(null)
+        void executeDeleteTake(takeId, isFVTake)
+      },
+    })
+  }
 
+  const executeDeleteTake = async (takeId: string, isFVTake: boolean) => {
     // FV guard: clear FV client-side first (FREEZED — do not modify)
     if (isFVTake) {
       await clearShotFinalVisualAction({ shotId: shot.id })
@@ -578,7 +593,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       const nextTake = remainingTakes[Math.min(deletedIndex, remainingTakes.length - 1)]
       setCurrentTakeId(nextTake.id)
     } else {
-      // Zero-takes state: clear current take, canvas won't mount
       setCurrentTakeId(null as any)
       setReadyTakeId(null)
       setReadyPayload(undefined)
@@ -587,8 +601,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     undoHistoryByTakeRef.current.delete(deletedId)
 
     try {
-      // Atomic RPC: clears approved_take_id if needed + deletes take in one transaction.
-      // Safe for non-approved takes (UPDATE is a no-op, DELETE proceeds normally).
       await deleteTakeWithGuardAction(deletedId)
       router.refresh()
     } catch (error) {
@@ -1256,6 +1268,17 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
             )}
           </div>
         </div>
+      )}
+      {confirmState && (
+        <ConfirmModal
+          title={confirmState.title}
+          body={confirmState.body}
+          confirmLabel={confirmState.confirmLabel}
+          cancelLabel={confirmState.cancelLabel}
+          danger={confirmState.danger}
+          onConfirm={confirmState.onConfirm}
+          onCancel={() => setConfirmState(null)}
+        />
       )}
     </div>
   )
