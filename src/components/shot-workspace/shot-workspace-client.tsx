@@ -21,6 +21,7 @@ import {
 } from '@/app/actions/shot-approved-take'
 import { setTakeOutputVideo, clearTakeOutputVideo } from '@/app/actions/take-output'
 import { setShotOutputVideo, clearShotOutputVideo } from '@/app/actions/shot-output'
+import { getShotMediaRatings, setShotMediaRating } from '@/app/actions/shot-media-ratings'
 import { ExportTakeModal } from '@/components/export/export-take-modal'
 import { ProductionLaunchPanel } from '@/components/production/production-launch-panel'
 import { createClient } from '@/lib/supabase/client'
@@ -152,6 +153,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [inspectMedia, setInspectMedia] = useState<{ type: 'image' | 'video'; src: string } | null>(null)
+  const [ratingMap, setRatingMap] = useState<Record<string, number>>({})
   const [confirmState, setConfirmState] = useState<{
     title: string; body: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; onConfirm: () => void
   } | null>(null)
@@ -264,14 +266,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   // Load shot-level derived state (FV + selections) — shot-scoped, not take-scoped
   const loadShotDerivedState = useCallback(async () => {
     const seq = ++shotDerivedSeqRef.current
-    const [fv, sels] = await Promise.all([
+    const [fv, sels, ratings] = await Promise.all([
       getShotFinalVisualAction({ shotId: shot.id }),
       getShotSelectionsAction({ shotId: shot.id }),
+      getShotMediaRatings({ shotId: shot.id }),
     ])
     if (seq !== shotDerivedSeqRef.current) return // stale response, discard
     setFinalVisual(fv)
     setFinalVisualTakeId(fv?.takeId ?? null)
     setShotSelections(sels)
+    setRatingMap(ratings)
   }, [shot.id])
 
   // Load take snapshot (take-scoped)
@@ -1228,6 +1232,15 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 router.refresh()
               }}
               shotSelections={shotSelections}
+              ratingMap={ratingMap}
+              onSetRating={async (storagePath: string, rating: number) => {
+                setRatingMap(prev => {
+                  const next = { ...prev }
+                  if (rating === 0) delete next[storagePath]; else next[storagePath] = rating
+                  return next
+                })
+                await setShotMediaRating({ shotId: shot.id, storagePath, rating })
+              }}
             />
           )}
 

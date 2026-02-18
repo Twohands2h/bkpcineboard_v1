@@ -64,6 +64,8 @@ interface TakeCanvasProps {
     onClearFinalVisual?: () => Promise<void>
     currentFinalVisualId?: string | null
     shotSelections?: { selectionId: string; selectionNumber: number; storagePath: string; src: string; nodeId?: string }[]
+    ratingMap?: Record<string, number>
+    onSetRating?: (storagePath: string, rating: number) => void
     outputVideoNodeId?: string | null
     onSetOutputVideo?: (nodeId: string, videoSrc: string) => void
     onClearOutputVideo?: () => void
@@ -176,7 +178,7 @@ interface SelectionBoxRect { left: number; top: number; width: number; height: n
 interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, shotSelections }, ref) {
+    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, shotSelections, ratingMap, onSetRating }, ref) {
         const [nodes, _setNodesRaw] = useState<CanvasNode[]>(() => initialNodes ?? [])
         const [edges, _setEdgesRaw] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
@@ -1415,6 +1417,13 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                         : node.type === 'video' ? <VideoContent data={node.data} viewportScale={viewport.scale} />
                                             : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
                                                 : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
+                                {/* Passive rating indicator */}
+                                {(node.type === 'image' || node.type === 'video') && (() => {
+                                    const sp = (node.data as any)?.storage_path
+                                    const r = sp ? (ratingMap?.[sp] ?? 0) : 0
+                                    if (r === 0) return null
+                                    return <div className="absolute top-1 right-1 text-amber-400 text-[10px] leading-none pointer-events-none select-none" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>{'★'.repeat(r)}</div>
+                                })()}
                             </NodeShell>
                         )
                     })}
@@ -1513,9 +1522,40 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                             </div>
                         )
                     })()}
-                </div>
 
-                {/* Empty state — outside viewport transform */}
+                    {/* Rating pill — top-right outside node, cycles 0→1→2→3→0 (image/video with storage_path) */}
+                    {onSetRating && activeNodeId && interactionMode === 'idle' && (() => {
+                        const node = nodesRef.current.find(n => n.id === activeNodeId)
+                        if (!node || (node.type !== 'image' && node.type !== 'video')) return null
+                        const sp = (node.data as any)?.storage_path
+                        if (!sp) return null
+                        const rect = renderRects.get(activeNodeId)
+                        if (!rect) return null
+                        const s = 1 / viewport.scale
+                        const rating = ratingMap?.[sp] ?? 0
+                        return (
+                            <div
+                                className="absolute z-[9997] pointer-events-auto"
+                                style={{ left: rect.x + rect.width + 4 * s, top: rect.y, transform: `scale(${s})`, transformOrigin: 'top left' }}
+                            >
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        const next = (rating + 1) % 4
+                                        onSetRating(sp, next)
+                                    }}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    className={`px-1.5 py-0.5 text-[11px] font-medium border rounded whitespace-nowrap transition-colors ${rating > 0
+                                            ? 'bg-amber-900/60 border-amber-500/60 text-amber-400'
+                                            : 'bg-zinc-800 border-zinc-600 text-zinc-500 hover:border-amber-500/60 hover:text-amber-400'
+                                        }`}
+                                >
+                                    {'★'.repeat(rating || 0)}{'☆'.repeat(3 - (rating || 0))}
+                                </button>
+                            </div>
+                        )
+                    })()}
+                </div>
                 {nodes.length === 0 && edges.length === 0 && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none"><p className="text-zinc-600 text-sm">Drag "Note" or "Image" from sidebar to canvas</p></div>
                 )}
