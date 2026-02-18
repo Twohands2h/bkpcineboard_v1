@@ -1440,12 +1440,12 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                         : node.type === 'video' ? <VideoContent data={node.data} viewportScale={viewport.scale} />
                                             : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
                                                 : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
-                                {/* Passive rating indicator */}
+                                {/* Passive rating indicator — outside top-right */}
                                 {(node.type === 'image' || node.type === 'video') && (() => {
                                     const sp = (node.data as any)?.storage_path
                                     const r = sp ? (ratingMap?.[sp] ?? 0) : 0
                                     if (r === 0) return null
-                                    return <div className="absolute top-1 right-1 text-amber-400 text-[10px] leading-none pointer-events-none select-none" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>{'★'.repeat(r)}</div>
+                                    return <div className="absolute right-0 pointer-events-none select-none" style={{ top: -18, transform: `scale(${1 / viewport.scale})`, transformOrigin: 'bottom right' }}><div className="px-1 py-0.5 rounded bg-zinc-900/90 border border-amber-500/40 text-amber-400 text-[9px] leading-none font-medium">{'★'.repeat(r)}</div></div>
                                 })()}
                             </NodeShell>
                         )
