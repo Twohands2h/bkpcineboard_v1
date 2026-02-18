@@ -768,6 +768,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           onPreviewOutput={shot.output_video_src ? () => setInspectMedia({ type: 'video', src: shot.output_video_src! }) : undefined}
           onDownloadFV={resolvedFv?.src ? () => triggerDownload(resolvedFv.src, `${shotPrefix}_FV.${extFromUrl(resolvedFv.src, 'png')}`) : undefined}
           onDownloadOutput={shot.output_video_src ? () => triggerDownload(shot.output_video_src!, `${shotPrefix}_OUTPUT.${extFromUrl(shot.output_video_src!, 'mp4')}`) : undefined}
+          fvTakeLabel={fvTakeLabel}
+          outputTakeLabel={outputTakeLabel}
         />
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
           <div className="text-center">
@@ -785,6 +787,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   }
 
   const currentTake = readyTakeId ? takes.find(t => t.id === readyTakeId) : null
+  const fvTakeLabel = shot.final_visual_take_id ? (takes.find(t => t.id === shot.final_visual_take_id)?.name ?? null) : null
+  const outputTakeLabel = shot.output_take_id ? (takes.find(t => t.id === shot.output_take_id)?.name ?? null) : null
   const shotOutputNodeId = shot.output_take_id === readyTakeId ? (shot.output_video_node_id ?? null) : null
   const currentUndoHistory = readyTakeId
     ? undoHistoryByTakeRef.current.get(readyTakeId)
@@ -812,6 +816,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         onPreviewOutput={shot.output_video_src ? () => setInspectMedia({ type: 'video', src: shot.output_video_src! }) : undefined}
         onDownloadFV={resolvedFv?.src ? () => triggerDownload(resolvedFv.src, `${shotPrefix}_FV.${extFromUrl(resolvedFv.src, 'png')}`) : undefined}
         onDownloadOutput={shot.output_video_src ? () => triggerDownload(shot.output_video_src!, `${shotPrefix}_OUTPUT.${extFromUrl(shot.output_video_src!, 'mp4')}`) : undefined}
+        fvTakeLabel={fvTakeLabel}
+        outputTakeLabel={outputTakeLabel}
       />
 
       <TakeTabs
@@ -835,6 +841,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         onDelete={handleDeleteTake}
 
         approvedTakeId={shot.approved_take_id}
+        fvTakeId={shot.final_visual_take_id ?? null}
+        outputTakeId={shot.output_take_id ?? null}
         onApproveTake={handleApproveTake}
         onRevokeTake={handleRevokeTake}
         onOpenProduction={handleOpenPLP}
