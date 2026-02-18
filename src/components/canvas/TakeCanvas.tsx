@@ -1021,6 +1021,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         sessionStorage.setItem('cineboard.clipboard.v1', JSON.stringify({
                             version: 1, nodes: stripped, edges: intEdges,
                             bbox: { minX, minY, maxX, maxY },
+                            sourceTakeId: takeId,
                         }))
                     } catch { }
                 }
@@ -1039,14 +1040,45 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     const vp = viewportRef.current
                     const cr = canvasRef.current?.getBoundingClientRect()
                     const cw = cr?.width ?? 800, ch = cr?.height ?? 600
-                    const worldCx = (cw / 2 - vp.offsetX) / vp.scale
-                    const worldCy = (ch / 2 - vp.offsetY) / vp.scale
 
-                    const bboxCx = (clip.bbox.minX + clip.bbox.maxX) / 2
-                    const bboxCy = (clip.bbox.minY + clip.bbox.maxY) / 2
-                    const nudge = 20
-                    const dx = nudge
-                    const dy = nudge
+                    // Viewport rect in world space
+                    const vpMinX = (0 - vp.offsetX) / vp.scale
+                    const vpMinY = (0 - vp.offsetY) / vp.scale
+                    const vpMaxX = (cw - vp.offsetX) / vp.scale
+                    const vpMaxY = (ch - vp.offsetY) / vp.scale
+
+                    const bboxW = clip.bbox.maxX - clip.bbox.minX
+                    const bboxH = clip.bbox.maxY - clip.bbox.minY
+
+                    let dx: number, dy: number
+
+                    if (clip.sourceTakeId === takeId) {
+                        // Same take: try legacy +20/+20
+                        const nudge = 20
+                        const candMinX = clip.bbox.minX + nudge
+                        const candMinY = clip.bbox.minY + nudge
+                        const candMaxX = clip.bbox.maxX + nudge
+                        const candMaxY = clip.bbox.maxY + nudge
+                        // Check intersection with viewport (80px padding in world)
+                        const pad = 80 / vp.scale
+                        const visible = candMaxX > vpMinX + pad && candMinX < vpMaxX - pad
+                            && candMaxY > vpMinY + pad && candMinY < vpMaxY - pad
+                        if (visible) {
+                            dx = nudge; dy = nudge
+                        } else {
+                            // Fallback: viewport center
+                            const worldCx = (cw / 2 - vp.offsetX) / vp.scale
+                            const worldCy = (ch / 2 - vp.offsetY) / vp.scale
+                            dx = worldCx - bboxW / 2 - clip.bbox.minX
+                            dy = worldCy - bboxH / 2 - clip.bbox.minY
+                        }
+                    } else {
+                        // Cross-take: always viewport center
+                        const worldCx = (cw / 2 - vp.offsetX) / vp.scale
+                        const worldCy = (ch / 2 - vp.offsetY) / vp.scale
+                        dx = worldCx - bboxW / 2 - clip.bbox.minX
+                        dy = worldCy - bboxH / 2 - clip.bbox.minY
+                    }
 
                     const maxZ = nodesRef.current.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0)
                     let zi = maxZ + 1
