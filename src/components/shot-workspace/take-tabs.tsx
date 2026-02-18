@@ -25,8 +25,10 @@ interface TakeTabsProps {
   onNewTake: () => void
   onDuplicate: () => void
   onDelete: (takeId: string) => void
-  finalVisualTakeId,
+
   approvedTakeId: string | null
+  fvTakeId?: string | null
+  outputTakeId?: string | null
   onApproveTake: (takeId: string) => void
   onRevokeTake: () => void
   onOpenProduction: () => void
@@ -40,8 +42,10 @@ export function TakeTabs({
   onNewTake,
   onDuplicate,
   onDelete,
-  finalVisualTakeId,
+
   approvedTakeId,
+  fvTakeId,
+  outputTakeId,
   onApproveTake,
   onRevokeTake,
   onOpenProduction,
@@ -56,6 +60,8 @@ export function TakeTabs({
         {takes.map((take) => {
           const isActive = take.id === currentTakeId
           const isApproved = approvedTakeId === take.id
+          const isFV = fvTakeId === take.id
+          const isOut = outputTakeId === take.id
           return (
             <div
               key={take.id}
@@ -68,6 +74,10 @@ export function TakeTabs({
               `}
               onClick={() => onTakeChange(take.id)}
             >
+              {/* Notch top — FV provenance */}
+              {isFV && <div className="absolute top-0 left-1/2 -translate-x-1/2 w-3 h-0.5 rounded-full bg-zinc-500/60" />}
+              {/* Notch bottom — Output provenance */}
+              {isOut && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-3 h-0.5 rounded-full bg-zinc-500/60" />}
               <span>{take.name}</span>
               {/* Status dot — emerald (approved) only */}
               {isApproved && (

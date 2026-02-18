@@ -20,9 +20,11 @@ interface ShotHeaderProps {
   onPreviewOutput?: () => void
   onDownloadFV?: () => void
   onDownloadOutput?: () => void
+  fvTakeLabel?: string | null
+  outputTakeLabel?: string | null
 }
+export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual, approvedTakeIndex, onApprovedTakeClick, outputVideoSrc, onPreviewFV, onPreviewOutput, onDownloadFV, onDownloadOutput, fvTakeLabel, outputTakeLabel }: ShotHeaderProps) {
 
-export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual, approvedTakeIndex, onApprovedTakeClick, outputVideoSrc, onPreviewFV, onPreviewOutput, onDownloadFV, onDownloadOutput }: ShotHeaderProps) {
   return (
     <div className="border-b border-zinc-800 bg-zinc-900 px-6 py-4 shrink-0">
       {/* Breadcrumb minimale */}
@@ -65,18 +67,21 @@ export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual, ap
       {/* Contenuto: FV slot (left) + description + Output slot (right) */}
       <div className="flex items-center gap-3">
         {/* FV slot — always present, 16:9 */}
-        <div
-          className={`shrink-0 h-12 aspect-video rounded-lg overflow-hidden border ${finalVisual?.src ? 'border-emerald-600/50 bg-zinc-800' : 'border-zinc-700/50 bg-white/5'}${finalVisual?.src && onPreviewFV ? ' cursor-pointer' : ''}`}
-          onClick={finalVisual?.src ? onPreviewFV : undefined}
-          title={finalVisual?.src && onPreviewFV ? 'Preview Final Visual' : undefined}
-        >
-          {finalVisual?.src && (
-            <img
-              src={finalVisual.src}
-              alt="Final Visual"
-              className="w-full h-full object-cover"
-            />
-          )}
+        <div className="flex flex-col items-start">
+          <div
+            className={`shrink-0 h-12 aspect-video rounded-lg overflow-hidden border ${finalVisual?.src ? 'border-emerald-600/50 bg-zinc-800' : 'border-zinc-700/50 bg-white/5'}${finalVisual?.src && onPreviewFV ? ' cursor-pointer' : ''}`}
+            onClick={finalVisual?.src ? onPreviewFV : undefined}
+            title={finalVisual?.src && onPreviewFV ? 'Preview Final Visual' : undefined}
+          >
+            {finalVisual?.src && (
+              <img
+                src={finalVisual.src}
+                alt="Final Visual"
+                className="w-full h-full object-cover"
+              />
+            )}
+          </div>
+          {fvTakeLabel && <span className="text-[9px] text-zinc-500 mt-1">{fvTakeLabel}</span>}
         </div>
         {finalVisual && finalVisual.src && onUndoFinalVisual && (
           <button
@@ -99,19 +104,22 @@ export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual, ap
         </h1>
 
         {/* Output slot — always present, 16:9 */}
-        <div
-          className={`shrink-0 h-12 aspect-video rounded-lg overflow-hidden border ${outputVideoSrc ? 'border-emerald-600/50 bg-zinc-800' : 'border-zinc-700/50 bg-white/5'}${outputVideoSrc && onPreviewOutput ? ' cursor-pointer' : ''}`}
-          onClick={outputVideoSrc ? onPreviewOutput : undefined}
-          title={outputVideoSrc && onPreviewOutput ? 'Preview Output Video' : undefined}
-        >
-          {outputVideoSrc && (
-            <video
-              src={outputVideoSrc}
-              preload="metadata"
-              muted
-              className="w-full h-full object-cover"
-            />
-          )}
+        <div className="flex flex-col items-end">
+          <div
+            className={`shrink-0 h-12 aspect-video rounded-lg overflow-hidden border ${outputVideoSrc ? 'border-emerald-600/50 bg-zinc-800' : 'border-zinc-700/50 bg-white/5'}${outputVideoSrc && onPreviewOutput ? ' cursor-pointer' : ''}`}
+            onClick={outputVideoSrc ? onPreviewOutput : undefined}
+            title={outputVideoSrc && onPreviewOutput ? 'Preview Output Video' : undefined}
+          >
+            {outputVideoSrc && (
+              <video
+                src={outputVideoSrc}
+                preload="metadata"
+                muted
+                className="w-full h-full object-cover"
+              />
+            )}
+          </div>
+          {outputTakeLabel && <span className="text-[9px] text-zinc-500 mt-1">{outputTakeLabel}</span>}
         </div>
         {outputVideoSrc && onDownloadOutput && (
           <button
