@@ -495,14 +495,24 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     // 1. Regenerate all node IDs (prevents shot-level FV/Output matching by stale id)
     const idMap = new Map<string, string>()
     if (clonedPayload.nodes) {
+      // Pass 1: generate new IDs
       for (const node of clonedPayload.nodes) {
-        const oldId = node.id
-        const newId = crypto.randomUUID()
-        idMap.set(oldId, newId)
-        node.id = newId
-
-        // 2. Strip all editorial markers from node.data
+        idMap.set(node.id, crypto.randomUUID())
+        node.id = idMap.get(node.id)!
+      }
+      // Pass 2: remap parentId, childOrder, strip editorial markers
+      for (const node of clonedPayload.nodes) {
         if (node.data) {
+          // Remap column containment
+          const pid = (node.data as any).parentId
+          if (pid) (node.data as any).parentId = idMap.get(pid) ?? null
+          // Remap childOrder for columns
+          if (node.type === 'column' && (node.data as any).childOrder) {
+            (node.data as any).childOrder = ((node.data as any).childOrder as string[])
+              .map((cid: string) => idMap.get(cid))
+              .filter(Boolean)
+          }
+          // Strip editorial markers only
           delete (node.data as any).promotedSelectionId
           delete (node.data as any).selectionNumber
           delete (node.data as any).isFinalVisual
