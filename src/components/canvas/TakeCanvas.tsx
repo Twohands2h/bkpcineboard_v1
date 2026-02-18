@@ -5,6 +5,7 @@ import { NodeShell } from './NodeShell'
 import { NoteContent, ImageContent, ColumnContent, VideoContent, type NoteData, type ImageData, type ColumnData, type VideoData } from './NodeContent'
 import { PromptContent, type PromptData, type PromptType } from './PromptContent'
 import { ImageInspectOverlay } from './ImageInspectOverlay'
+import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import {
     screenToWorld,
     screenDeltaToWorld,
@@ -54,7 +55,6 @@ interface TakeCanvasProps {
     takeId: string
     initialNodes?: CanvasNode[]
     initialEdges?: CanvasEdge[]
-    initialViewport?: ViewportState
     onNodesChange?: (nodes: CanvasNode[], edges: CanvasEdge[]) => void
     initialUndoHistory?: UndoHistory
     onUndoHistoryChange?: (history: UndoHistory) => void
@@ -93,8 +93,6 @@ export interface TakeCanvasHandle {
     createPromptNodeAtScreen: (screenX: number, screenY: number) => void
     getCanvasRect: () => DOMRect | null
     getViewportScale: () => number
-    getViewport: () => ViewportState
-    setViewport: (vp: ViewportState) => void
     updateNodeData: (nodeId: string, patch: Record<string, any>) => void
     beginBatch: () => void
     endBatch: () => void
@@ -178,7 +176,7 @@ interface SelectionBoxRect { left: number; top: number; width: number; height: n
 interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, initialEdges, initialViewport, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, shotSelections }, ref) {
+    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, shotSelections }, ref) {
         const [nodes, _setNodesRaw] = useState<CanvasNode[]>(() => initialNodes ?? [])
         const [edges, _setEdgesRaw] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
@@ -190,20 +188,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const [connectionGhost, setConnectionGhost] = useState<{ fromX: number; fromY: number; toX: number; toY: number } | null>(null)
         const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
 
-        // R4-005: Viewport state (NOT persisted to DB, NOT in undo)
-        const [viewport, setViewport] = useState<ViewportState>(() => initialViewport ?? VIEWPORT_INITIAL)
-        const viewportRef = useRef<ViewportState>(initialViewport ?? VIEWPORT_INITIAL)
+        // R4-005: Viewport state (NOT persisted, NOT in undo)
+        const [viewport, setViewport] = useState<ViewportState>(VIEWPORT_INITIAL)
+        const viewportRef = useRef<ViewportState>(VIEWPORT_INITIAL)
         useEffect(() => { viewportRef.current = viewport }, [viewport])
-
-        // Viewport persist: debounced save to sessionStorage (UI-only, no DB)
-        const vpPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-        useEffect(() => {
-            if (vpPersistTimerRef.current) clearTimeout(vpPersistTimerRef.current)
-            vpPersistTimerRef.current = setTimeout(() => {
-                try { sessionStorage.setItem(`cineboard:viewport:take:${takeId}`, JSON.stringify(viewport)) } catch { }
-            }, 300)
-            return () => { if (vpPersistTimerRef.current) clearTimeout(vpPersistTimerRef.current) }
-        }, [viewport, takeId])
         const spaceDownRef = useRef(false)
         const panRef = useRef<{ startMouseX: number; startMouseY: number; startOffsetX: number; startOffsetY: number } | null>(null)
 
@@ -218,6 +206,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
         // R4.0a: Image Inspect overlay
         const [inspectImage, setInspectImage] = useState<{ src: string; naturalWidth: number; naturalHeight: number; storagePath?: string } | null>(null)
+        const [confirmState, setConfirmState] = useState<{ title: string; body: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void } | null>(null)
 
         const canvasRef = useRef<HTMLDivElement>(null)
         const dragRef = useRef<{ nodeId: string; offsets: Map<string, { startX: number; startY: number }>; startMouseX: number; startMouseY: number; hasMoved: boolean } | null>(null)
@@ -275,8 +264,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     // Add missing: active selection matches this image but no badge yet
                     if (!nodeData.promotedSelectionId && shotSelections?.length) {
                         const match = shotSelections.find(s =>
-                            // Match ONLY by nodeId (stable, immune to duplicate take cloning)
-                            s.nodeId ? s.nodeId === n.id : false
+                            // Prefer nodeId match (stable across sessions, immune to duplicate take)
+                            s.nodeId ? s.nodeId === n.id
+                                // Fallback: src/storagePath match (backward compat, no nodeId in old selections)
+                                : (s.storagePath === nodeData.storage_path || s.src === nodeData.src)
                         )
                         if (match) {
                             changed = true
@@ -327,8 +318,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 if (n.type !== 'image') return n
                 const nd = n.data as any
                 const match = shotSelections.find(s =>
-                    // Match ONLY by nodeId (stable, immune to duplicate take cloning)
-                    s.nodeId ? s.nodeId === n.id : false
+                    s.nodeId ? s.nodeId === n.id
+                        : (s.storagePath === nd.storage_path || s.src === nd.src)
                 )
                 if (match && nd.promotedSelectionId !== match.selectionId) {
                     changed = true
@@ -473,8 +464,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen,
             getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
             getViewportScale: () => viewportRef.current.scale,
-            getViewport: () => ({ ...viewportRef.current }),
-            setViewport: (vp: ViewportState) => { setViewport(vp); viewportRef.current = vp },
             updateNodeData, beginBatch, endBatch,
         }), [nodes, edges, createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen, updateNodeData, beginBatch, endBatch])
 
@@ -484,6 +473,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             detachingRef.current = null; setDetachingOffset(null); setFrozenColumnId(null); frozenRectsRef.current = null
             shiftedNodesRef.current = new Map()
             if (dataChangeTimerRef.current) { clearTimeout(dataChangeTimerRef.current); dataChangeTimerRef.current = null }
+            setViewport(VIEWPORT_INITIAL) // Reset viewport on Take change
             setSelectionBoxRect(null); setConnectionGhost(null)
         }, [takeId])
 
@@ -557,14 +547,12 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         if (colRect && insideColBodyRect(colRect, cx, cy)) { targetColId = n.id; break }
                     }
                     const insertIdx = targetColId ? getInsertionIndex(prev, rects, targetColId, cy, det.nodeId) : 0
-                    const maxZ = prev.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0)
 
                     return prev.map(n => {
                         if (n.id === det.nodeId) {
-                            const base = targetColId
+                            return targetColId
                                 ? { ...n, data: { ...n.data, parentId: targetColId } }
                                 : { ...n, x: fx, y: fy, width: det.frozenRect.width, data: { ...n.data, parentId: null } }
-                            return { ...base, zIndex: maxZ + 1 }
                         }
                         if (n.type === 'column') {
                             const col = n as ColumnNode; let order = [...(col.data.childOrder || [])]
@@ -599,10 +587,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                             })
                         }
                     }
-                    // Raise-on-drop: bump all dragged nodes above everything else
-                    const maxZ = u.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0)
-                    let zi = maxZ + 1
-                    u = u.map(n => ids.has(n.id) ? { ...n, zIndex: zi++ } : n)
                     return u
                 })
             }
@@ -868,19 +852,32 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             // Guard: if deleting an image node that is the current FV, only clear FV (keep node)
             const targetNode = nodesRef.current.find(n => n.id === nodeId)
             if (targetNode?.type === 'image' && currentFinalVisualId && (targetNode.data as any).promotedSelectionId === currentFinalVisualId) {
-                const confirmed = window.confirm('This image is the current Final Visual.\n\nClearing Final Visual status. The image will be kept.')
-                if (!confirmed) return
-                onClearFinalVisual?.()
+                setConfirmState({
+                    title: 'Clear Final Visual',
+                    body: 'This image is the current Final Visual.\n\nClearing Final Visual status. The image will be kept.',
+                    confirmLabel: 'Clear FV',
+                    danger: true,
+                    onConfirm: () => { setConfirmState(null); onClearFinalVisual?.() },
+                })
                 return
             }
 
             // Guard: if deleting a video node that is the current Output, clear shot output first
             if (targetNode?.type === 'video' && targetNode.id === outputVideoNodeId) {
-                const confirmed = window.confirm('This video is the current Shot Output.\n\nOutput will be cleared and the video will be deleted.')
-                if (!confirmed) return
-                void onClearOutputVideo?.()
+                setConfirmState({
+                    title: 'Delete Output Video',
+                    body: 'This video is the current Shot Output.\n\nOutput will be cleared and the video will be deleted.',
+                    confirmLabel: 'Delete',
+                    danger: true,
+                    onConfirm: () => { setConfirmState(null); void onClearOutputVideo?.(); executeNodeDelete(nodeId) },
+                })
+                return
             }
 
+            executeNodeDelete(nodeId)
+        }, [currentFinalVisualId, onClearFinalVisual, outputVideoNodeId, onClearOutputVideo])
+
+        const executeNodeDelete = useCallback((nodeId: string) => {
             setNodes(p => {
                 const node = p.find(n => n.id === nodeId)
                 const deleteIds = new Set([nodeId])
@@ -902,7 +899,22 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             })
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
-        }, [pushHistory, emitNodesChange, currentFinalVisualId, onClearFinalVisual, outputVideoNodeId, onClearOutputVideo])
+        }, [pushHistory, emitNodesChange])
+
+        const executeKeyboardDelete = useCallback((del: Set<string>) => {
+            nodesRef.current.forEach(n => {
+                if (n.type === 'column' && del.has(n.id)) {
+                    nodesRef.current.forEach(c => { if ((c.data as any).parentId === n.id) del.add(c.id) })
+                }
+            })
+            setNodes(p => {
+                let u = p.filter(n => !del.has(n.id))
+                return u.map(n => n.type === 'column' && (n as ColumnNode).data.childOrder ? { ...n, data: { ...n.data, childOrder: (n as ColumnNode).data.childOrder!.filter(id => !del.has(id)) } } : n)
+            })
+            setEdges(p => p.filter(ed => !del.has(ed.from) && !del.has(ed.to)))
+            setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
 
         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => { setSelectedNodeIds(new Set([nodeId])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('editing'); setEditingField(field) }, [])
         const handleFieldFocus = useCallback((f: 'title' | 'body') => setEditingField(f), [])
@@ -1019,131 +1031,73 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 const mod = e.metaKey || e.ctrlKey
                 if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
                 if (mod && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo() }
-
-                // Copy: selected nodes + internal edges, strip editorial fields
-                if (mod && e.key === 'c' && !e.shiftKey && interactionMode === 'idle') {
-                    const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
-                    const sel = selectedNodeIdsRef.current; if (sel.size === 0) return
-                    e.preventDefault()
-                    // Expand selection: include column descendants by parentId
-                    const ids = new Set<string>(sel)
-                    let added = true
-                    while (added) {
-                        added = false
-                        for (const n of nodesRef.current) {
-                            const pid = (n.data as any)?.parentId
-                            if (pid && ids.has(pid) && !ids.has(n.id)) { ids.add(n.id); added = true }
-                        }
-                    }
-                    const selNodes = nodesRef.current.filter(n => ids.has(n.id))
-                    const stripped = selNodes.map(n => {
-                        const d = { ...n.data } as any
-                        delete d.promotedSelectionId
-                        delete d.selectionNumber
-                        delete d.isFinalVisual
-
-                        return { ...n, data: d }
-                    })
-                    const intEdges = edgesRef.current.filter(ed => ids.has(ed.from) && ids.has(ed.to))
-                    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-                    for (const n of stripped) {
-                        minX = Math.min(minX, n.x); minY = Math.min(minY, n.y)
-                        maxX = Math.max(maxX, n.x + n.width); maxY = Math.max(maxY, n.y + n.height)
-                    }
-                    try {
-                        sessionStorage.setItem('cineboard.clipboard.v1', JSON.stringify({
-                            version: 1, nodes: stripped, edges: intEdges,
-                            bbox: { minX, minY, maxX, maxY },
-                        }))
-                    } catch { }
-                }
-
-                // Paste: fresh IDs, remap edges, center in viewport, 1 undo step
-                if (mod && e.key === 'v' && !e.shiftKey && interactionMode === 'idle') {
-                    const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
-                    let clip: any
-                    try { clip = JSON.parse(sessionStorage.getItem('cineboard.clipboard.v1') || '') } catch { return }
-                    if (!clip?.nodes?.length) return
-                    e.preventDefault()
-
-                    const idMap = new Map<string, string>()
-                    for (const n of clip.nodes) idMap.set(n.id, crypto.randomUUID())
-
-                    const nudge = 20
-                    const dx = nudge
-                    const dy = nudge
-
-                    const maxZ = nodesRef.current.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0)
-                    let zi = maxZ + 1
-
-                    const newNodes: CanvasNode[] = clip.nodes.map((n: any) => {
-                        const oldParentId = n.data?.parentId ?? null
-                        const newParentId = oldParentId ? (idMap.get(oldParentId) ?? null) : null
-                        const nd = { ...n.data, parentId: newParentId }
-                        // Remap childOrder for columns
-                        if (n.type === 'column' && nd.childOrder) {
-                            nd.childOrder = (nd.childOrder as string[]).map((cid: string) => idMap.get(cid) ?? cid)
-                        }
-                        return {
-                            ...n,
-                            id: idMap.get(n.id)!,
-                            x: n.x + dx,
-                            y: n.y + dy,
-                            zIndex: zi++,
-                            data: nd,
-                        }
-                    })
-                    const newEdges: CanvasEdge[] = (clip.edges || []).map((ed: any) => ({
-                        ...ed,
-                        id: crypto.randomUUID(),
-                        from: idMap.get(ed.from) ?? ed.from,
-                        to: idMap.get(ed.to) ?? ed.to,
-                    }))
-
-                    setNodes(p => [...p, ...newNodes])
-                    setEdges(p => [...p, ...newEdges])
-                    setSelectedNodeIds(new Set(newNodes.map(n => n.id)))
-                    setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
-                }
-
                 if (e.key === 'Escape') { endInteraction(); setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setEditingField(null) }
                 if ((e.key === 'Delete' || e.key === 'Backspace') && interactionMode === 'idle') {
                     const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
                     if (selectedEdgeId) { e.preventDefault(); setEdges(p => p.filter(ed => ed.id !== selectedEdgeId)); setSelectedEdgeId(null); setEditingEdgeLabel(null); setTimeout(() => { pushHistory(); emitNodesChange() }, 0); return }
                     if (selectedNodeIdsRef.current.size > 0) {
                         e.preventDefault(); const del = new Set(selectedNodeIdsRef.current)
-                        // If any selected node is the current FV image, clear FV and exclude it from deletion
-                        if (currentFinalVisualId) {
-                            const fvNodeId = nodesRef.current.find(n => del.has(n.id) && n.type === 'image' && (n.data as any).promotedSelectionId === currentFinalVisualId)?.id
-                            if (fvNodeId) {
-                                const ok = window.confirm('Selection includes the current Final Visual image.\n\nFinal Visual will be cleared. The FV image will be kept; other selected items will be deleted.')
-                                if (!ok) return
+                        // If any selected node is the current FV image, need confirmation
+                        const fvNodeId = currentFinalVisualId
+                            ? nodesRef.current.find(n => del.has(n.id) && n.type === 'image' && (n.data as any).promotedSelectionId === currentFinalVisualId)?.id
+                            : undefined
+                        const hasOutput = outputVideoNodeId && del.has(outputVideoNodeId)
+                            && nodesRef.current.some(n => n.id === outputVideoNodeId && n.type === 'video')
+
+                        // No guards needed — delete immediately
+                        if (!fvNodeId && !hasOutput) {
+                            executeKeyboardDelete(del); return
+                        }
+
+                        // FV guard needed
+                        if (fvNodeId && !hasOutput) {
+                            setConfirmState({
+                                title: 'Delete Selection + Clear Final Visual',
+                                body: 'Selection includes the current Final Visual image.\n\nFinal Visual will be cleared. The FV image will be kept; other selected items will be deleted.',
+                                confirmLabel: 'Delete + Clear FV',
+                                danger: true,
+                                onConfirm: () => {
+                                    setConfirmState(null)
+                                    onClearFinalVisual?.()
+                                    del.delete(fvNodeId)
+                                    if (del.size === 0) return
+                                    executeKeyboardDelete(del)
+                                },
+                            })
+                            return
+                        }
+
+                        // Output guard needed (no FV)
+                        if (!fvNodeId && hasOutput) {
+                            setConfirmState({
+                                title: 'Delete Selection + Clear Output',
+                                body: 'Selection includes the current Shot Output video.\n\nOutput will be cleared and the video will be deleted.',
+                                confirmLabel: 'Delete + Clear Output',
+                                danger: true,
+                                onConfirm: () => {
+                                    setConfirmState(null)
+                                    void onClearOutputVideo?.()
+                                    executeKeyboardDelete(del)
+                                },
+                            })
+                            return
+                        }
+
+                        // Both FV + Output in selection
+                        setConfirmState({
+                            title: 'Delete Selection + Clear FV & Output',
+                            body: 'Selection includes both the Final Visual image and the Shot Output video.\n\nFinal Visual will be cleared (FV image kept). Output will be cleared and deleted along with other selected items.',
+                            confirmLabel: 'Delete + Clear Both',
+                            danger: true,
+                            onConfirm: () => {
+                                setConfirmState(null)
                                 onClearFinalVisual?.()
-                                del.delete(fvNodeId)
-                                if (del.size === 0) return
-                            }
-                        }
-                        // If any selected node is the current Output video, clear shot output first
-                        if (outputVideoNodeId && del.has(outputVideoNodeId)) {
-                            const outNode = nodesRef.current.find(n => n.id === outputVideoNodeId && n.type === 'video')
-                            if (outNode) {
-                                const ok = window.confirm('Selection includes the current Shot Output video.\n\nOutput will be cleared and the video will be deleted.')
-                                if (!ok) return
+                                del.delete(fvNodeId!)
                                 void onClearOutputVideo?.()
-                            }
-                        }
-                        nodesRef.current.forEach(n => {
-                            if (n.type === 'column' && del.has(n.id)) {
-                                nodesRef.current.forEach(c => { if ((c.data as any).parentId === n.id) del.add(c.id) })
-                            }
+                                if (del.size === 0) return
+                                executeKeyboardDelete(del)
+                            },
                         })
-                        setNodes(p => {
-                            let u = p.filter(n => !del.has(n.id))
-                            return u.map(n => n.type === 'column' && (n as ColumnNode).data.childOrder ? { ...n, data: { ...n.data, childOrder: (n as ColumnNode).data.childOrder!.filter(id => !del.has(id)) } } : n)
-                        })
-                        setEdges(p => p.filter(ed => !del.has(ed.from) && !del.has(ed.to)))
-                        setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
-                        setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
                     }
                 }
             }
@@ -1220,49 +1174,12 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         // R4-005b: Only on truly empty canvas — not on nodes, columns, or their children
         const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
             const target = e.target as HTMLElement
+            // Block if clicking on a node or anything inside a node
             if (target.closest('[data-node-shell]')) return
+            // Block if clicking on interactive elements (buttons, inputs)
             if (target.closest('button') || target.closest('input') || target.closest('textarea')) return
-
-            const visible = nodesRef.current.filter(n => !nodeHidden(n, nodesRef.current))
-            if (visible.length === 0) { setViewport(VIEWPORT_INITIAL); return }
-
-            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-            for (const n of visible) {
-                minX = Math.min(minX, n.x)
-                minY = Math.min(minY, n.y)
-                maxX = Math.max(maxX, n.x + n.width)
-                maxY = Math.max(maxY, n.y + n.height)
-            }
-            const bboxW = maxX - minX
-            const bboxH = maxY - minY
-            const bboxCx = minX + bboxW / 2
-            const bboxCy = minY + bboxH / 2
-
-            const cr = canvasRef.current?.getBoundingClientRect()
-            if (!cr) { setViewport(VIEWPORT_INITIAL); return }
-
-            const vp = viewportRef.current
-            const isFarFromOne = Math.abs(vp.scale - 1) > 0.05
-
-            if (isFarFromOne) {
-                setViewport({
-                    scale: 1,
-                    offsetX: cr.width / 2 - bboxCx,
-                    offsetY: cr.height / 2 - bboxCy,
-                })
-            } else {
-                const padding = 80
-                const scaleX = (cr.width - padding * 2) / Math.max(bboxW, 1)
-                const scaleY = (cr.height - padding * 2) / Math.max(bboxH, 1)
-                const fitScale = Math.min(scaleX, scaleY, ZOOM_MAX)
-                const clampedScale = Math.max(fitScale, ZOOM_MIN)
-                setViewport({
-                    scale: clampedScale,
-                    offsetX: cr.width / 2 - bboxCx * clampedScale,
-                    offsetY: cr.height / 2 - bboxCy * clampedScale,
-                })
-            }
-        }, [setViewport])
+            setViewport(VIEWPORT_INITIAL)
+        }, [])
 
         const visibleNodes = nodes.filter(n => !nodeHidden(n, nodes))
         const edgeLines = useMemo(() => edges.map(edge => {
@@ -1488,6 +1405,18 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         naturalWidth={inspectImage.naturalWidth}
                         naturalHeight={inspectImage.naturalHeight}
                         onClose={() => setInspectImage(null)}
+                    />
+                )}
+
+                {/* Confirm Modal — replaces window.confirm for delete guards */}
+                {confirmState && (
+                    <ConfirmModal
+                        title={confirmState.title}
+                        body={confirmState.body}
+                        confirmLabel={confirmState.confirmLabel}
+                        danger={confirmState.danger}
+                        onConfirm={confirmState.onConfirm}
+                        onCancel={() => setConfirmState(null)}
                     />
                 )}
             </div>
