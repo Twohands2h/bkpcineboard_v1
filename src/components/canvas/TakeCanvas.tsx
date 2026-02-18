@@ -190,10 +190,25 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const [connectionGhost, setConnectionGhost] = useState<{ fromX: number; fromY: number; toX: number; toY: number } | null>(null)
         const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
 
-        // R4-005: Viewport state (NOT persisted, NOT in undo)
-        const [viewport, setViewport] = useState<ViewportState>(VIEWPORT_INITIAL)
-        const viewportRef = useRef<ViewportState>(VIEWPORT_INITIAL)
-        useEffect(() => { viewportRef.current = viewport }, [viewport])
+        // Viewport state — persisted per-take in sessionStorage
+        const [viewport, setViewport] = useState<ViewportState>(() => {
+            try {
+                const raw = sessionStorage.getItem(`cineboard.viewport.v1:${takeId}`)
+                if (raw) {
+                    const v = JSON.parse(raw)
+                    if (typeof v.scale === 'number' && typeof v.offsetX === 'number' && typeof v.offsetY === 'number') return v
+                }
+            } catch { }
+            return VIEWPORT_INITIAL
+        })
+        const viewportRef = useRef<ViewportState>(viewport)
+        useEffect(() => {
+            viewportRef.current = viewport
+            const t = setTimeout(() => {
+                try { sessionStorage.setItem(`cineboard.viewport.v1:${takeId}`, JSON.stringify({ scale: viewport.scale, offsetX: viewport.offsetX, offsetY: viewport.offsetY })) } catch { }
+            }, 120)
+            return () => clearTimeout(t)
+        }, [viewport, takeId])
         const spaceDownRef = useRef(false)
         const panRef = useRef<{ startMouseX: number; startMouseY: number; startOffsetX: number; startOffsetY: number } | null>(null)
 
@@ -475,7 +490,15 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             detachingRef.current = null; setDetachingOffset(null); setFrozenColumnId(null); frozenRectsRef.current = null
             shiftedNodesRef.current = new Map()
             if (dataChangeTimerRef.current) { clearTimeout(dataChangeTimerRef.current); dataChangeTimerRef.current = null }
-            setViewport(VIEWPORT_INITIAL) // Reset viewport on Take change
+            // Restore viewport for new take (or default)
+            try {
+                const raw = sessionStorage.getItem(`cineboard.viewport.v1:${takeId}`)
+                if (raw) {
+                    const v = JSON.parse(raw)
+                    if (typeof v.scale === 'number' && typeof v.offsetX === 'number' && typeof v.offsetY === 'number') { setViewport(v); return }
+                }
+            } catch { }
+            setViewport(VIEWPORT_INITIAL)
             setSelectionBoxRect(null); setConnectionGhost(null)
         }, [takeId])
 
@@ -1091,9 +1114,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
                     const bboxCx = (clip.bbox.minX + clip.bbox.maxX) / 2
                     const bboxCy = (clip.bbox.minY + clip.bbox.maxY) / 2
-                    const nudge = 24
-                    const dx = worldCx - bboxCx + nudge
-                    const dy = worldCy - bboxCy + nudge
+                    const nudge = 20
+                    const dx = nudge
+                    const dy = nudge
 
                     const maxZ = nodesRef.current.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0)
                     let zi = maxZ + 1
@@ -1546,8 +1569,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                     }}
                                     onMouseDown={(e) => e.stopPropagation()}
                                     className={`px-1.5 py-0.5 text-[11px] font-medium border rounded whitespace-nowrap transition-colors ${rating > 0
-                                            ? 'bg-amber-900/60 border-amber-500/60 text-amber-400'
-                                            : 'bg-zinc-800 border-zinc-600 text-zinc-500 hover:border-amber-500/60 hover:text-amber-400'
+                                        ? 'bg-amber-900/60 border-amber-500/60 text-amber-400'
+                                        : 'bg-zinc-800 border-zinc-600 text-zinc-500 hover:border-amber-500/60 hover:text-amber-400'
                                         }`}
                                 >
                                     {'★'.repeat(rating || 0)}{'☆'.repeat(3 - (rating || 0))}
