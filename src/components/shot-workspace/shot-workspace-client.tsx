@@ -12,7 +12,6 @@ import {
   loadLatestTakeSnapshotAction,
 } from '@/app/actions/take-snapshots'
 import { createTakeAction } from '@/app/actions/takes'
-import { promoteAssetSelectionAction, discardAssetSelectionAction, getShotSelectionsAction, type ActiveSelection } from '@/app/actions/shot-selections'
 import { setShotFinalVisualAction, getShotFinalVisualAction, clearShotFinalVisualAction } from '@/app/actions/shot-final-visual'
 import {
   approveTakeAction,
@@ -146,9 +145,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     return VIEWPORT_INITIAL
   }, [readyTakeId]) // eslint-disable-line react-hooks/exhaustive-deps
   const [isLoading, setIsLoading] = useState(true)
-  const [shotSelections, setShotSelections] = useState<ActiveSelection[]>([])
-  const [finalVisual, setFinalVisual] = useState<{ selectionId: string; src: string; storagePath: string; selectionNumber: number; takeId: string | null } | null>(null)
-  const [finalVisualTakeId, setFinalVisualTakeId] = useState<string | null>(null)
+  const [finalVisual, setFinalVisual] = useState<{ nodeId: string; takeId: string } | null>(null)
+  const [resolvedFv, setResolvedFv] = useState<{ src: string; storagePath: string } | null>(null)
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -165,6 +163,37 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [inspectMedia])
+
+  // Resolve FV src from take snapshot (local or remote)
+  const resolvedFvSeqRef = useRef(0)
+  useEffect(() => {
+    if (!finalVisual) { setResolvedFv(null); return }
+    const { nodeId, takeId } = finalVisual
+    const seq = ++resolvedFvSeqRef.current
+
+    // If FV is in current take, resolve from local payload
+    if (takeId === readyTakeId && readyPayload?.nodes) {
+      const node = readyPayload.nodes.find((n: any) => n.id === nodeId)
+      if (node) {
+        setResolvedFv({ src: node.data?.src ?? '', storagePath: node.data?.storage_path ?? '' })
+        return
+      }
+    }
+
+    // Otherwise fetch snapshot from the FV's take
+    loadLatestTakeSnapshotAction(takeId).then(snapshot => {
+      if (seq !== resolvedFvSeqRef.current) return
+      const nodes = (snapshot?.payload as any)?.nodes as any[] | undefined
+      const node = nodes?.find((n: any) => n.id === nodeId)
+      if (node) {
+        setResolvedFv({ src: node.data?.src ?? '', storagePath: node.data?.storage_path ?? '' })
+      } else {
+        setResolvedFv(null)
+      }
+    }).catch(() => { if (seq === resolvedFvSeqRef.current) setResolvedFv(null) })
+  }, [finalVisual, readyTakeId, readyPayload])
+
+
 
   // Download helper (fetch→blob, cross-origin safe)
   const triggerDownload = useCallback(async (url: string, filename: string) => {
@@ -263,18 +292,15 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const takeLoadSeqRef = useRef(0)
   const shotDerivedSeqRef = useRef(0)
 
-  // Load shot-level derived state (FV + selections) — shot-scoped, not take-scoped
+  // Load shot-level derived state (FV + ratings) — shot-scoped, not take-scoped
   const loadShotDerivedState = useCallback(async () => {
     const seq = ++shotDerivedSeqRef.current
-    const [fv, sels, ratings] = await Promise.all([
+    const [fv, ratings] = await Promise.all([
       getShotFinalVisualAction({ shotId: shot.id }),
-      getShotSelectionsAction({ shotId: shot.id }),
       getShotMediaRatings({ shotId: shot.id }),
     ])
     if (seq !== shotDerivedSeqRef.current) return // stale response, discard
     setFinalVisual(fv)
-    setFinalVisualTakeId(fv?.takeId ?? null)
-    setShotSelections(sels)
     setRatingMap(ratings)
   }, [shot.id])
 
@@ -293,7 +319,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     Promise.all([
       loadLatestTakeSnapshotAction(currentTakeId),
       // Only load shot-derived state on first take load (not on every take switch)
-      shotSelections.length === 0 && !finalVisual
+      !finalVisual
         ? loadShotDerivedState()
         : Promise.resolve(),
     ])
@@ -568,7 +594,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   const handleDeleteTake = (takeId: string) => {
     const targetTake = takes.find(t => t.id === takeId)
-    const isFVTake = finalVisualTakeId === takeId
+    const isFVTake = finalVisual?.takeId === takeId
 
     const title = isFVTake ? 'Delete Take + Clear Final Visual' : 'Delete Take'
     const body = isFVTake
@@ -592,7 +618,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     if (isFVTake) {
       await clearShotFinalVisualAction({ shotId: shot.id })
       setFinalVisual(null)
-      setFinalVisualTakeId(null)
       fvUndoStackRef.current = []
       setFvUndoCount(0)
       router.refresh()
@@ -661,73 +686,18 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     setShowPLP(true)
   }
 
-  // ── Blocco 4C: Shot Selection Promotion callbacks ──
-  const handlePromoteSelection = useCallback(async (
-    imageNodeId: string,
-    imageData: ImageData,
-    promptData?: { body: string; promptType: string; origin: string; createdAt?: string } | null
-  ): Promise<{ selectionId: string; selectionNumber: number } | null> => {
-    try {
-      const result = await promoteAssetSelectionAction({
-        projectId,
-        shotId: shot.id,
-        takeId: currentTakeId,
-        imageNodeId,
-        imageSnapshot: {
-          src: imageData.src,
-          storage_path: imageData.storage_path,
-          naturalWidth: imageData.naturalWidth,
-          naturalHeight: imageData.naturalHeight,
-        },
-        promptSnapshot: promptData ?? null,
-      })
-      // Refresh selections after promote
-      loadShotDerivedState()
-      return result
-    } catch (error) {
-      console.error('Failed to promote selection:', error)
-      return null
-    }
-  }, [projectId, shot.id, currentTakeId, loadShotDerivedState])
-
-  const handleDiscardSelection = useCallback(async (selectionId: string, reason: 'undo' | 'manual'): Promise<void> => {
-    if (!selectionId) return
-
-    // If discarding the current Final Visual, clear FV first
-    if (finalVisual?.selectionId === selectionId) {
-      setFinalVisual(null)
-      setFinalVisualTakeId(null)
-      fvUndoStackRef.current = []
-      setFvUndoCount(0)
-      await clearShotFinalVisualAction({ shotId: shot.id })
-      router.refresh()
-    }
-
-    try {
-      await discardAssetSelectionAction({
-        projectId,
-        shotId: shot.id,
-        selectionId,
-        reason,
-      })
-      // Refresh selections after discard
-      await loadShotDerivedState()
-    } catch (error) {
-      console.error('Failed to discard selection:', error)
-    }
-  }, [projectId, shot.id, finalVisual?.selectionId, loadShotDerivedState, router])
-
   // ── Shot Final Visual ──
-  const fvUndoStackRef = useRef<{ selectionId: string | null; takeId: string | null }[]>([])
+  const fvUndoStackRef = useRef<{ nodeId: string | null; takeId: string | null }[]>([])
   const [fvUndoCount, setFvUndoCount] = useState(0)
 
-  const handleSetFinalVisual = useCallback(async (selectionId: string) => {
+  const handleSetFinalVisual = useCallback(async (nodeId: string) => {
+    if (!readyTakeId) return
     fvUndoStackRef.current.push({
-      selectionId: finalVisual?.selectionId ?? null,
-      takeId: finalVisualTakeId,
+      nodeId: finalVisual?.nodeId ?? null,
+      takeId: finalVisual?.takeId ?? null,
     })
     setFvUndoCount(fvUndoStackRef.current.length)
-    const result = await setShotFinalVisualAction({ shotId: shot.id, selectionId })
+    const result = await setShotFinalVisualAction({ shotId: shot.id, nodeId, takeId: readyTakeId })
     if (result.success) {
       await loadShotDerivedState()
       router.refresh()
@@ -735,21 +705,20 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       fvUndoStackRef.current.pop()
       setFvUndoCount(fvUndoStackRef.current.length)
     }
-  }, [shot.id, finalVisual, finalVisualTakeId, loadShotDerivedState, router])
+  }, [shot.id, readyTakeId, finalVisual, loadShotDerivedState, router])
 
   const handleUndoFinalVisual = useCallback(async () => {
     const prev = fvUndoStackRef.current.pop()
     setFvUndoCount(fvUndoStackRef.current.length)
     if (prev === undefined) return
-    if (prev.selectionId === null) {
+    if (prev.nodeId === null) {
       const result = await clearShotFinalVisualAction({ shotId: shot.id })
       if (result.success) {
         setFinalVisual(null)
-        setFinalVisualTakeId(null)
         router.refresh()
       }
     } else {
-      const result = await setShotFinalVisualAction({ shotId: shot.id, selectionId: prev.selectionId })
+      const result = await setShotFinalVisualAction({ shotId: shot.id, nodeId: prev.nodeId, takeId: prev.takeId! })
       if (result.success) {
         await loadShotDerivedState()
         router.refresh()
@@ -792,12 +761,12 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           </div>
         )}
         {renderStrip()}
-        <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual}
+        <ShotHeader shot={shot} projectId={projectId} finalVisual={resolvedFv}
           onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
           outputVideoSrc={shot.output_video_src ?? null}
-          onPreviewFV={finalVisual?.src ? () => setInspectMedia({ type: 'image', src: finalVisual.src }) : undefined}
+          onPreviewFV={resolvedFv?.src ? () => setInspectMedia({ type: 'image', src: resolvedFv.src }) : undefined}
           onPreviewOutput={shot.output_video_src ? () => setInspectMedia({ type: 'video', src: shot.output_video_src! }) : undefined}
-          onDownloadFV={finalVisual?.src ? () => triggerDownload(finalVisual.src, `${shotPrefix}_FV.${extFromUrl(finalVisual.src, 'png')}`) : undefined}
+          onDownloadFV={resolvedFv?.src ? () => triggerDownload(resolvedFv.src, `${shotPrefix}_FV.${extFromUrl(resolvedFv.src, 'png')}`) : undefined}
           onDownloadOutput={shot.output_video_src ? () => triggerDownload(shot.output_video_src!, `${shotPrefix}_OUTPUT.${extFromUrl(shot.output_video_src!, 'mp4')}`) : undefined}
         />
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
@@ -836,12 +805,12 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         </div>
       )}
       {renderStrip()}
-      <ShotHeader shot={shot} projectId={projectId} finalVisual={finalVisual}
+      <ShotHeader shot={shot} projectId={projectId} finalVisual={resolvedFv}
         onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
         outputVideoSrc={shot.output_video_src ?? null}
-        onPreviewFV={finalVisual?.src ? () => setInspectMedia({ type: 'image', src: finalVisual.src }) : undefined}
+        onPreviewFV={resolvedFv?.src ? () => setInspectMedia({ type: 'image', src: resolvedFv.src }) : undefined}
         onPreviewOutput={shot.output_video_src ? () => setInspectMedia({ type: 'video', src: shot.output_video_src! }) : undefined}
-        onDownloadFV={finalVisual?.src ? () => triggerDownload(finalVisual.src, `${shotPrefix}_FV.${extFromUrl(finalVisual.src, 'png')}`) : undefined}
+        onDownloadFV={resolvedFv?.src ? () => triggerDownload(resolvedFv.src, `${shotPrefix}_FV.${extFromUrl(resolvedFv.src, 'png')}`) : undefined}
         onDownloadOutput={shot.output_video_src ? () => triggerDownload(shot.output_video_src!, `${shotPrefix}_OUTPUT.${extFromUrl(shot.output_video_src!, 'mp4')}`) : undefined}
       />
 
@@ -864,7 +833,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         onNewTake={handleNewTake}
         onDuplicate={handleDuplicateTake}
         onDelete={handleDeleteTake}
-        finalVisualTakeId={finalVisualTakeId}
+        finalVisualTakeId={finalVisual?.takeId ?? null}
         approvedTakeId={shot.approved_take_id}
         onApproveTake={handleApproveTake}
         onRevokeTake={handleRevokeTake}
@@ -1204,18 +1173,15 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               onNodesChange={handleNodesChange}
               initialUndoHistory={currentUndoHistory}
               onUndoHistoryChange={handleUndoHistoryChange}
-              onPromoteSelection={handlePromoteSelection}
-              onDiscardSelection={handleDiscardSelection}
               onSetFinalVisual={handleSetFinalVisual}
               onClearFinalVisual={async () => {
                 await clearShotFinalVisualAction({ shotId: shot.id })
                 setFinalVisual(null)
-                setFinalVisualTakeId(null)
                 fvUndoStackRef.current = []
                 setFvUndoCount(0)
                 router.refresh()
               }}
-              currentFinalVisualId={finalVisual?.selectionId ?? null}
+              currentFinalVisualNodeId={finalVisual?.nodeId ?? null}
               outputVideoNodeId={shotOutputNodeId}
               onSetOutputVideo={async (nodeId: string) => {
                 if (!readyTakeId) return
@@ -1231,7 +1197,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 await clearShotOutputVideo(shot.id)
                 router.refresh()
               }}
-              shotSelections={shotSelections}
               ratingMap={ratingMap}
               onSetRating={async (storagePath: string, rating: number) => {
                 setRatingMap(prev => {
@@ -1257,7 +1222,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           nodes={plpNodes}
           edges={plpEdges}
           isApproved={shot.approved_take_id === readyTakeId}
-          currentFinalVisualId={finalVisual?.selectionId ?? null}
+          currentFinalVisualNodeId={finalVisual?.nodeId ?? null}
           outputVideoNodeId={shotOutputNodeId}
           onClose={() => setShowPLP(false)}
         />

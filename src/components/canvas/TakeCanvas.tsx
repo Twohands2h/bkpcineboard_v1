@@ -58,12 +58,9 @@ interface TakeCanvasProps {
     onNodesChange?: (nodes: CanvasNode[], edges: CanvasEdge[]) => void
     initialUndoHistory?: UndoHistory
     onUndoHistoryChange?: (history: UndoHistory) => void
-    onPromoteSelection?: (imageNodeId: string, imageData: ImageData, promptData?: { body: string; promptType: string; origin: string; createdAt?: string } | null) => Promise<{ selectionId: string; selectionNumber: number } | null>
-    onDiscardSelection?: (selectionId: string, reason: 'undo' | 'manual') => Promise<void>
-    onSetFinalVisual?: (selectionId: string) => Promise<void>
-    onClearFinalVisual?: () => Promise<void>
-    currentFinalVisualId?: string | null
-    shotSelections?: { selectionId: string; selectionNumber: number; storagePath: string; src: string; nodeId?: string }[]
+    onSetFinalVisual?: (nodeId: string) => void
+    onClearFinalVisual?: () => void
+    currentFinalVisualNodeId?: string | null
     ratingMap?: Record<string, number>
     onSetRating?: (storagePath: string, rating: number) => void
     outputVideoNodeId?: string | null
@@ -74,7 +71,7 @@ interface TakeCanvasProps {
 export type CanvasNode = NoteNode | ImageNode | VideoNode | ColumnNode | PromptNode
 
 interface NoteNode { id: string; type: 'note'; x: number; y: number; width: number; height: number; zIndex: number; data: NoteData & { parentId?: string | null } }
-interface ImageNode { id: string; type: 'image'; x: number; y: number; width: number; height: number; zIndex: number; data: ImageData & { parentId?: string | null; origin_prompt_id?: string; aspectRatio?: number; promotedSelectionId?: string; selectionNumber?: number } }
+interface ImageNode { id: string; type: 'image'; x: number; y: number; width: number; height: number; zIndex: number; data: ImageData & { parentId?: string | null; origin_prompt_id?: string; aspectRatio?: number } }
 interface VideoNode { id: string; type: 'video'; x: number; y: number; width: number; height: number; zIndex: number; data: VideoData & { parentId?: string | null } }
 interface ColumnNode { id: string; type: 'column'; x: number; y: number; width: number; height: number; zIndex: number; data: ColumnData & { expandedHeight?: number; childOrder?: string[] } }
 interface PromptNode { id: string; type: 'prompt'; x: number; y: number; width: number; height: number; zIndex: number; data: PromptData & { parentId?: string | null } }
@@ -178,7 +175,7 @@ interface SelectionBoxRect { left: number; top: number; width: number; height: n
 interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onPromoteSelection, onDiscardSelection, onSetFinalVisual, onClearFinalVisual, currentFinalVisualId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, shotSelections, ratingMap, onSetRating }, ref) {
+    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onSetFinalVisual, onClearFinalVisual, currentFinalVisualNodeId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, ratingMap, onSetRating }, ref) {
         const [nodes, _setNodesRaw] = useState<CanvasNode[]>(() => initialNodes ?? [])
         const [edges, _setEdgesRaw] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
@@ -256,48 +253,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const primarySelectedId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null
         const activeNodeId = primarySelectedId ?? hoveredNodeId
 
-        // Blocco 4C: Rehydrate selection badges from DB on mount
-        // Two-way sync: ADD badges for active selections, STRIP stale badges from snapshot
-        const selectionsAppliedRef = useRef(false)
-        useEffect(() => {
-            if (selectionsAppliedRef.current) return
-            selectionsAppliedRef.current = true
-
-            const activeIds = new Set((shotSelections ?? []).map(s => s.selectionId))
-
-            setNodes(prev => {
-                let changed = false
-                const next = prev.map(n => {
-                    if (n.type !== 'image') return n
-                    const nodeData = n.data as any
-
-                    // Strip stale: node has badge but selection is no longer active
-                    if (nodeData.promotedSelectionId && !activeIds.has(nodeData.promotedSelectionId)) {
-                        changed = true
-                        const { promotedSelectionId: _, selectionNumber: __, ...rest } = nodeData
-                        return { ...n, data: rest }
-                    }
-
-                    // Add missing: active selection matches this image but no badge yet
-                    if (!nodeData.promotedSelectionId && shotSelections?.length) {
-                        const match = shotSelections.find(s =>
-                            // Prefer nodeId match (stable across sessions, immune to duplicate take)
-                            s.nodeId ? s.nodeId === n.id
-                                // Fallback: src/storagePath match (backward compat, no nodeId in old selections)
-                                : (s.storagePath === nodeData.storage_path || s.src === nodeData.src)
-                        )
-                        if (match) {
-                            changed = true
-                            return { ...n, data: { ...nodeData, promotedSelectionId: match.selectionId, selectionNumber: match.selectionNumber } }
-                        }
-                    }
-
-                    return n
-                })
-                return changed ? next : prev
-            })
-        }, [shotSelections])
-
         const setDetachingOffset = useCallback((val: { dx: number; dy: number } | null) => {
             detachingOffsetRef.current = val; setDetachingOffsetState(val)
         }, [])
@@ -326,43 +281,18 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             h.stack.push({ nodes: structuredClone(nodesRef.current), edges: structuredClone(edgesRef.current) })
             if (h.stack.length > HISTORY_MAX) h.stack.shift(); else h.cursor++; emitHistoryChange()
         }, [emitHistoryChange])
-        // Helper: re-apply selection badges from server state (shotSelections).
-        // Called after undo/redo to ensure promoted state is never lost by canvas history.
-        const reapplySelectionBadges = useCallback((restoredNodes: CanvasNode[]): CanvasNode[] => {
-            if (!shotSelections?.length) return restoredNodes
-            let changed = false
-            const result = restoredNodes.map(n => {
-                if (n.type !== 'image') return n
-                const nd = n.data as any
-                const match = shotSelections.find(s =>
-                    s.nodeId ? s.nodeId === n.id
-                        : (s.storagePath === nd.storage_path || s.src === nd.src)
-                )
-                if (match && nd.promotedSelectionId !== match.selectionId) {
-                    changed = true
-                    return { ...n, data: { ...nd, promotedSelectionId: match.selectionId, selectionNumber: match.selectionNumber } }
-                }
-                return n
-            })
-            return changed ? result : restoredNodes
-        }, [shotSelections])
-
         const undo = useCallback(() => {
             const h = historyRef.current; if (h.cursor <= 0) return
             h.cursor--
             const p = structuredClone(h.stack[h.cursor])
-            // Re-apply selection badges — undo must never affect promoted state
-            const nodesWithBadges = reapplySelectionBadges(p.nodes)
-            setNodes(nodesWithBadges); setEdges(p.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0)
-        }, [emitNodesChange, emitHistoryChange, reapplySelectionBadges])
+            setNodes(p.nodes); setEdges(p.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0)
+        }, [emitNodesChange, emitHistoryChange])
         const redo = useCallback(() => {
             const h = historyRef.current; if (h.cursor >= h.stack.length - 1) return
             h.cursor++
             const n = structuredClone(h.stack[h.cursor])
-            // Re-apply selection badges — redo must never affect promoted state
-            const nodesWithBadges = reapplySelectionBadges(n.nodes)
-            setNodes(nodesWithBadges); setEdges(n.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0)
-        }, [emitNodesChange, emitHistoryChange, reapplySelectionBadges])
+            setNodes(n.nodes); setEdges(n.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0)
+        }, [emitNodesChange, emitHistoryChange])
 
         // ── R4-005: Zoom (Ctrl+Wheel) + R4-005b: Trackpad Pan (plain Wheel) ──
         useEffect(() => {
@@ -874,9 +804,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [handleWindowMouseMove, handleWindowMouseUp])
 
         const handleDelete = useCallback((nodeId: string) => {
-            // Guard: if deleting an image node that is the current FV, only clear FV (keep node)
+            // Guard: if deleting the image node that is the current FV, only clear FV (keep node)
             const targetNode = nodesRef.current.find(n => n.id === nodeId)
-            if (targetNode?.type === 'image' && currentFinalVisualId && (targetNode.data as any).promotedSelectionId === currentFinalVisualId) {
+            if (targetNode?.type === 'image' && nodeId === currentFinalVisualNodeId) {
                 setConfirmState({
                     title: 'Clear Final Visual',
                     body: 'This image is the current Final Visual.\n\nClearing Final Visual status. The image will be kept.',
@@ -900,7 +830,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             }
 
             executeNodeDelete(nodeId)
-        }, [currentFinalVisualId, onClearFinalVisual, outputVideoNodeId, onClearOutputVideo])
+        }, [currentFinalVisualNodeId, onClearFinalVisual, outputVideoNodeId, onClearOutputVideo])
 
         const executeNodeDelete = useCallback((nodeId: string) => {
             setNodes(p => {
@@ -1158,8 +1088,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     if (selectedNodeIdsRef.current.size > 0) {
                         e.preventDefault(); const del = new Set(selectedNodeIdsRef.current)
                         // If any selected node is the current FV image, need confirmation
-                        const fvNodeId = currentFinalVisualId
-                            ? nodesRef.current.find(n => del.has(n.id) && n.type === 'image' && (n.data as any).promotedSelectionId === currentFinalVisualId)?.id
+                        const fvNodeId = currentFinalVisualNodeId && del.has(currentFinalVisualNodeId)
+                            ? currentFinalVisualNodeId
                             : undefined
                         const hasOutput = outputVideoNodeId && del.has(outputVideoNodeId)
                             && nodesRef.current.some(n => n.id === outputVideoNodeId && n.type === 'video')
@@ -1231,64 +1161,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             window.addEventListener('keydown', kd); window.addEventListener('keyup', ku)
             return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku) }
         }, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange, endInteraction])
-
-        // ── Blocco 4C: Shot Selection Promotion ──
-        const handlePromoteSelectedImage = useCallback(async () => {
-            if (!onPromoteSelection) return
-            if (!primarySelectedId || selectedNodeIds.size !== 1) return
-            const imageNode = nodesRef.current.find(n => n.id === primarySelectedId && n.type === 'image') as ImageNode | undefined
-            if (!imageNode) return
-            if (imageNode.data.promotedSelectionId) return // already promoted
-
-            // Best-effort: find connected PromptNode via edges
-            let promptData: { body: string; promptType: string; origin: string; createdAt?: string } | null = null
-            const connectedEdge = edgesRef.current.find(e => e.to === imageNode.id || e.from === imageNode.id)
-            if (connectedEdge) {
-                const promptId = connectedEdge.from === imageNode.id ? connectedEdge.to : connectedEdge.from
-                const promptNode = nodesRef.current.find(n => n.id === promptId && n.type === 'prompt') as PromptNode | undefined
-                if (promptNode?.data.body) {
-                    promptData = {
-                        body: promptNode.data.body,
-                        promptType: promptNode.data.promptType ?? 'prompt',
-                        origin: promptNode.data.origin ?? 'manual',
-                        createdAt: promptNode.data.createdAt,
-                    }
-                }
-            }
-
-            const result = await onPromoteSelection(imageNode.id, imageNode.data, promptData)
-            if (!result) return
-
-            pushHistory()
-            setNodes(prev => prev.map(n =>
-                n.id === imageNode.id && n.type === 'image'
-                    ? { ...n, data: { ...n.data, promotedSelectionId: result.selectionId, selectionNumber: result.selectionNumber } }
-                    : n
-            ))
-            emitNodesChange()
-        }, [onPromoteSelection, primarySelectedId, selectedNodeIds, pushHistory, emitNodesChange])
-
-        const handleRemoveBadge = useCallback(async (nodeId: string) => {
-            const node = nodesRef.current.find(n => n.id === nodeId && n.type === 'image') as ImageNode | undefined
-            if (!node?.data.promotedSelectionId) return
-            const selectionId = node.data.promotedSelectionId
-
-            if (!onDiscardSelection) return
-            try {
-                await onDiscardSelection(selectionId, 'manual')
-            } catch (err) {
-                console.error('Failed to discard selection:', err)
-            }
-
-            // 2. Then update UI
-            pushHistory()
-            setNodes(prev => prev.map(n =>
-                n.id === nodeId && n.type === 'image'
-                    ? { ...n, data: { ...n.data, promotedSelectionId: undefined, selectionNumber: undefined } }
-                    : n
-            ))
-            emitNodesChange()
-        }, [pushHistory, emitNodesChange, onDiscardSelection])
 
         // R4-005: Double-click canvas = reset viewport
         // R4-005b: Only on truly empty canvas — not on nodes, columns, or their children
@@ -1440,9 +1312,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 onMouseLeave={() => setHoveredNodeId(prev => prev === node.id ? null : prev)}
                                 onDelete={(id) => { void handleDelete(id) }} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}
                                 isOutputVideo={node.type === 'video' && node.id === outputVideoNodeId}
-                                isFinalVisual={node.type === 'image' && !!currentFinalVisualId && (node.data as any).promotedSelectionId === currentFinalVisualId}>
+                                isFinalVisual={node.type === 'image' && node.id === currentFinalVisualNodeId}>
                                 {node.type === 'note' ? <NoteContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldFocus={handleFieldFocus} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
-                                    : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} isFinalVisual={!!currentFinalVisualId && (node.data as any).promotedSelectionId === currentFinalVisualId} onRemoveBadge={() => handleRemoveBadge(node.id)} onInspect={() => setInspectImage({ src: node.data.src, naturalWidth: node.data.naturalWidth, naturalHeight: node.data.naturalHeight, storagePath: node.data.storage_path })} />
+                                    : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} isFinalVisual={node.id === currentFinalVisualNodeId} onInspect={() => setInspectImage({ src: node.data.src, naturalWidth: node.data.naturalWidth, naturalHeight: node.data.naturalHeight, storagePath: node.data.storage_path })} />
                                         : node.type === 'video' ? <VideoContent data={node.data} viewportScale={viewport.scale} />
                                             : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
                                                 : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
@@ -1462,42 +1334,14 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         <div data-selection-box className="absolute border border-blue-500 bg-blue-500/10 pointer-events-none z-[9998]" style={{ left: selectionBoxRect.left, top: selectionBoxRect.top, width: selectionBoxRect.width, height: selectionBoxRect.height }} />
                     )}
 
-                    {/* Blocco 4C: Selection Promote button — world space, under selected ImageNode */}
-                    {/* Blocco 4C: "Select as Asset" button — for unpromoted images */}
-                    {onPromoteSelection && activeNodeId && interactionMode === 'idle' && (() => {
-                        const node = nodes.find(n => n.id === activeNodeId)
-                        if (!node || node.type !== 'image') return null
-                        if ((node.data as any).promotedSelectionId) return null // already promoted
-                        const rect = renderRects.get(activeNodeId)
-                        if (!rect) return null
-                        const s = 1 / viewport.scale
-                        return (
-                            <div
-                                className="absolute z-[9997] pointer-events-auto"
-                                style={{ left: rect.x + rect.width / 2, top: rect.y + rect.height + 8 * s, transform: `translateX(-50%) scale(${s})`, transformOrigin: 'top center' }}
-                            >
-                                <button
-                                    onClick={(e) => { e.stopPropagation(); handlePromoteSelectedImage() }}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    className="px-2 py-0.5 bg-zinc-800 border border-zinc-600 hover:border-zinc-400 text-zinc-400 hover:text-zinc-200 text-[10px] rounded whitespace-nowrap transition-colors"
-                                >
-                                    Select as Asset
-                                </button>
-                            </div>
-                        )
-                    })()}
-
-                    {/* Shot Final Visual: "Set as Final" button or "Final Visual ✓" indicator */}
-                    {/* FV pill — bottom center outside node, toggle set/clear (images with promotedSelectionId only) */}
+                    {/* FV pill — bottom center outside selected image node, toggle set/clear */}
                     {onSetFinalVisual && activeNodeId && interactionMode === 'idle' && (() => {
                         const liveNode = nodesRef.current.find(n => n.id === activeNodeId)
                         if (!liveNode || liveNode.type !== 'image') return null
-                        const selId = (liveNode.data as any).promotedSelectionId
-                        if (!selId) return null
                         const rect = renderRects.get(activeNodeId)
                         if (!rect) return null
                         const s = 1 / viewport.scale
-                        const isCurrentFV = selId === currentFinalVisualId
+                        const isCurrentFV = liveNode.id === currentFinalVisualNodeId
                         return (
                             <div
                                 className="absolute z-[9997] pointer-events-auto"
@@ -1507,7 +1351,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                     onClick={(e) => {
                                         e.stopPropagation()
                                         if (isCurrentFV) { void onClearFinalVisual?.() }
-                                        else { void onSetFinalVisual?.(selId) }
+                                        else { void onSetFinalVisual?.(liveNode.id) }
                                     }}
                                     onMouseDown={(e) => e.stopPropagation()}
                                     className={`px-2 py-0.5 text-[10px] font-medium border rounded whitespace-nowrap transition-colors ${isCurrentFV
