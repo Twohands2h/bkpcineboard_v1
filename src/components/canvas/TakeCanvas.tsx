@@ -1317,12 +1317,18 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const isFarFromOne = Math.abs(vp.scale - 1) > 0.05
 
             if (isFarFromOne) {
+                // Anchor zoom: keep click point stable on screen
+                const screenX = e.clientX - cr.left
+                const screenY = e.clientY - cr.top
+                const worldX = (screenX - vp.offsetX) / vp.scale
+                const worldY = (screenY - vp.offsetY) / vp.scale
                 setViewport({
                     scale: 1,
-                    offsetX: cr.width / 2 - bboxCx,
-                    offsetY: cr.height / 2 - bboxCy,
+                    offsetX: screenX - worldX,
+                    offsetY: screenY - worldY,
                 })
             } else {
+                // Fit-to-bounds: center on all content
                 const padding = 80
                 const scaleX = (cr.width - padding * 2) / Math.max(bboxW, 1)
                 const scaleY = (cr.height - padding * 2) / Math.max(bboxH, 1)
