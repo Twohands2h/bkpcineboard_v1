@@ -25,7 +25,7 @@ interface TakeTabsProps {
   onNewTake: () => void
   onDuplicate: () => void
   onDelete: (takeId: string) => void
-  finalVisualTakeId: string | null
+  finalVisualTakeId,
   approvedTakeId: string | null
   onApproveTake: (takeId: string) => void
   onRevokeTake: () => void
@@ -56,8 +56,6 @@ export function TakeTabs({
         {takes.map((take) => {
           const isActive = take.id === currentTakeId
           const isApproved = approvedTakeId === take.id
-          const isFV = !isApproved && finalVisualTakeId === take.id
-
           return (
             <div
               key={take.id}
@@ -71,11 +69,9 @@ export function TakeTabs({
               onClick={() => onTakeChange(take.id)}
             >
               <span>{take.name}</span>
-
-              {/* Status dot — emerald (approved) wins over amber (FV) */}
-              {(isApproved || isFV) && (
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isApproved ? 'bg-emerald-500' : 'bg-amber-500'
-                  }`} />
+              {/* Status dot — emerald (approved) only */}
+              {isApproved && (
+                <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-emerald-500" />
               )}
 
               {/* Approve ✓ — visible on hover, only if NOT approved */}

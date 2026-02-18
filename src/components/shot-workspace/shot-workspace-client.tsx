@@ -833,7 +833,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         onNewTake={handleNewTake}
         onDuplicate={handleDuplicateTake}
         onDelete={handleDeleteTake}
-        finalVisualTakeId={finalVisual?.takeId ?? null}
+
         approvedTakeId={shot.approved_take_id}
         onApproveTake={handleApproveTake}
         onRevokeTake={handleRevokeTake}
