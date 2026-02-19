@@ -209,7 +209,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const extFromUrl = (url: string, fb: string) => { try { const e = new URL(url).pathname.split('.').pop(); return e && e.length <= 5 ? e : fb } catch { return fb } }
   const sceneIdx = stripData?.scenes?.findIndex(s => s.shots?.some(sh => sh.id === shot.id)) ?? 0
   const shotPrefix = `S${pad2(sceneIdx + 1)}_SH${pad2(shot.order_index + 1)}`
-
+  const fvTakeLabel = shot.final_visual_take_id ? (takes.find(t => t.id === shot.final_visual_take_id)?.name ?? null) : null
+  const outputTakeLabel = shot.output_take_id ? (takes.find(t => t.id === shot.output_take_id)?.name ?? null) : null
   // Auto-dismiss upload error toast after 6s
   useEffect(() => {
     if (!uploadError) return
@@ -787,8 +788,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   }
 
   const currentTake = readyTakeId ? takes.find(t => t.id === readyTakeId) : null
-  const fvTakeLabel = shot.final_visual_take_id ? (takes.find(t => t.id === shot.final_visual_take_id)?.name ?? null) : null
-  const outputTakeLabel = shot.output_take_id ? (takes.find(t => t.id === shot.output_take_id)?.name ?? null) : null
+
   const shotOutputNodeId = shot.output_take_id === readyTakeId ? (shot.output_video_node_id ?? null) : null
   const currentUndoHistory = readyTakeId
     ? undoHistoryByTakeRef.current.get(readyTakeId)
