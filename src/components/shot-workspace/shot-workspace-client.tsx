@@ -43,6 +43,54 @@ function checkFileSize(file: File): string | null {
   return null
 }
 
+/** Normalize column containment: repair parentId ↔ childOrder invariant.
+ *  Pure function — returns new array only if repairs were needed. */
+function normalizeColumnContainment(nodes: CanvasNode[]): CanvasNode[] {
+  const nodeIds = new Set(nodes.map(n => n.id))
+  const colMap = new Map<string, CanvasNode>()
+  for (const n of nodes) { if (n.type === 'column') colMap.set(n.id, n) }
+
+  // Build actual children set per column from parentId
+  const childrenOf = new Map<string, Set<string>>()
+  for (const col of colMap.keys()) childrenOf.set(col, new Set())
+  for (const n of nodes) {
+    if (n.type === 'column') continue
+    const pid = (n.data as any)?.parentId
+    if (pid && colMap.has(pid)) childrenOf.get(pid)!.add(n.id)
+    if (n.type === 'image') console.log('[NORM img]', n.id.slice(0, 8), 'parentId=', pid ?? 'null')
+  }
+
+  let dirty = false
+  const result = nodes.map(n => {
+    if (n.type === 'column') {
+      const col = n as any
+      const rawOrder: string[] = col.data?.childOrder ?? []
+      const actualChildren = childrenOf.get(n.id)!
+      // Remove ids not in actual children or not existing
+      const cleaned = rawOrder.filter(id => actualChildren.has(id) && nodeIds.has(id))
+      // Dedupe
+      const seen = new Set<string>()
+      const deduped: string[] = []
+      for (const id of cleaned) { if (!seen.has(id)) { seen.add(id); deduped.push(id) } }
+      // Append children with parentId but missing from childOrder
+      for (const cid of actualChildren) { if (!seen.has(cid)) { seen.add(cid); deduped.push(cid) } }
+      if (deduped.length !== rawOrder.length || deduped.some((id, i) => id !== rawOrder[i])) {
+        dirty = true
+        return { ...n, data: { ...n.data, childOrder: deduped } }
+      }
+      return n
+    }
+    // Non-column: if parentId points to non-existent column, clear it
+    const pid = (n.data as any)?.parentId
+    if (pid && !colMap.has(pid)) {
+      dirty = true
+      return { ...n, data: { ...n.data, parentId: null } }
+    }
+    return n
+  })
+  return dirty ? result : nodes
+}
+
 /** Pre-generate deterministic storage path + public URL before upload starts.
  *  This ensures the node always has a valid storage_path, even if persist happens mid-upload. */
 function precomputeMediaPath(
@@ -338,13 +386,18 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         }
 
         setReadyTakeId(currentTakeId)
+        console.log('[LOAD] payload defined?', !!payload, 'nodes?', payload?.nodes?.length ?? 0, 'edges?', payload?.edges?.length ?? 0)
+        if (payload?.nodes) {
+          try {
+            const normalized = normalizeColumnContainment(payload.nodes)
+            console.log('[NORM] input:', payload.nodes.length, 'output:', normalized.length)
+            payload = { nodes: normalized, edges: payload.edges ?? [] }
+          } catch (err) {
+            console.error('[normalizeColumnContainment] failed, using raw payload:', err)
+          }
+        }
         setReadyPayload(payload)
-        setIsLoading(false)
-      })
-      .catch(() => {
-        if (seq !== takeLoadSeqRef.current) return
-        setReadyTakeId(currentTakeId)
-        setReadyPayload(undefined)
+
         setIsLoading(false)
       })
   }, [currentTakeId, shot.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -684,6 +737,13 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     const snap = canvasRef.current.getSnapshot()
     setPlpNodes(snap.nodes)
     setPlpEdges(snap.edges)
+    // DEBUG — remove after testing
+    console.log('[PLP debug] edges count:', snap.edges.length)
+    const promptIds = new Set(snap.nodes.filter((n: any) => n.type === 'prompt').map((n: any) => n.id))
+    for (const e of snap.edges) {
+      const dir = promptIds.has(e.to) ? 'incoming' : promptIds.has(e.from) ? 'outgoing' : 'unrelated'
+      console.log(`[PLP edge] ${e.from.slice(0, 8)}→${e.to.slice(0, 8)} dir=${dir}`)
+    }
     setShowPLP(true)
   }
 
@@ -1189,8 +1249,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 setFvUndoCount(0)
                 router.refresh()
               }}
-              currentFinalVisualNodeId={finalVisual?.nodeId ?? null}
-              outputVideoNodeId={shotOutputNodeId}
+
               onSetOutputVideo={async (nodeId: string) => {
                 if (!readyTakeId) return
                 await setTakeOutputVideo(readyTakeId, nodeId)
@@ -1230,8 +1289,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           nodes={plpNodes}
           edges={plpEdges}
           isApproved={shot.approved_take_id === readyTakeId}
-          currentFinalVisualNodeId={finalVisual?.nodeId ?? null}
-          outputVideoNodeId={shotOutputNodeId}
+
           onClose={() => setShowPLP(false)}
         />
       )}
