@@ -118,8 +118,8 @@ function distToSeg(px: number, py: number, x1: number, y1: number, x2: number, y
     const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / l2))
     return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
 }
-function insideColBodyRect(colRect: Rect, px: number, py: number) {
-    return px >= colRect.x && px <= colRect.x + colRect.width && py >= colRect.y + COLUMN_HEADER_HEIGHT && py <= colRect.y + colRect.height
+function insideColBodyRect(colRect: Rect, px: number, py: number, inflate = 0) {
+    return px >= colRect.x - inflate && px <= colRect.x + colRect.width + inflate && py >= colRect.y + COLUMN_HEADER_HEIGHT - inflate && py <= colRect.y + colRect.height + inflate
 }
 function nodeHidden(node: CanvasNode, all: CanvasNode[]) {
     if (node.type === 'column') return false
@@ -584,7 +584,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     for (const n of prev) {
                         if (n.type !== 'column' || n.id === det.nodeId || (n as ColumnNode).data.collapsed) continue
                         const colRect = rects.get(n.id)
-                        if (colRect && insideColBodyRect(colRect, cx, cy)) { targetColId = n.id; break }
+                        if (colRect && insideColBodyRect(colRect, cx, cy, 12)) { targetColId = n.id; break }
                     }
                     const insertIdx = targetColId ? getInsertionIndex(prev, rects, targetColId, cy, det.nodeId) : 0
 
@@ -616,7 +616,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         for (const c of u) {
                             if (c.type !== 'column' || c.id === id || (c as ColumnNode).data.collapsed) continue
                             const colRect = rects.get(c.id)
-                            if (colRect && insideColBodyRect(colRect, ncx, ncy)) { tgt = c.id; break }
+                            if (colRect && insideColBodyRect(colRect, ncx, ncy, 12)) { tgt = c.id; break }
                         }
                         if (tgt) {
                             const insertIdx = getInsertionIndex(u, rects, tgt, ncy, id)
