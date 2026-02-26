@@ -329,7 +329,28 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const createNodeAt = useCallback((x: number, y: number) => {
             // x, y are expected in WORLD coordinates (caller converts if needed)
             const n: NoteNode = { id: crypto.randomUUID(), type: 'note', x: Math.round(x - 100), y: Math.round(y - 60), width: 200, height: 120, zIndex: nodesRef.current.length + 1, data: {} }
-            setNodes(p => [...p, n]); setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
+            const rects = computeRenderRects(nodesRef.current, null, null)
+            let targetColId: string | null = null
+            for (const c of nodesRef.current) {
+                if (c.type !== 'column' || (c as ColumnNode).data.collapsed) continue
+                const cr = rects.get(c.id)
+                if (cr && insideColBodyRect(cr, x, y)) { targetColId = c.id; break }
+            }
+            if (targetColId) {
+                (n.data as any).parentId = targetColId
+                const insertIdx = getInsertionIndex(nodesRef.current, rects, targetColId, y, n.id)
+                setNodes(p => p.map(nd => {
+                    if (nd.id === targetColId && nd.type === 'column') {
+                        const order = [...((nd as ColumnNode).data.childOrder || [])].filter(id => id !== n.id)
+                        order.splice(insertIdx, 0, n.id)
+                        return { ...nd, data: { ...nd.data, childOrder: order } }
+                    }
+                    return nd
+                }).concat(n))
+            } else {
+                setNodes(p => [...p, n])
+            }
+            setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
@@ -338,7 +359,29 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             let w: number, h: number
             if (nw > MAX_INITIAL_IMAGE_WIDTH || nh > MAX_INITIAL_IMAGE_HEIGHT) { if (r > MAX_INITIAL_IMAGE_WIDTH / MAX_INITIAL_IMAGE_HEIGHT) { w = MAX_INITIAL_IMAGE_WIDTH; h = w / r } else { h = MAX_INITIAL_IMAGE_HEIGHT; w = h * r } } else { w = nw; h = nh }
             const n: ImageNode = { id: crypto.randomUUID(), type: 'image', x: Math.round(x - w / 2), y: Math.round(y - h / 2), width: Math.round(w), height: Math.round(h), zIndex: nodesRef.current.length + 1, data: imgData }
-            setNodes(p => [...p, n]); setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
+            // Check if drop point falls inside a column → auto-parent
+            const rects = computeRenderRects(nodesRef.current, null, null)
+            let targetColId: string | null = null
+            for (const c of nodesRef.current) {
+                if (c.type !== 'column' || (c as ColumnNode).data.collapsed) continue
+                const cr = rects.get(c.id)
+                if (cr && insideColBodyRect(cr, x, y)) { targetColId = c.id; break }
+            }
+            if (targetColId) {
+                n.data = { ...n.data, parentId: targetColId } as any
+                const insertIdx = getInsertionIndex(nodesRef.current, rects, targetColId, y, n.id)
+                setNodes(p => p.map(nd => {
+                    if (nd.id === targetColId && nd.type === 'column') {
+                        const order = [...((nd as ColumnNode).data.childOrder || [])].filter(id => id !== n.id)
+                        order.splice(insertIdx, 0, n.id)
+                        return { ...nd, data: { ...nd.data, childOrder: order } }
+                    }
+                    return nd
+                }).concat(n))
+            } else {
+                setNodes(p => [...p, n])
+            }
+            setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
             if (!batchRef.current) setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
             return n.id
         }, [pushHistory, emitNodesChange])
@@ -346,7 +389,28 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         // Step 1A — Video Node
         const createVideoNodeAt = useCallback((x: number, y: number, vidData: VideoData): string => {
             const n: VideoNode = { id: crypto.randomUUID(), type: 'video', x: Math.round(x - VIDEO_DEFAULT_WIDTH / 2), y: Math.round(y - VIDEO_DEFAULT_HEIGHT / 2), width: VIDEO_DEFAULT_WIDTH, height: VIDEO_DEFAULT_HEIGHT, zIndex: nodesRef.current.length + 1, data: vidData }
-            setNodes(p => [...p, n]); setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
+            const rects = computeRenderRects(nodesRef.current, null, null)
+            let targetColId: string | null = null
+            for (const c of nodesRef.current) {
+                if (c.type !== 'column' || (c as ColumnNode).data.collapsed) continue
+                const cr = rects.get(c.id)
+                if (cr && insideColBodyRect(cr, x, y)) { targetColId = c.id; break }
+            }
+            if (targetColId) {
+                n.data = { ...n.data, parentId: targetColId } as any
+                const insertIdx = getInsertionIndex(nodesRef.current, rects, targetColId, y, n.id)
+                setNodes(p => p.map(nd => {
+                    if (nd.id === targetColId && nd.type === 'column') {
+                        const order = [...((nd as ColumnNode).data.childOrder || [])].filter(id => id !== n.id)
+                        order.splice(insertIdx, 0, n.id)
+                        return { ...nd, data: { ...nd.data, childOrder: order } }
+                    }
+                    return nd
+                }).concat(n))
+            } else {
+                setNodes(p => [...p, n])
+            }
+            setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
             if (!batchRef.current) setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
             return n.id
         }, [pushHistory, emitNodesChange])
@@ -361,7 +425,28 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         // Default promptType/origin assigned ONLY at creation time.
         const createPromptNodeAt = useCallback((x: number, y: number) => {
             const n: PromptNode = { id: crypto.randomUUID(), type: 'prompt', x: Math.round(x - PROMPT_DEFAULT_WIDTH / 2), y: Math.round(y - PROMPT_DEFAULT_HEIGHT / 2), width: PROMPT_DEFAULT_WIDTH, height: PROMPT_DEFAULT_HEIGHT, zIndex: nodesRef.current.length + 1, data: { body: '', promptType: 'prompt', origin: 'manual', createdAt: new Date().toISOString() } }
-            setNodes(p => [...p, n]); setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
+            const rects = computeRenderRects(nodesRef.current, null, null)
+            let targetColId: string | null = null
+            for (const c of nodesRef.current) {
+                if (c.type !== 'column' || (c as ColumnNode).data.collapsed) continue
+                const cr = rects.get(c.id)
+                if (cr && insideColBodyRect(cr, x, y)) { targetColId = c.id; break }
+            }
+            if (targetColId) {
+                (n.data as any).parentId = targetColId
+                const insertIdx = getInsertionIndex(nodesRef.current, rects, targetColId, y, n.id)
+                setNodes(p => p.map(nd => {
+                    if (nd.id === targetColId && nd.type === 'column') {
+                        const order = [...((nd as ColumnNode).data.childOrder || [])].filter(id => id !== n.id)
+                        order.splice(insertIdx, 0, n.id)
+                        return { ...nd, data: { ...nd.data, childOrder: order } }
+                    }
+                    return nd
+                }).concat(n))
+            } else {
+                setNodes(p => [...p, n])
+            }
+            setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
@@ -546,8 +631,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 })
             }
 
-            setInteractionMode('idle'); pushHistory(); emitNodesChange()
+            setInteractionMode('idle')
             dragRef.current = null
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [handleWindowMouseMove, pushHistory, emitNodesChange, setDetachingOffset])
 
         useEffect(() => { return () => { window.removeEventListener('mousemove', handleWindowMouseMove); window.removeEventListener('mouseup', handleWindowMouseUp) } }, [handleWindowMouseMove, handleWindowMouseUp])
@@ -634,12 +720,54 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             window.removeEventListener('mousemove', handleConnectionMouseMove); window.removeEventListener('mouseup', handleConnectionMouseUp)
             const c = connectionRef.current
             if (c) {
-                // R4-005: mouse to world for hit test
                 const world = mouseToWorld(e)
                 const rects = computeRenderRects(nodesRef.current, null, null)
-                const tgt = nodesRef.current.find(n => { if (n.id === c.fromNodeId || nodeHidden(n, nodesRef.current)) return false; const r = rects.get(n.id); return r && world.x >= r.x && world.x <= r.x + r.width && world.y >= r.y && world.y <= r.y + r.height })
-                if (tgt && !edgesRef.current.some(e => (e.from === c.fromNodeId && e.to === tgt.id) || (e.from === tgt.id && e.to === c.fromNodeId))) {
-                    setEdges(p => [...p, { id: crypto.randomUUID(), from: c.fromNodeId, to: tgt.id }]); setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                // Hit-test: collect all nodes under cursor
+                const hits = nodesRef.current.filter(n => {
+                    if (n.id === c.fromNodeId || nodeHidden(n, nodesRef.current)) return false
+                    const r = rects.get(n.id)
+                    return r && world.x >= r.x && world.x <= r.x + r.width && world.y >= r.y && world.y <= r.y + r.height
+                })
+                // Priority: prompt > image/video/note > column
+                const tgt = hits.find(n => n.type === 'prompt')
+                    ?? hits.find(n => n.type === 'image' || n.type === 'video' || n.type === 'note')
+                    ?? hits.find(n => n.type === 'column')
+                    ?? null
+
+                if (tgt) {
+                    const fromNode = nodesRef.current.find(n => n.id === c.fromNodeId)
+                    const fromType = fromNode?.type ?? ''
+                    const toType = tgt.type
+
+                    let edgeFrom: string
+                    let edgeTo: string
+                    let edgeLabel: string | undefined
+
+                    if (fromType === 'column' || toType === 'column') {
+                        // Structural link — grey, not used by PLP
+                        edgeFrom = c.fromNodeId; edgeTo = tgt.id; edgeLabel = 'struct'
+                    } else if ((fromType === 'image' || fromType === 'video') && toType === 'prompt') {
+                        // Media → prompt (canonical ref direction)
+                        edgeFrom = c.fromNodeId; edgeTo = tgt.id; edgeLabel = 'ref'
+                    } else if (fromType === 'prompt' && (toType === 'image' || toType === 'video')) {
+                        // Prompt → media: reverse to canonical media → prompt
+                        edgeFrom = tgt.id; edgeTo = c.fromNodeId; edgeLabel = 'ref'
+                    } else {
+                        // All other links: neutral (no label)
+                        edgeFrom = c.fromNodeId; edgeTo = tgt.id
+                    }
+
+                    // Duplicate check (label-aware)
+                    const isDupe = edgeLabel === 'ref'
+                        ? edgesRef.current.some(ex => ex.from === edgeFrom && ex.to === edgeTo && ex.label === 'ref')
+                        : edgeLabel === 'struct'
+                            ? edgesRef.current.some(ex => ex.label === 'struct' && ((ex.from === edgeFrom && ex.to === edgeTo) || (ex.from === edgeTo && ex.to === edgeFrom)))
+                            : edgesRef.current.some(ex => (ex.from === edgeFrom && ex.to === edgeTo) || (ex.from === edgeTo && ex.to === edgeFrom))
+
+                    if (!isDupe) {
+                        setEdges(p => [...p, { id: crypto.randomUUID(), from: edgeFrom, to: edgeTo, label: edgeLabel }])
+                        setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                    }
                 }
             }
             connectionRef.current = null; setConnectionGhost(null); setInteractionMode('idle')
