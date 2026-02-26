@@ -217,6 +217,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const [detachingOffsetState, setDetachingOffsetState] = useState<{ dx: number; dy: number } | null>(null)
         const [frozenColumnId, setFrozenColumnId] = useState<string | null>(null)
         const frozenRectsRef = useRef<Map<string, Rect> | null>(null)
+        const dropTargetColIdRef = useRef<string | null>(null)
+        const [dropTargetColId, setDropTargetColId] = useState<string | null>(null)
+        const columnRectsRef = useRef<Map<string, Rect> | null>(null)
 
         // R4.0a: Image Inspect overlay
         const [inspectImage, setInspectImage] = useState<{ src: string; naturalWidth: number; naturalHeight: number; storagePath?: string } | null>(null)
@@ -503,6 +506,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
             dragRef.current = null; resizeRef.current = null; selBoxRef.current = null; connectionRef.current = null
             detachingRef.current = null; setDetachingOffset(null); setFrozenColumnId(null); frozenRectsRef.current = null
+            dropTargetColIdRef.current = null; setDropTargetColId(null); columnRectsRef.current = null
             shiftedNodesRef.current = new Map()
             if (dataChangeTimerRef.current) { clearTimeout(dataChangeTimerRef.current); dataChangeTimerRef.current = null }
             // Restore viewport for new take (or default)
@@ -553,9 +557,39 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             // R4-005: Convert screen delta to world delta
             const { dx, dy } = screenDeltaToWorld(screenDx, screenDy, viewportRef.current.scale)
 
-            if (detachingRef.current) { setDetachingOffset({ dx, dy }); return }
+            if (detachingRef.current) {
+                setDetachingOffset({ dx, dy })
+                const det = detachingRef.current
+                const fx = det.frozenRect.x + dx, fy = det.frozenRect.y + dy
+                const cx = fx + det.frozenRect.width / 2, cy = fy + det.frozenRect.height / 2
+                let hovered: string | null = null
+                if (columnRectsRef.current) {
+                    for (const [colId, cr] of columnRectsRef.current) {
+                        if (colId === det.nodeId) continue
+                        if (insideColBodyRect(cr, cx, cy, 24)) { hovered = colId; break }
+                    }
+                }
+                if (hovered !== dropTargetColIdRef.current) { dropTargetColIdRef.current = hovered; setDropTargetColId(hovered) }
+                return
+            }
             const off = dragRef.current.offsets
             setNodes(p => p.map(n => { const o = off.get(n.id); return o ? { ...n, x: o.startX + dx, y: o.startY + dy } : n }))
+            // Column drop overlay — free drag (single node, not already parented)
+            if (off.size === 1 && columnRectsRef.current) {
+                const [dragId] = off.keys()
+                const o = off.get(dragId)!
+                const nd = nodesRef.current.find(n => n.id === dragId)
+                if (nd && nd.type !== 'column' && !(nd.data as any).parentId) {
+                    const ncx = o.startX + dx + nd.width / 2
+                    const ncy = o.startY + dy + nd.height / 2
+                    let hovered: string | null = null
+                    for (const [colId, cr] of columnRectsRef.current) {
+                        if (colId === dragId) continue
+                        if (insideColBodyRect(cr, ncx, ncy, 24)) { hovered = colId; break }
+                    }
+                    if (hovered !== dropTargetColIdRef.current) { dropTargetColIdRef.current = hovered; setDropTargetColId(hovered) }
+                }
+            }
         }, [])
 
         const handleWindowMouseUp = useCallback(() => {
@@ -567,13 +601,14 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
             if (!dragRef.current?.hasMoved) {
                 dragRef.current = null; detachingRef.current = null; setDetachingOffset(null)
-                setFrozenColumnId(null); frozenRectsRef.current = null; return
+                setFrozenColumnId(null); frozenRectsRef.current = null
+                dropTargetColIdRef.current = null; setDropTargetColId(null); columnRectsRef.current = null; return
             }
 
             const det = detachingRef.current
             const off = detachingOffsetRef.current
             detachingRef.current = null; setDetachingOffset(null); setFrozenColumnId(null); frozenRectsRef.current = null
-
+            dropTargetColIdRef.current = null; setDropTargetColId(null); columnRectsRef.current = null
             if (det && off) {
                 const fx = det.frozenRect.x + off.dx, fy = det.frozenRect.y + off.dy
                 const cx = fx + det.frozenRect.width / 2, cy = fy + det.frozenRect.height / 2
@@ -633,6 +668,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
             setInteractionMode('idle')
             dragRef.current = null
+            dropTargetColIdRef.current = null; setDropTargetColId(null); columnRectsRef.current = null
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [handleWindowMouseMove, pushHistory, emitNodesChange, setDetachingOffset])
 
@@ -927,7 +963,17 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 dragRef.current = { nodeId, offsets: off, startMouseX: mouseX, startMouseY: mouseY, hasMoved: false }
             }
 
-            // R4-005d: Don't override selection — handleSelect already set it correctly
+            // Cache column rects for drop overlay (avoid recompute per frame)
+            const startRects = computeRenderRects(nodesRef.current, null, null)
+            const colRects = new Map<string, Rect>()
+            for (const n of nodesRef.current) {
+                if (n.type === 'column' && !(n as ColumnNode).data.collapsed) {
+                    const r = startRects.get(n.id)
+                    if (r) colRects.set(n.id, r)
+                }
+            }
+            columnRectsRef.current = colRects
+            // R4-005d: Don't override selection — handleSelect already set it correctly                                  
             window.addEventListener('mousemove', handleWindowMouseMove); window.addEventListener('mouseup', handleWindowMouseUp)
         }, [handleWindowMouseMove, handleWindowMouseUp])
 
@@ -1090,6 +1136,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             }
             detachingRef.current = null; setDetachingOffset(null)
             setFrozenColumnId(null); frozenRectsRef.current = null
+            dropTargetColIdRef.current = null; setDropTargetColId(null); columnRectsRef.current = null
             setInteractionMode('idle')
         }, [handleWindowMouseMove, handleWindowMouseUp, handleSelBoxMouseMove, handleSelBoxMouseUp, handleConnectionMouseMove, handleConnectionMouseUp, handleResizeMouseMove, handleResizeMouseUp, setDetachingOffset])
 
@@ -1489,6 +1536,25 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         )
                     })}
 
+                    {/* Column drop target overlay — during drag */}
+                    {dropTargetColId && (() => {
+                        const cr = renderRects.get(dropTargetColId)
+                        if (!cr) return null
+                        return (
+                            <div
+                                className="absolute pointer-events-none z-[9990]"
+                                style={{
+                                    transform: `translate(${cr.x}px, ${cr.y + COLUMN_HEADER_HEIGHT}px)`,
+                                    width: cr.width,
+                                    height: cr.height - COLUMN_HEADER_HEIGHT,
+                                    border: '2px solid rgba(52,211,153,0.5)',
+                                    borderRadius: 6,
+                                    background: 'radial-gradient(ellipse at center, rgba(52,211,153,0.06) 0%, transparent 70%)',
+                                    boxShadow: '0 0 12px rgba(52,211,153,0.15)',
+                                }}
+                            />
+                        )
+                    })()}
                     {/* Selection box — in world space */}
                     {selectionBoxRect && selectionBoxRect.width > 2 && selectionBoxRect.height > 2 && (
                         <div data-selection-box className="absolute border border-blue-500 bg-blue-500/10 pointer-events-none z-[9998]" style={{ left: selectionBoxRect.left, top: selectionBoxRect.top, width: selectionBoxRect.width, height: selectionBoxRect.height }} />
