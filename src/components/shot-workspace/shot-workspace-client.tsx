@@ -1241,6 +1241,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               onNodesChange={handleNodesChange}
               initialUndoHistory={currentUndoHistory}
               onUndoHistoryChange={handleUndoHistoryChange}
+              currentFinalVisualNodeId={finalVisual?.nodeId ?? null}
+              outputVideoNodeId={shotOutputNodeId}
               onSetFinalVisual={handleSetFinalVisual}
               onClearFinalVisual={async () => {
                 await clearShotFinalVisualAction({ shotId: shot.id })

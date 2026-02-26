@@ -122,10 +122,17 @@ export function NodeShell({
             <div className="w-full h-full overflow-hidden flex flex-col">
                 {children}
             </div>
-            {/* Passive dot — FV or Output indicator, always visible */}
-            {(isFinalVisual || isOutputVideo) && (
-                <div className="absolute top-1 right-1 pointer-events-none z-20">
-                    <div className="w-2 h-2 rounded-full bg-emerald-400/90 shadow-sm" />
+            {/* Passive indicator — FV or Output, always visible. FV wins if both. */}
+            {isFinalVisual && (
+                <div className="absolute bottom-1 left-1 pointer-events-none z-20 flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/90 shadow-sm">
+                    <div className="w-1.5 h-1.5 rounded-full bg-white" />
+                    <span className="text-[8px] font-bold text-white leading-none">FV</span>
+                </div>
+            )}
+            {!isFinalVisual && isOutputVideo && (
+                <div className="absolute bottom-1 left-1 pointer-events-none z-20 flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-600/90 border border-dashed border-emerald-400/50 shadow-sm">
+                    <div className="w-1.5 h-1.5 rounded-full bg-white" />
+                    <span className="text-[8px] font-bold text-white leading-none">OUTPUT</span>
                 </div>
             )}
 
