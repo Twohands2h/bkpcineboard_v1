@@ -666,6 +666,34 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 })
             }
 
+            // Bring dragged node(s) above overlapping nodes (per-node intersection, preserve height)
+            if (dragRef.current?.offsets) {
+                const draggedIds = new Set(dragRef.current.offsets.keys())
+                setNodes(prev => {
+                    const rects = computeRenderRects(prev, null, null)
+                    const safeZ = (n: CanvasNode) => (typeof n.zIndex === 'number' && Number.isFinite(n.zIndex)) ? n.zIndex : 0
+                    let localTopZ = 0
+                    for (const did of draggedIds) {
+                        const dr = rects.get(did)
+                        if (!dr) continue
+                        for (const n of prev) {
+                            if (draggedIds.has(n.id)) continue
+                            const r = rects.get(n.id)
+                            if (r && r.x < dr.x + dr.width && r.x + r.width > dr.x && r.y < dr.y + dr.height && r.y + r.height > dr.y) {
+                                const z = safeZ(n)
+                                if (z > localTopZ) localTopZ = z
+                            }
+                        }
+                    }
+                    let draggedTopZ = 0
+                    for (const did of draggedIds) {
+                        const n = prev.find(nd => nd.id === did)
+                        if (n) { const z = safeZ(n); if (z > draggedTopZ) draggedTopZ = z }
+                    }
+                    let nextZ = Math.max(localTopZ, draggedTopZ) + 1
+                    return prev.map(n => draggedIds.has(n.id) ? { ...n, zIndex: nextZ++ } : n)
+                })
+            }
             setInteractionMode('idle')
             dragRef.current = null
             dropTargetColIdRef.current = null; setDropTargetColId(null); columnRectsRef.current = null
