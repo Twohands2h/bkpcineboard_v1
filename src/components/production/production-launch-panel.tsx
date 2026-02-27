@@ -129,7 +129,7 @@ function groupMedia(mediaNodes: ExportNode[]): {
     for (const node of mediaNodes) {
         const role = getImageRole(node.data)
         const src = asString(node.data.src ?? node.data.url ?? node.data.publicUrl ?? node.data.storage_path ?? '')
-        const label = humanMediaName(node.data as Record<string, unknown>, node.type) || asString(node.data.title ?? node.data.label ?? node.data.name ?? '')
+        const label = (humanMediaName(node.data as Record<string, unknown>, node.type) || asString(node.data.title ?? node.data.label ?? node.data.name ?? '')) + frameRoleSuffix(node.data)
         const isVideo = node.type === 'video'
         const storagePath = asString(node.data.storage_path ?? node.data.storagePath ?? '')
         const bucket = isVideo ? 'take-videos' : 'take-images'
@@ -347,7 +347,7 @@ function resolveColumnAttachments(
 
     return ordered.map((node, i) => {
         const src = asString(node.data.src ?? node.data.url ?? node.data.publicUrl ?? node.data.storage_path ?? node.data.thumbnail ?? '')
-        const name = humanMediaName(node.data as Record<string, unknown>, node.type, i + 1)
+        const name = humanMediaName(node.data as Record<string, unknown>, node.type, i + 1) + frameRoleSuffix(node.data)
         return { node, src, name: name || 'untitled' }
     })
 }
@@ -356,7 +356,7 @@ function formatAttachmentsForPack(attachments: ColumnAttachment[], exportNameMap
     if (attachments.length === 0) return ''
     const lines = attachments.map(a => {
         const exportName = exportNameMap.get(a.node.id) ?? 'file'
-        return `- ${exportName}`
+        return `- ${exportName}${frameRoleSuffix(a.node.data)}`
     })
     return `\nCOLUMN ATTACHMENTS (UPLOAD)\n${lines.join('\n')}`
 }
@@ -449,7 +449,7 @@ function formatRefsForPack(refs: PromptRef[], exportNameMap: Map<string, string>
     if (refs.length === 0) return ''
     const lines = refs.map(ref => {
         const exportName = exportNameMap.get(ref.node.id) ?? 'file'
-        return `- ${exportName}`
+        return `- ${exportName}${frameRoleSuffix(ref.node.data)}`
     })
     return `\nINPUT REFERENCES (UPLOAD)\n${lines.join('\n')}`
 }
@@ -725,6 +725,14 @@ function humanMediaName(data: Record<string, unknown>, nodeType: string, fallbac
     return ''
 }
 
+/** Return " (FF)" or " (LF)" suffix for text references, empty string if no frame role. */
+function frameRoleSuffix(data: Record<string, any>): string {
+    const fr = asString(data.frame_role ?? '')
+    if (fr === 'first') return ' (FF)'
+    if (fr === 'last') return ' (LF)'
+    return ''
+}
+
 /** Sanitize a filename for filesystem use (ZIP, downloads). */
 function sanitizeExportName(name: string): string {
     // Remove path separators, control chars, keep Unicode letters/numbers/spaces/dots/hyphens
@@ -771,7 +779,11 @@ function assignExportNames(assets: AssetDescriptor[]): Map<string, string> {
  *  Header lists export names for the SAME assets in this export context. */
 function buildPromptFileText(assets: AssetDescriptor[], exportNameMap: Map<string, string>, bodyText: string): string {
     const fileList = assets
-        .map(a => exportNameMap.get(a.nodeId))
+        .map(a => {
+            const name = exportNameMap.get(a.nodeId)
+            if (!name) return null
+            return `${name}${frameRoleSuffix(a.nodeData as Record<string, any>)}`
+        })
         .filter((n): n is string => !!n)
     const header = [
         'UPLOAD IMAGES IN THIS ORDER:',
@@ -1407,7 +1419,7 @@ function RefChip({ ref_, currentFinalVisualId, outputVideoNodeId }: {
     outputVideoNodeId: string | null
 }) {
     const tag = refRoleTag(ref_, currentFinalVisualId, outputVideoNodeId)
-    const name = humanMediaName(ref_.node.data as Record<string, unknown>, ref_.node.type)
+    const name = humanMediaName(ref_.node.data as Record<string, unknown>, ref_.node.type) + frameRoleSuffix(ref_.node.data)
     const typeStr = nodeTypeLabel(ref_.node.type)
     const hasThumbnail = ref_.src && (ref_.node.type === 'image' || ref_.node.type === 'video')
 
