@@ -1458,21 +1458,49 @@ function RefChip({ ref_, currentFinalVisualId, outputVideoNodeId }: {
     )
 }
 
-// ── Media thumbnail (images + videos) — Option 1: play icon tile for video ──
+// ── Media thumbnail — hover preview for video, static for image ──
 
 function MediaThumbnail({ entry, compact }: { entry: MediaEntry; compact?: boolean }) {
     const height = compact ? 'h-24' : 'h-36'
+    const [hovering, setHovering] = useState(false)
+    const [videoError, setVideoError] = useState(false)
 
     return (
-        <div className="group relative">
+        <div
+            className="group relative"
+            onMouseEnter={() => { if (entry.isVideo) setHovering(true) }}
+            onMouseLeave={() => { if (entry.isVideo) { setHovering(false); setVideoError(false) } }}
+        >
             {entry.isVideo ? (
-                /* Video: 16:9 tile with play icon + filename */
-                <div className={`${height} w-full bg-zinc-800 border border-zinc-700 rounded flex flex-col items-center justify-center gap-1.5`}>
-                    <div className="w-8 h-8 rounded-full bg-zinc-700/80 border border-zinc-600 flex items-center justify-center">
-                        <span className="text-zinc-300 text-sm ml-0.5">▶</span>
-                    </div>
-                    {entry.label && (
-                        <span className="text-[9px] text-zinc-500 truncate max-w-[90%] px-1">{entry.label}</span>
+                <div className={`${height} w-full bg-zinc-800 border border-zinc-700 rounded overflow-hidden relative`}>
+                    {/* Hover: inline video preview */}
+                    {hovering && entry.src && !videoError ? (
+                        <>
+                            <video
+                                src={entry.src}
+                                muted
+                                playsInline
+                                preload="metadata"
+                                className="w-full h-full object-cover"
+                                onError={() => setVideoError(true)}
+                            />
+                            {/* Small play overlay */}
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                <div className="w-6 h-6 rounded-full bg-black/40 flex items-center justify-center">
+                                    <span className="text-white/70 text-[10px] ml-px">▶</span>
+                                </div>
+                            </div>
+                        </>
+                    ) : (
+                        /* Default: static play icon tile */
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-1.5">
+                            <div className="w-8 h-8 rounded-full bg-zinc-700/80 border border-zinc-600 flex items-center justify-center">
+                                <span className="text-zinc-300 text-sm ml-0.5">▶</span>
+                            </div>
+                            {entry.label && (
+                                <span className="text-[9px] text-zinc-500 truncate max-w-[90%] px-1">{entry.label}</span>
+                            )}
+                        </div>
                     )}
                 </div>
             ) : entry.src ? (
