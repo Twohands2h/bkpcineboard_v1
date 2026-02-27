@@ -348,17 +348,13 @@ function resolveColumnAttachments(
     })
 }
 
-function formatAttachmentsForPack(attachments: ColumnAttachment[], fvId: string | null, outId: string | null): string {
+function formatAttachmentsForPack(attachments: ColumnAttachment[], exportNameMap: Map<string, string>): string {
     if (attachments.length === 0) return ''
-    // Convert to PromptRef[] and reuse formatRefsForPack for identical output format
-    const asRefs: PromptRef[] = attachments.map(a => ({
-        node: a.node,
-        rank: 3, // attachments are never FV/Output/Asset — rank doesn't affect format
-        src: a.src || undefined,
-    }))
-    const body = formatRefsForPack(asRefs, fvId, outId)
-    // Replace the header "INPUT REFERENCES" with "COLUMN ATTACHMENTS"
-    return body.replace(/^\nINPUT REFERENCES\n/, `\nCOLUMN ATTACHMENTS\n`)
+    const lines = attachments.map(a => {
+        const exportName = exportNameMap.get(a.node.id) ?? 'REF_??'
+        return `- ${exportName}`
+    })
+    return `\nCOLUMN ATTACHMENTS (UPLOAD)\n${lines.join('\n')}`
 }
 
 // ── Prompt References (1-hop via edges) ──
@@ -444,28 +440,14 @@ function breatheBody(body: string): string {
         .trim()
 }
 
-// Format refs section for Prompt Pack v3
-function formatRefsForPack(refs: PromptRef[], currentFinalVisualId: string | null, outputVideoNodeId: string | null): string {
+// Format refs section for Prompt Pack v3 — uses export names (REF_01.png etc.)
+function formatRefsForPack(refs: PromptRef[], exportNameMap: Map<string, string>): string {
     if (refs.length === 0) return ''
     const lines = refs.map(ref => {
-        const tag = refRoleTag(ref, currentFinalVisualId, outputVideoNodeId)
-        let name = asString(ref.node.data.filename ?? ref.node.data.originalFileName ?? ref.node.data.name ?? ref.node.data.title ?? ref.node.data.label ?? '')
-        // Derive filename from storage_path basename if missing
-        if (!name) {
-            const sp = asString(ref.node.data.storage_path ?? '')
-            if (sp) name = sp.split('/').pop() ?? ''
-        }
-        if (!name) name = 'untitled'
-        // URL priority: publicUrl > src > url > resolved storage_path
-        const url = asString(ref.node.data.publicUrl ?? ref.node.data.src ?? ref.node.data.url ?? ref.node.data.storage_path ?? '')
-        const typeStr = nodeTypeLabel(ref.node.type)
-        const tagStr = tag ? ` [${tag}]` : ''
-        let line = `• ${typeStr}${tagStr}`
-        line += `\n  File: ${name}`
-        if (url) line += `\n  URL:  ${url}`
-        return line
+        const exportName = exportNameMap.get(ref.node.id) ?? 'REF_??'
+        return `- ${exportName}`
     })
-    return `\nINPUT REFERENCES\n${SECTION_LINE}\n${lines.join('\n\n')}`
+    return `\nINPUT REFERENCES (UPLOAD)\n${lines.join('\n')}`
 }
 
 // Format notes section for Prompt Pack v3
@@ -487,8 +469,7 @@ function formatPromptBlock(
     refs: PromptRef[],
     incomingNotes: ExportNode[],
     notesOn: boolean,
-    fvId: string | null,
-    outId: string | null,
+    exportNameMap: Map<string, string>,
 ): string {
     const parts: string[] = []
 
@@ -501,7 +482,7 @@ function formatPromptBlock(
     parts.push(breatheBody(entry.body))
 
     // Input References
-    const refSection = formatRefsForPack(refs, fvId, outId)
+    const refSection = formatRefsForPack(refs, exportNameMap)
     if (refSection) {
         parts.push('')
         parts.push(refSection)
@@ -532,8 +513,7 @@ function formatColumnBlock(
     colNotes: ExportNode[],
     includeColumnNotes: boolean,
     attachments: ColumnAttachment[],
-    fvId: string | null,
-    outId: string | null,
+    exportNameMap: Map<string, string>,
 ): string {
     const parts: string[] = []
 
@@ -546,7 +526,7 @@ function formatColumnBlock(
         const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
         const notesOn = !!blockNotesToggle[entry.node.id]
         parts.push('')
-        parts.push(formatPromptBlock(entry, gIdx, refs, incomingNotes, notesOn, fvId, outId))
+        parts.push(formatPromptBlock(entry, gIdx, refs, incomingNotes, notesOn, exportNameMap))
     }
 
     if (includeColumnNotes && colNotes.length > 0) {
@@ -559,7 +539,7 @@ function formatColumnBlock(
 
     if (attachments.length > 0) {
         parts.push('')
-        parts.push(formatAttachmentsForPack(attachments, fvId, outId))
+        parts.push(formatAttachmentsForPack(attachments, exportNameMap))
     }
 
     return parts.join('\n')
@@ -652,6 +632,209 @@ async function downloadImage(src: string, filename: string) {
     document.body.removeChild(a)
 }
 
+// ── Export ZIP helpers ──
+
+interface AssetDescriptor {
+    nodeId: string
+    type: 'image' | 'video'
+    bucket: string
+    storagePath: string
+    originalFilename: string
+    role: 'ref' | 'attachment' | 'final_visual' | 'output'
+}
+
+function nodeToAssetDescriptor(
+    node: ExportNode,
+    role: 'ref' | 'attachment' | 'final_visual' | 'output',
+): AssetDescriptor | null {
+    if (node.type !== 'image' && node.type !== 'video') return null
+
+    const storagePath = asString(node.data.storage_path ?? node.data.storagePath ?? '')
+
+    // Must have storagePath — no publicUrl fallback
+    if (!storagePath) return null
+
+    const bucket = node.type === 'image' ? 'take-images' : 'take-videos'
+
+    let filename = asString(node.data.filename ?? node.data.originalFileName ?? node.data.name ?? node.data.title ?? '')
+    if (!filename) filename = storagePath.split('/').pop() ?? ''
+    if (!filename) filename = `${node.type}-${node.id.substring(0, 8)}`
+
+    return { nodeId: node.id, type: node.type as 'image' | 'video', bucket, storagePath, originalFilename: filename, role }
+}
+
+function buildAssetsFromRefs(
+    refs: PromptRef[],
+    currentFinalVisualId: string | null,
+    outputVideoNodeId: string | null,
+): AssetDescriptor[] {
+    const assets: AssetDescriptor[] = []
+    const seen = new Set<string>()
+    for (const ref of refs) {
+        if (seen.has(ref.node.id)) continue
+        seen.add(ref.node.id)
+        let role: 'ref' | 'final_visual' | 'output' = 'ref'
+        if (ref.node.type === 'image' && currentFinalVisualId && (ref.node.data as any).promotedSelectionId === currentFinalVisualId) role = 'final_visual'
+        else if (ref.node.type === 'video' && ref.node.id === outputVideoNodeId) role = 'output'
+        const desc = nodeToAssetDescriptor(ref.node, role)
+        if (desc) assets.push(desc)
+    }
+    return assets
+}
+
+function buildAssetsFromAttachments(attachments: ColumnAttachment[]): AssetDescriptor[] {
+    const assets: AssetDescriptor[] = []
+    for (const att of attachments) {
+        const desc = nodeToAssetDescriptor(att.node, 'attachment')
+        if (desc) assets.push(desc)
+    }
+    return assets
+}
+
+const ROLE_PRIORITY: Record<string, number> = { final_visual: 0, output: 1, ref: 2, attachment: 3 }
+
+/** Dedup by nodeId, keeping the highest-priority role (FV > Output > ref > attachment). */
+function dedupeAssets(assets: AssetDescriptor[]): AssetDescriptor[] {
+    const map = new Map<string, AssetDescriptor>()
+    for (const a of assets) {
+        const existing = map.get(a.nodeId)
+        if (!existing || (ROLE_PRIORITY[a.role] ?? 9) < (ROLE_PRIORITY[existing.role] ?? 9)) {
+            map.set(a.nodeId, a)
+        }
+    }
+    return Array.from(map.values())
+}
+
+/** Assign deterministic export names: FV.ext, OUTPUT.ext, REF_01..REF_0N.ext */
+function assignExportNames(assets: AssetDescriptor[]): Map<string, string> {
+    const map = new Map<string, string>()
+    let refCounter = 0
+    const usedNames = new Set<string>()
+
+    for (const asset of assets) {
+        const origExt = (() => {
+            const dot = asset.originalFilename.lastIndexOf('.')
+            if (dot === -1 || dot === asset.originalFilename.length - 1) return ''
+            return asset.originalFilename.substring(dot)
+        })()
+
+        let baseName: string
+        let ext = origExt
+
+        if (asset.role === 'final_visual') {
+            baseName = 'FV'
+            if (!ext) ext = asset.type === 'video' ? '.mp4' : '.png'
+        } else if (asset.role === 'output') {
+            baseName = 'OUTPUT'
+            if (!ext) ext = '.mp4'
+        } else {
+            refCounter++
+            baseName = `REF_${String(refCounter).padStart(2, '0')}`
+            if (!ext) ext = '.png'
+        }
+
+        let name = `${baseName}${ext}`
+        if (usedNames.has(name)) {
+            name = `${baseName}_${asset.nodeId.substring(0, 6)}${ext}`
+        }
+        usedNames.add(name)
+        map.set(asset.nodeId, name)
+    }
+    return map
+}
+
+async function triggerExportZip(
+    mode: 'prompt' | 'column' | 'pack',
+    assets: AssetDescriptor[],
+    promptPackText?: string,
+): Promise<void> {
+    if (assets.length === 0) {
+        console.warn('[export-pack] no assets to export')
+        return
+    }
+
+    const payload = { mode, assets, promptPackText }
+    console.log('[export-pack] payload', payload.mode, payload.assets.length, 'assets', payload.assets)
+
+    try {
+        const resp = await fetch('/api/export-pack', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+
+        if (!resp.ok) {
+            const errText = await resp.text().catch(() => '(no body)')
+            console.error(`[export-pack] server ${resp.status}:`, errText)
+            alert(`Export failed (${resp.status}). Check console for details.`)
+            return
+        }
+
+        const blob = await resp.blob()
+        console.log('[export-pack] received blob', blob.size, 'bytes', blob.type)
+
+        if (blob.size === 0) {
+            console.error('[export-pack] empty blob received')
+            return
+        }
+
+        // Parse filename from Content-Disposition header
+        const cd = resp.headers.get('content-disposition') ?? ''
+        const fnMatch = cd.match(/filename="?([^";\s]+)"?/)
+        const filename = fnMatch?.[1] ?? `cineboard-${mode}.zip`
+
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        a.style.display = 'none'
+        document.body.appendChild(a)
+        a.click()
+        // Cleanup after a tick to ensure download starts
+        setTimeout(() => {
+            document.body.removeChild(a)
+            URL.revokeObjectURL(url)
+        }, 100)
+    } catch (err) {
+        console.error('[export-pack] fetch error:', err)
+        alert('Export failed. Check console for details.')
+    }
+}
+
+// ── Download Assets Button ──
+
+function DownloadAssetsButton({ assets, mode, label, promptPackText }: {
+    assets: AssetDescriptor[]
+    mode: 'prompt' | 'column' | 'pack'
+    label: string
+    promptPackText?: string
+}) {
+    const [busy, setBusy] = useState(false)
+
+    const handleClick = useCallback(async (e: React.MouseEvent) => {
+        e.stopPropagation()
+        if (busy || assets.length === 0) return
+        setBusy(true)
+        try {
+            await triggerExportZip(mode, assets, promptPackText)
+        } finally {
+            setBusy(false)
+        }
+    }, [assets, mode, busy, promptPackText])
+
+    if (assets.length === 0) return null
+
+    return (
+        <button
+            onClick={handleClick}
+            disabled={busy}
+            className="px-2 py-1 text-[10px] rounded transition-colors border border-zinc-700 bg-transparent hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 shrink-0 disabled:opacity-50"
+        >
+            {busy ? '⏳ Exporting…' : `↓ ${label}`}
+        </button>
+    )
+}
+
 // ── Component ──
 
 export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVisualId, outputVideoNodeId, onClose }: ProductionLaunchPanelProps) {
@@ -735,6 +918,23 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
     const fvId = currentFinalVisualId ?? null
     const outId = outputVideoNodeId ?? null
 
+    // All pack-level assets (for "Download All Assets" button)
+    const allPackAssets = useMemo(() => {
+        const all: AssetDescriptor[] = []
+        for (const entry of grouped.flat) {
+            const refs = promptRefsMap.get(entry.node.id) ?? []
+            all.push(...buildAssetsFromRefs(refs, fvId, outId))
+        }
+        for (const cg of grouped.columns) {
+            const atts = columnAttachmentsMap.get(cg.columnId) ?? []
+            all.push(...buildAssetsFromAttachments(atts))
+        }
+        return dedupeAssets(all)
+    }, [grouped, promptRefsMap, columnAttachmentsMap, fvId, outId])
+
+    // Deterministic export name map: nodeId → REF_01.png / FV.png / OUTPUT.mp4
+    const exportNameMap = useMemo(() => assignExportNames(allPackAssets), [allPackAssets])
+
     // Build Prompt Pack v3 — canon format
     const promptPack = useMemo(() => {
         const blocks: string[] = []
@@ -744,7 +944,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
         for (const entry of grouped.loose) {
             const refs = promptRefsMap.get(entry.node.id) ?? []
             const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
-            blocks.push(formatPromptBlock(entry, globalIdx, refs, incomingNotes, includeNotes, fvId, outId))
+            blocks.push(formatPromptBlock(entry, globalIdx, refs, incomingNotes, includeNotes, exportNameMap))
             globalIdx++
         }
 
@@ -756,7 +956,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
             for (const entry of cg.entries) {
                 const refs = promptRefsMap.get(entry.node.id) ?? []
                 const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
-                colBlocks.push(formatPromptBlock(entry, globalIdx, refs, incomingNotes, includeNotes, fvId, outId))
+                colBlocks.push(formatPromptBlock(entry, globalIdx, refs, incomingNotes, includeNotes, exportNameMap))
                 globalIdx++
             }
 
@@ -772,7 +972,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
             // Column Attachments (unlinked media inside column)
             const colAttachments = columnAttachmentsMap.get(cg.columnId) ?? []
             if (colAttachments.length > 0) {
-                colBlocks.push(formatAttachmentsForPack(colAttachments, fvId, outId))
+                colBlocks.push(formatAttachmentsForPack(colAttachments, exportNameMap))
             }
 
             blocks.push(colBlocks.join('\n\n'))
@@ -789,7 +989,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
         }
 
         return blocks.join(`\n\n${PROMPT_SEPARATOR}\n\n`)
-    }, [grouped, promptRefsMap, promptNotesMap, includeNotes, includeColumnNotes, columnNotesMap, columnAttachmentsMap, noteNodes, fvId, outId])
+    }, [grouped, promptRefsMap, promptNotesMap, includeNotes, includeColumnNotes, columnNotesMap, columnAttachmentsMap, noteNodes, exportNameMap])
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
@@ -833,7 +1033,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                 const refs = promptRefsMap.get(entry.node.id) ?? []
                                 const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
                                 const notesOn = !!blockNotesToggle[entry.node.id]
-                                const copyBlock = formatPromptBlock(entry, gIdx, refs, incomingNotes, notesOn, fvId, outId)
+                                const copyBlock = formatPromptBlock(entry, gIdx, refs, incomingNotes, notesOn, exportNameMap)
 
                                 return (
                                     <div key={entry.node.id} className="mb-5">
@@ -849,8 +1049,8 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                     {entry.title}
                                                 </span>
                                             </div>
-                                            <span className="text-[9px] text-zinc-500">
-                                                Origin: {entry.origin}
+                                            <span className="text-[8px] text-zinc-600 italic">
+                                                {entry.origin}
                                             </span>
                                         </div>
 
@@ -870,8 +1070,13 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                         )}
 
                                         <div className="flex items-center gap-2 mt-1.5">
-                                            <CopyButton text={entry.body} label="Copy Content" />
                                             <CopyButton text={copyBlock} label="Copy Block" />
+                                            <DownloadAssetsButton
+                                                assets={buildAssetsFromRefs(refs, fvId, outId)}
+                                                mode="prompt"
+                                                label="Download"
+                                                promptPackText={copyBlock}
+                                            />
                                             {incomingNotes.length > 0 && (
                                                 <label className="flex items-center gap-1 cursor-pointer select-none ml-1">
                                                     <input
@@ -896,21 +1101,34 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                 const colAttachments = columnAttachmentsMap.get(cg.columnId) ?? []
                                 const columnBlockText = formatColumnBlock(
                                     cg, grouped.flat, promptRefsMap, promptNotesMap, blockNotesToggle,
-                                    colNotes, includeColumnNotes, colAttachments, fvId, outId,
+                                    colNotes, includeColumnNotes, colAttachments, exportNameMap,
                                 )
+                                // Build column assets: all prompt refs + column attachments (deduped by nodeId)
+                                const columnAssets: AssetDescriptor[] = (() => {
+                                    const all: AssetDescriptor[] = []
+                                    for (const entry of cg.entries) {
+                                        const refs = promptRefsMap.get(entry.node.id) ?? []
+                                        all.push(...buildAssetsFromRefs(refs, fvId, outId))
+                                    }
+                                    all.push(...buildAssetsFromAttachments(colAttachments))
+                                    return dedupeAssets(all)
+                                })()
                                 return (
                                     <div key={cg.columnId} className="mb-6">
                                         {/* Column header */}
-                                        <div className="flex items-center justify-between mb-3 pb-1.5 border-b border-zinc-700/50">
+                                        <div className="flex items-center justify-between mb-3 pb-1.5 border-b border-zinc-600/60">
                                             <div className="flex items-center gap-2">
-                                                <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400">
+                                                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300">
                                                     ▸ {cg.title}
                                                 </span>
-                                                <span className="text-[9px] text-zinc-600">
+                                                <span className="text-[9px] text-zinc-500">
                                                     ({cg.entries.length} prompt{cg.entries.length !== 1 ? 's' : ''})
                                                 </span>
                                             </div>
-                                            <CopyButton text={columnBlockText} label="Copy Column Block" />
+                                            <div className="flex items-center gap-2">
+                                                <CopyButton text={columnBlockText} label="Copy Column Block" />
+                                                <DownloadAssetsButton assets={columnAssets} mode="column" label="Download" promptPackText={columnBlockText} />
+                                            </div>
                                         </div>
 
                                         {/* Column prompts — ordered by childOrder */}
@@ -919,7 +1137,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                             const refs = promptRefsMap.get(entry.node.id) ?? []
                                             const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
                                             const notesOn = !!blockNotesToggle[entry.node.id]
-                                            const copyBlock = formatPromptBlock(entry, gIdx, refs, incomingNotes, notesOn, fvId, outId)
+                                            const copyBlock = formatPromptBlock(entry, gIdx, refs, incomingNotes, notesOn, exportNameMap)
 
                                             return (
                                                 <div key={entry.node.id} className="mb-5 ml-3 border-l-2 border-blue-500/20 pl-3">
@@ -935,8 +1153,8 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                                 {entry.title}
                                                             </span>
                                                         </div>
-                                                        <span className="text-[9px] text-zinc-500">
-                                                            Origin: {entry.origin}
+                                                        <span className="text-[8px] text-zinc-600 italic">
+                                                            {entry.origin}
                                                         </span>
                                                     </div>
 
@@ -956,8 +1174,13 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                     )}
 
                                                     <div className="flex items-center gap-2 mt-1.5">
-                                                        <CopyButton text={entry.body} label="Copy Content" />
                                                         <CopyButton text={copyBlock} label="Copy Block" />
+                                                        <DownloadAssetsButton
+                                                            assets={buildAssetsFromRefs(refs, fvId, outId)}
+                                                            mode="prompt"
+                                                            label="Download"
+                                                            promptPackText={copyBlock}
+                                                        />
                                                         {incomingNotes.length > 0 && (
                                                             <label className="flex items-center gap-1 cursor-pointer select-none ml-1">
                                                                 <input
@@ -1014,8 +1237,14 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
 
                             {/* Footer: Copy Prompt Pack + toggles */}
                             {hasPrompts && (
-                                <div className="flex items-center gap-3 mt-4 pt-3 border-t border-zinc-800">
+                                <div className="flex items-center gap-3 mt-4 pt-3 border-t border-zinc-700/60">
                                     <CopyButton text={promptPack} label="Copy Prompt Pack" />
+                                    <DownloadAssetsButton
+                                        assets={allPackAssets}
+                                        mode="pack"
+                                        label="Download Pack"
+                                        promptPackText={promptPack}
+                                    />
                                     {hasNotes && (
                                         <label className="flex items-center gap-1.5 cursor-pointer select-none">
                                             <input
