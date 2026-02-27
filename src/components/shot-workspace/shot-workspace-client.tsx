@@ -554,7 +554,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         const localTake: Take = {
           id: newTake.id,
           shot_id: newTake.shot_id ?? shot.id,
-          name: `Take ${newTake.take_number}`,
+          name: `Take ${pad2(newTake.take_number)}`,
           description: null,
           status: newTake.status,
           order_index: prev.length,
@@ -631,7 +631,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         const localTake: Take = {
           id: newTake.id,
           shot_id: newTake.shot_id ?? shot.id,
-          name: `Take ${newTake.take_number}`,
+          name: `Take ${pad2(newTake.take_number)}`,
           description: null,
           status: newTake.status,
           order_index: prev.length,
