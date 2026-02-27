@@ -123,7 +123,7 @@ function groupImages(imageNodes: ExportNode[]): {
     for (const node of imageNodes) {
         const role = getImageRole(node.data)
         const src = asString(node.data.src ?? node.data.url ?? node.data.publicUrl ?? node.data.storage_path ?? '')
-        const label = asString(node.data.title ?? node.data.label ?? node.data.name ?? '')
+        const label = humanMediaName(node.data as Record<string, unknown>, node.type) || asString(node.data.title ?? node.data.label ?? node.data.name ?? '')
         const entry: ImageEntry = { node, role, src, label }
 
         if (role === 'firstFrame' && !result.firstFrame) {
@@ -336,22 +336,17 @@ function resolveColumnAttachments(
     })
     for (const n of remaining) ordered.push(n)
 
-    return ordered.map(node => {
+    return ordered.map((node, i) => {
         const src = asString(node.data.src ?? node.data.url ?? node.data.publicUrl ?? node.data.storage_path ?? node.data.thumbnail ?? '')
-        let name = asString(node.data.filename ?? node.data.originalFileName ?? node.data.name ?? node.data.title ?? node.data.label ?? '')
-        if (!name) {
-            const sp = asString(node.data.storage_path ?? '')
-            if (sp) name = sp.split('/').pop() ?? ''
-        }
-        if (!name) name = 'untitled'
-        return { node, src, name }
+        const name = humanMediaName(node.data as Record<string, unknown>, node.type, i + 1)
+        return { node, src, name: name || 'untitled' }
     })
 }
 
 function formatAttachmentsForPack(attachments: ColumnAttachment[], exportNameMap: Map<string, string>): string {
     if (attachments.length === 0) return ''
     const lines = attachments.map(a => {
-        const exportName = exportNameMap.get(a.node.id) ?? 'REF_??'
+        const exportName = exportNameMap.get(a.node.id) ?? 'file'
         return `- ${exportName}`
     })
     return `\nCOLUMN ATTACHMENTS (UPLOAD)\n${lines.join('\n')}`
@@ -440,11 +435,11 @@ function breatheBody(body: string): string {
         .trim()
 }
 
-// Format refs section for Prompt Pack v3 — uses export names (REF_01.png etc.)
+// Format refs section for Prompt Pack — uses human export names
 function formatRefsForPack(refs: PromptRef[], exportNameMap: Map<string, string>): string {
     if (refs.length === 0) return ''
     const lines = refs.map(ref => {
-        const exportName = exportNameMap.get(ref.node.id) ?? 'REF_??'
+        const exportName = exportNameMap.get(ref.node.id) ?? 'file'
         return `- ${exportName}`
     })
     return `\nINPUT REFERENCES (UPLOAD)\n${lines.join('\n')}`
@@ -640,6 +635,7 @@ interface AssetDescriptor {
     bucket: string
     storagePath: string
     originalFilename: string
+    nodeData: Record<string, unknown>
     role: 'ref' | 'attachment' | 'final_visual' | 'output'
 }
 
@@ -650,17 +646,16 @@ function nodeToAssetDescriptor(
     if (node.type !== 'image' && node.type !== 'video') return null
 
     const storagePath = asString(node.data.storage_path ?? node.data.storagePath ?? '')
-
-    // Must have storagePath — no publicUrl fallback
     if (!storagePath) return null
 
     const bucket = node.type === 'image' ? 'take-images' : 'take-videos'
+    const filename = asString(node.data.display_name ?? node.data.filename ?? '')
 
-    let filename = asString(node.data.filename ?? node.data.originalFileName ?? node.data.name ?? node.data.title ?? '')
-    if (!filename) filename = storagePath.split('/').pop() ?? ''
-    if (!filename) filename = `${node.type}-${node.id.substring(0, 8)}`
-
-    return { nodeId: node.id, type: node.type as 'image' | 'video', bucket, storagePath, originalFilename: filename, role }
+    return {
+        nodeId: node.id, type: node.type as 'image' | 'video',
+        bucket, storagePath, originalFilename: filename,
+        nodeData: node.data as Record<string, unknown>, role,
+    }
 }
 
 function buildAssetsFromRefs(
@@ -705,56 +700,92 @@ function dedupeAssets(assets: AssetDescriptor[]): AssetDescriptor[] {
     return Array.from(map.values())
 }
 
-/** Assign deterministic export names: FV.ext, OUTPUT.ext, REF_01..REF_0N.ext */
+/** Resolve human-readable display name for a media node. Never returns UUID/storagePath. */
+function humanMediaName(data: Record<string, unknown>, nodeType: string, fallbackIndex?: number): string {
+    const raw = asString(data.display_name ?? data.filename ?? '')
+    if (raw) return raw
+    // Old nodes without display_name: generic label
+    if (fallbackIndex !== undefined) return `${nodeType === 'video' ? 'Video' : 'Image'} ${fallbackIndex}`
+    return ''
+}
+
+/** Sanitize a filename for filesystem use (ZIP, downloads). */
+function sanitizeExportName(name: string): string {
+    // Remove path separators, control chars, keep Unicode letters/numbers/spaces/dots/hyphens
+    return name.replace(/[/\\:*?"<>|\x00-\x1f]/g, '_').substring(0, 120)
+}
+
+/** Assign deterministic export names using human filenames.
+ *  Collision handling: "uomo.png", "uomo (2).png", "uomo (3).png" */
 function assignExportNames(assets: AssetDescriptor[]): Map<string, string> {
     const map = new Map<string, string>()
-    let refCounter = 0
-    const usedNames = new Set<string>()
+    const usedNames = new Map<string, number>() // lowercase name → count
 
-    for (const asset of assets) {
-        const origExt = (() => {
-            const dot = asset.originalFilename.lastIndexOf('.')
-            if (dot === -1 || dot === asset.originalFilename.length - 1) return ''
-            return asset.originalFilename.substring(dot)
-        })()
+    for (let i = 0; i < assets.length; i++) {
+        const asset = assets[i]
+        const raw = humanMediaName(asset.nodeData, asset.type, i + 1)
+        const sanitized = sanitizeExportName(raw)
 
-        let baseName: string
-        let ext = origExt
+        // Split into stem + ext
+        const dotIdx = sanitized.lastIndexOf('.')
+        let stem = dotIdx > 0 ? sanitized.substring(0, dotIdx) : sanitized
+        let ext = dotIdx > 0 ? sanitized.substring(dotIdx) : (asset.type === 'video' ? '.mp4' : '.png')
 
-        if (asset.role === 'final_visual') {
-            baseName = 'FV'
-            if (!ext) ext = asset.type === 'video' ? '.mp4' : '.png'
-        } else if (asset.role === 'output') {
-            baseName = 'OUTPUT'
-            if (!ext) ext = '.mp4'
+        if (!stem) stem = asset.type === 'video' ? 'Video' : 'Image'
+        if (!ext) ext = asset.type === 'video' ? '.mp4' : '.png'
+
+        // Collision detection (case-insensitive)
+        const key = `${stem}${ext}`.toLowerCase()
+        const count = usedNames.get(key) ?? 0
+        usedNames.set(key, count + 1)
+
+        let name: string
+        if (count === 0) {
+            name = `${stem}${ext}`
         } else {
-            refCounter++
-            baseName = `REF_${String(refCounter).padStart(2, '0')}`
-            if (!ext) ext = '.png'
+            name = `${stem} (${count + 1})${ext}`
         }
 
-        let name = `${baseName}${ext}`
-        if (usedNames.has(name)) {
-            name = `${baseName}_${asset.nodeId.substring(0, 6)}${ext}`
-        }
-        usedNames.add(name)
         map.set(asset.nodeId, name)
     }
     return map
 }
 
+/** Build the complete prompt.txt content: upload header + body text.
+ *  Header lists export names for the SAME assets in this export context. */
+function buildPromptFileText(assets: AssetDescriptor[], exportNameMap: Map<string, string>, bodyText: string): string {
+    const fileList = assets
+        .map(a => exportNameMap.get(a.nodeId))
+        .filter((n): n is string => !!n)
+    const header = [
+        'UPLOAD IMAGES IN THIS ORDER:',
+        ...fileList,
+        '',
+        '─'.repeat(40),
+        '',
+    ].join('\n')
+    return header + bodyText
+}
+
 async function triggerExportZip(
     mode: 'prompt' | 'column' | 'pack',
     assets: AssetDescriptor[],
-    promptPackText?: string,
+    exportNameMap: Map<string, string>,
+    promptFileText?: string,
 ): Promise<void> {
     if (assets.length === 0) {
         console.warn('[export-pack] no assets to export')
         return
     }
 
-    const payload = { mode, assets, promptPackText }
-    console.log('[export-pack] payload', payload.mode, payload.assets.length, 'assets', payload.assets)
+    // Enrich assets with export names for the route
+    const enriched = assets.map(a => ({
+        ...a,
+        exportName: exportNameMap.get(a.nodeId) ?? a.originalFilename ?? 'file',
+    }))
+
+    const payload = { mode, assets: enriched, promptFileText }
+    console.log('[export-pack] payload', payload.mode, payload.assets.length, 'assets')
 
     try {
         const resp = await fetch('/api/export-pack', {
@@ -803,11 +834,12 @@ async function triggerExportZip(
 
 // ── Download Assets Button ──
 
-function DownloadAssetsButton({ assets, mode, label, promptPackText }: {
+function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileText }: {
     assets: AssetDescriptor[]
     mode: 'prompt' | 'column' | 'pack'
     label: string
-    promptPackText?: string
+    exportNameMap: Map<string, string>
+    promptFileText?: string
 }) {
     const [busy, setBusy] = useState(false)
 
@@ -816,11 +848,11 @@ function DownloadAssetsButton({ assets, mode, label, promptPackText }: {
         if (busy || assets.length === 0) return
         setBusy(true)
         try {
-            await triggerExportZip(mode, assets, promptPackText)
+            await triggerExportZip(mode, assets, exportNameMap, promptFileText)
         } finally {
             setBusy(false)
         }
-    }, [assets, mode, busy, promptPackText])
+    }, [assets, mode, busy, exportNameMap, promptFileText])
 
     if (assets.length === 0) return null
 
@@ -932,7 +964,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
         return dedupeAssets(all)
     }, [grouped, promptRefsMap, columnAttachmentsMap, fvId, outId])
 
-    // Deterministic export name map: nodeId → REF_01.png / FV.png / OUTPUT.mp4
+    // Deterministic export name map: nodeId → human filename (sanitized, deduped)
     const exportNameMap = useMemo(() => assignExportNames(allPackAssets), [allPackAssets])
 
     // Build Prompt Pack v3 — canon format
@@ -1071,12 +1103,18 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
 
                                         <div className="flex items-center gap-2 mt-1.5">
                                             <CopyButton text={copyBlock} label="Copy Block" />
-                                            <DownloadAssetsButton
-                                                assets={buildAssetsFromRefs(refs, fvId, outId)}
-                                                mode="prompt"
-                                                label="Download"
-                                                promptPackText={copyBlock}
-                                            />
+                                            {(() => {
+                                                const promptAssets = buildAssetsFromRefs(refs, fvId, outId)
+                                                return (
+                                                    <DownloadAssetsButton
+                                                        assets={promptAssets}
+                                                        mode="prompt"
+                                                        label="Download"
+                                                        exportNameMap={exportNameMap}
+                                                        promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock)}
+                                                    />
+                                                )
+                                            })()}
                                             {incomingNotes.length > 0 && (
                                                 <label className="flex items-center gap-1 cursor-pointer select-none ml-1">
                                                     <input
@@ -1127,7 +1165,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                             </div>
                                             <div className="flex items-center gap-2">
                                                 <CopyButton text={columnBlockText} label="Copy Column Block" />
-                                                <DownloadAssetsButton assets={columnAssets} mode="column" label="Download" promptPackText={columnBlockText} />
+                                                <DownloadAssetsButton assets={columnAssets} mode="column" label="Download" exportNameMap={exportNameMap} promptFileText={buildPromptFileText(columnAssets, exportNameMap, columnBlockText)} />
                                             </div>
                                         </div>
 
@@ -1175,12 +1213,18 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
 
                                                     <div className="flex items-center gap-2 mt-1.5">
                                                         <CopyButton text={copyBlock} label="Copy Block" />
-                                                        <DownloadAssetsButton
-                                                            assets={buildAssetsFromRefs(refs, fvId, outId)}
-                                                            mode="prompt"
-                                                            label="Download"
-                                                            promptPackText={copyBlock}
-                                                        />
+                                                        {(() => {
+                                                            const promptAssets = buildAssetsFromRefs(refs, fvId, outId)
+                                                            return (
+                                                                <DownloadAssetsButton
+                                                                    assets={promptAssets}
+                                                                    mode="prompt"
+                                                                    label="Download"
+                                                                    exportNameMap={exportNameMap}
+                                                                    promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock)}
+                                                                />
+                                                            )
+                                                        })()}
                                                         {incomingNotes.length > 0 && (
                                                             <label className="flex items-center gap-1 cursor-pointer select-none ml-1">
                                                                 <input
@@ -1243,7 +1287,8 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                         assets={allPackAssets}
                                         mode="pack"
                                         label="Download Pack"
-                                        promptPackText={promptPack}
+                                        exportNameMap={exportNameMap}
+                                        promptFileText={buildPromptFileText(allPackAssets, exportNameMap, promptPack)}
                                     />
                                     {hasNotes && (
                                         <label className="flex items-center gap-1.5 cursor-pointer select-none">
@@ -1329,11 +1374,7 @@ function RefChip({ ref_, currentFinalVisualId, outputVideoNodeId }: {
     outputVideoNodeId: string | null
 }) {
     const tag = refRoleTag(ref_, currentFinalVisualId, outputVideoNodeId)
-    let name = asString(ref_.node.data.filename ?? ref_.node.data.originalFileName ?? ref_.node.data.name ?? ref_.node.data.title ?? ref_.node.data.label ?? '')
-    if (!name) {
-        const sp = asString(ref_.node.data.storage_path ?? '')
-        if (sp) name = sp.split('/').pop() ?? ''
-    }
+    const name = humanMediaName(ref_.node.data as Record<string, unknown>, ref_.node.type)
     const typeStr = nodeTypeLabel(ref_.node.type)
     const hasThumbnail = ref_.src && (ref_.node.type === 'image' || ref_.node.type === 'video')
 
@@ -1406,7 +1447,7 @@ function ImageThumbnail({ entry, compact }: { entry: ImageEntry; compact?: boole
 
             {entry.src && (
                 <button
-                    onClick={() => downloadImage(entry.src, entry.label || `image-${entry.node.id.slice(0, 8)}`)}
+                    onClick={() => downloadImage(entry.src, entry.label || 'image.png')}
                     className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 px-1.5 py-0.5 bg-zinc-900/80 text-zinc-300 text-[9px] rounded transition-opacity hover:bg-zinc-700"
                 >
                     ↓
