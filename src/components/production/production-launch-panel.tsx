@@ -27,6 +27,17 @@ interface ExportEdge {
     label?: string
 }
 
+// ── Edge ref detection (canonical + backward compat) ──
+
+function isRefEdge(edge: ExportEdge, sourceNode?: ExportNode): boolean {
+    const label = edge.label
+    if (label === 'ref') return true
+    if (label != null && label !== 'ref') return false
+    // legacy (label null/undefined): include ONLY if source is media
+    if (!sourceNode) return false
+    return sourceNode.type === 'image' || sourceNode.type === 'video'
+}
+
 interface ProductionLaunchPanelProps {
     nodes: ExportNode[]
     edges?: ExportEdge[]
@@ -131,6 +142,7 @@ function groupImages(imageNodes: ExportNode[]): {
 
 interface PromptEntry {
     node: ExportNode
+    title: string
     label: string
     origin: string
     body: string
@@ -141,10 +153,11 @@ function buildPromptEntries(promptNodes: ExportNode[]): PromptEntry[] {
     const entries: PromptEntry[] = promptNodes.map(node => {
         const typeRaw = asString(node.data.promptType ?? node.data.type ?? node.data.kind ?? '')
         const label = promptTypeLabel(typeRaw)
+        const title = asString(node.data.title ?? node.data.name ?? node.data.label ?? '') || 'Untitled'
         const origin = formatOrigin(asString(node.data.origin ?? node.data.source ?? node.data.model ?? node.data.provider ?? ''))
         const body = asString(node.data.body ?? node.data.text ?? node.data.content ?? '')
         const createdAt = asString(node.data.createdAt ?? node.data.created_at ?? '')
-        return { node, label, origin, body, createdAt }
+        return { node, title, label, origin, body, createdAt }
     })
 
     // Sort by createdAt ASC. Nodes without timestamp go last (stable).
@@ -156,6 +169,196 @@ function buildPromptEntries(promptNodes: ExportNode[]): PromptEntry[] {
     })
 
     return entries
+}
+
+// ── Column-aware grouping ──
+
+interface ColumnGroup {
+    columnId: string
+    title: string
+    entries: PromptEntry[]
+}
+
+interface GroupedPrompts {
+    /** Prompts NOT inside any column — createdAt ASC */
+    loose: PromptEntry[]
+    /** Column sections in deterministic order (column createdAt ASC, fallback id) */
+    columns: ColumnGroup[]
+    /** Flat ordered list (loose first, then column groups in order) for indexing */
+    flat: PromptEntry[]
+}
+
+function groupPromptsByColumn(
+    promptEntries: PromptEntry[],
+    nodes: ExportNode[],
+): GroupedPrompts {
+    // Build column map: id → column node
+    const columnMap = new Map<string, ExportNode>()
+    for (const n of nodes) {
+        if (n.type === 'column') columnMap.set(n.id, n)
+    }
+
+    const loose: PromptEntry[] = []
+    const colBuckets = new Map<string, PromptEntry[]>()
+
+    for (const entry of promptEntries) {
+        const pid = entry.node.data.parentId as string | null | undefined
+        if (pid && columnMap.has(pid)) {
+            let bucket = colBuckets.get(pid)
+            if (!bucket) { bucket = []; colBuckets.set(pid, bucket) }
+            bucket.push(entry)
+        } else {
+            loose.push(entry)
+        }
+    }
+
+    // Sort loose by createdAt ASC (already done by buildPromptEntries, but defensive)
+    loose.sort((a, b) => {
+        if (!a.createdAt && !b.createdAt) return 0
+        if (!a.createdAt) return 1
+        if (!b.createdAt) return -1
+        return a.createdAt.localeCompare(b.createdAt)
+    })
+
+    // Build column groups, ordered by column createdAt ASC (fallback id)
+    const colIds = Array.from(colBuckets.keys())
+    colIds.sort((a, b) => {
+        const ca = asString(columnMap.get(a)?.data.createdAt ?? columnMap.get(a)?.data.created_at ?? '')
+        const cb = asString(columnMap.get(b)?.data.createdAt ?? columnMap.get(b)?.data.created_at ?? '')
+        if (ca && cb) return ca.localeCompare(cb)
+        if (!ca && !cb) return a.localeCompare(b)
+        return ca ? -1 : 1
+    })
+
+    const columns: ColumnGroup[] = colIds.map(colId => {
+        const colNode = columnMap.get(colId)!
+        const title = asString(colNode.data.title ?? '') || 'Column'
+        const childOrder: string[] = (colNode.data as any).childOrder ?? []
+        const bucket = colBuckets.get(colId)!
+
+        // Order by childOrder position (filtered to prompts in bucket)
+        const idSet = new Set(bucket.map(e => e.node.id))
+        const ordered: PromptEntry[] = []
+        const placed = new Set<string>()
+
+        // First: entries that appear in childOrder
+        for (const cid of childOrder) {
+            if (idSet.has(cid) && !placed.has(cid)) {
+                const e = bucket.find(b => b.node.id === cid)
+                if (e) { ordered.push(e); placed.add(cid) }
+            }
+        }
+        // Then: any remaining (not in childOrder) by createdAt ASC
+        for (const e of bucket) {
+            if (!placed.has(e.node.id)) ordered.push(e)
+        }
+
+        return { columnId: colId, title, entries: ordered }
+    })
+
+    // Flat = loose first, then column groups in order
+    const flat: PromptEntry[] = [...loose]
+    for (const cg of columns) flat.push(...cg.entries)
+
+    return { loose, columns, flat }
+}
+
+// ── Column Notes resolver ──
+
+function resolveColumnNotes(
+    columnId: string,
+    nodes: ExportNode[],
+    childOrder: string[],
+): ExportNode[] {
+    // Notes with parentId === columnId
+    const notes = nodes.filter(n => n.type === 'note' && (n.data as any).parentId === columnId)
+    if (notes.length === 0) return []
+
+    // Order by childOrder if available, fallback createdAt
+    const idSet = new Set(notes.map(n => n.id))
+    const ordered: ExportNode[] = []
+    const placed = new Set<string>()
+
+    for (const cid of childOrder) {
+        if (idSet.has(cid) && !placed.has(cid)) {
+            const n = notes.find(nd => nd.id === cid)
+            if (n) { ordered.push(n); placed.add(cid) }
+        }
+    }
+    for (const n of notes) {
+        if (!placed.has(n.id)) ordered.push(n)
+    }
+
+    return ordered
+}
+
+// ── Column Attachments (media inside column, NOT already refs) ──
+
+interface ColumnAttachment {
+    node: ExportNode
+    src: string
+    name: string
+}
+
+function resolveColumnAttachments(
+    columnId: string,
+    nodes: ExportNode[],
+    childOrder: string[],
+    referencedMediaIds: Set<string>,
+): ColumnAttachment[] {
+    // Media nodes with parentId === columnId, excluding already-referenced
+    const media = nodes.filter(n =>
+        (n.type === 'image' || n.type === 'video') &&
+        (n.data as any).parentId === columnId &&
+        !referencedMediaIds.has(n.id)
+    )
+    if (media.length === 0) return []
+
+    // Order: childOrder first, then createdAt ASC, then id ASC
+    const idSet = new Set(media.map(n => n.id))
+    const ordered: ExportNode[] = []
+    const placed = new Set<string>()
+
+    for (const cid of childOrder) {
+        if (idSet.has(cid) && !placed.has(cid)) {
+            const n = media.find(nd => nd.id === cid)
+            if (n) { ordered.push(n); placed.add(cid) }
+        }
+    }
+    // Remaining: createdAt ASC then id ASC
+    const remaining = media.filter(n => !placed.has(n.id))
+    remaining.sort((a, b) => {
+        const ca = asString(a.data.createdAt ?? a.data.created_at ?? '')
+        const cb = asString(b.data.createdAt ?? b.data.created_at ?? '')
+        const cmp = ca.localeCompare(cb)
+        if (cmp !== 0) return cmp
+        return a.id.localeCompare(b.id)
+    })
+    for (const n of remaining) ordered.push(n)
+
+    return ordered.map(node => {
+        const src = asString(node.data.src ?? node.data.url ?? node.data.publicUrl ?? node.data.storage_path ?? node.data.thumbnail ?? '')
+        let name = asString(node.data.filename ?? node.data.originalFileName ?? node.data.name ?? node.data.title ?? node.data.label ?? '')
+        if (!name) {
+            const sp = asString(node.data.storage_path ?? '')
+            if (sp) name = sp.split('/').pop() ?? ''
+        }
+        if (!name) name = 'untitled'
+        return { node, src, name }
+    })
+}
+
+function formatAttachmentsForPack(attachments: ColumnAttachment[], fvId: string | null, outId: string | null): string {
+    if (attachments.length === 0) return ''
+    // Convert to PromptRef[] and reuse formatRefsForPack for identical output format
+    const asRefs: PromptRef[] = attachments.map(a => ({
+        node: a.node,
+        rank: 3, // attachments are never FV/Output/Asset — rank doesn't affect format
+        src: a.src || undefined,
+    }))
+    const body = formatRefsForPack(asRefs, fvId, outId)
+    // Replace the header "INPUT REFERENCES" with "COLUMN ATTACHMENTS"
+    return body.replace(/^\nINPUT REFERENCES\n/, `\nCOLUMN ATTACHMENTS\n`)
 }
 
 // ── Prompt References (1-hop via edges) ──
@@ -173,19 +376,18 @@ function resolvePromptRefs(
     currentFinalVisualId: string | null,
     outputVideoNodeId: string | null,
 ): PromptRef[] {
-    // Collect incoming-only neighbors (media → prompt).
-    // Outgoing edges (prompt → media) are outputs/derivati — excluded from refs.
+    // Collect incoming-only media → prompt refs using isRefEdge.
     const neighborIds = new Set<string>()
     for (const edge of edges) {
-        if (edge.to === promptNodeId && edge.from !== promptNodeId) neighborIds.add(edge.from)
+        if (edge.to !== promptNodeId || edge.from === promptNodeId) continue
+        const src = nodeMap.get(edge.from)
+        if (!isRefEdge(edge, src)) continue
+        neighborIds.add(edge.from)
     }
 
     const refs: PromptRef[] = []
     for (const nid of neighborIds) {
-        const node = nodeMap.get(nid)
-        if (!node) continue
-        // Media refs only — image and video. Notes/columns/prompts excluded.
-        if (node.type !== 'image' && node.type !== 'video') continue
+        const node = nodeMap.get(nid)!
 
         // Rank: FV=0, Output=1, Asset(promoted)=2, others=3
         let rank = 3
@@ -204,12 +406,14 @@ function resolvePromptRefs(
         refs.push({ node, rank, src })
     }
 
-    // Sort: rank ASC, then createdAt ASC as tiebreaker
+    // Sort: rank ASC, then createdAt ASC, then id ASC (fully deterministic)
     refs.sort((a, b) => {
         if (a.rank !== b.rank) return a.rank - b.rank
         const ca = asString(a.node.data.createdAt ?? a.node.data.created_at ?? '')
         const cb = asString(b.node.data.createdAt ?? b.node.data.created_at ?? '')
-        return ca.localeCompare(cb)
+        const cmp = ca.localeCompare(cb)
+        if (cmp !== 0) return cmp
+        return a.node.id.localeCompare(b.node.id)
     })
 
     return refs
@@ -289,7 +493,7 @@ function formatPromptBlock(
     const parts: string[] = []
 
     // Header — compact single line
-    parts.push(`PROMPT #${index + 1}  |  ${entry.label}  |  Origin: ${entry.origin}`)
+    parts.push(`PROMPT #${index + 1}  |  ${entry.label}  |  ${entry.title}  |  Origin: ${entry.origin}`)
     parts.push(SECTION_LINE)
     parts.push('')
 
@@ -310,6 +514,52 @@ function formatPromptBlock(
             parts.push('')
             parts.push(noteSection)
         }
+    }
+
+    return parts.join('\n')
+}
+
+/**
+ * Format a complete column block for "Copy Column Block".
+ * Includes all prompts (in column order), column notes (opt-in), and column attachments.
+ */
+function formatColumnBlock(
+    cg: ColumnGroup,
+    flatEntries: PromptEntry[],
+    promptRefsMap: Map<string, PromptRef[]>,
+    promptNotesMap: Map<string, ExportNode[]>,
+    blockNotesToggle: Record<string, boolean>,
+    colNotes: ExportNode[],
+    includeColumnNotes: boolean,
+    attachments: ColumnAttachment[],
+    fvId: string | null,
+    outId: string | null,
+): string {
+    const parts: string[] = []
+
+    parts.push(`COLUMN: ${cg.title}`)
+    parts.push(SECTION_LINE)
+
+    for (const entry of cg.entries) {
+        const gIdx = flatEntries.indexOf(entry)
+        const refs = promptRefsMap.get(entry.node.id) ?? []
+        const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
+        const notesOn = !!blockNotesToggle[entry.node.id]
+        parts.push('')
+        parts.push(formatPromptBlock(entry, gIdx, refs, incomingNotes, notesOn, fvId, outId))
+    }
+
+    if (includeColumnNotes && colNotes.length > 0) {
+        const noteSection = formatNotesForBlock(colNotes)
+        if (noteSection) {
+            parts.push('')
+            parts.push(`COLUMN NOTES\n${SECTION_LINE}${noteSection}`)
+        }
+    }
+
+    if (attachments.length > 0) {
+        parts.push('')
+        parts.push(formatAttachmentsForPack(attachments, fvId, outId))
     }
 
     return parts.join('\n')
@@ -416,6 +666,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
     }, [nodes])
 
     const promptEntries = useMemo(() => buildPromptEntries(promptNodes), [promptNodes])
+    const grouped = useMemo(() => groupPromptsByColumn(promptEntries, nodes), [promptEntries, nodes])
     const images = useMemo(() => groupImages(imageNodes), [imageNodes])
 
     // Resolve references per prompt (memoized as a Map)
@@ -432,6 +683,37 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
     }, [promptEntries, edges, nodeMap, currentFinalVisualId, outputVideoNodeId])
 
     const [includeNotes, setIncludeNotes] = useState(true)
+
+    // Column Notes toggle (opt-in, default OFF)
+    const [includeColumnNotes, setIncludeColumnNotes] = useState(false)
+
+    // Resolve column notes per column (memoized)
+    const columnNotesMap = useMemo(() => {
+        const m = new Map<string, ExportNode[]>()
+        for (const cg of grouped.columns) {
+            const colNode = nodes.find(n => n.id === cg.columnId)
+            const childOrder: string[] = colNode ? ((colNode.data as any).childOrder ?? []) : []
+            m.set(cg.columnId, resolveColumnNotes(cg.columnId, nodes, childOrder))
+        }
+        return m
+    }, [grouped.columns, nodes])
+
+    // Resolve column attachments per column (media in column, not already refs)
+    const columnAttachmentsMap = useMemo(() => {
+        const m = new Map<string, ColumnAttachment[]>()
+        for (const cg of grouped.columns) {
+            const colNode = nodes.find(n => n.id === cg.columnId)
+            const childOrder: string[] = colNode ? ((colNode.data as any).childOrder ?? []) : []
+            // Collect all media ids already referenced by prompts in this column
+            const refMediaIds = new Set<string>()
+            for (const entry of cg.entries) {
+                const refs = promptRefsMap.get(entry.node.id) ?? []
+                for (const r of refs) refMediaIds.add(r.node.id)
+            }
+            m.set(cg.columnId, resolveColumnAttachments(cg.columnId, nodes, childOrder, refMediaIds))
+        }
+        return m
+    }, [grouped.columns, nodes, promptRefsMap])
 
     // Per-prompt notes toggle (opt-in, default OFF)
     const [blockNotesToggle, setBlockNotesToggle] = useState<Record<string, boolean>>({})
@@ -456,13 +738,45 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
     // Build Prompt Pack v3 — canon format
     const promptPack = useMemo(() => {
         const blocks: string[] = []
+        let globalIdx = 0
 
-        promptEntries.forEach((entry, idx) => {
+        // Loose prompts first
+        for (const entry of grouped.loose) {
             const refs = promptRefsMap.get(entry.node.id) ?? []
             const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
-            // Prompt Pack uses global includeNotes toggle for notes
-            blocks.push(formatPromptBlock(entry, idx, refs, incomingNotes, includeNotes, fvId, outId))
-        })
+            blocks.push(formatPromptBlock(entry, globalIdx, refs, incomingNotes, includeNotes, fvId, outId))
+            globalIdx++
+        }
+
+        // Column groups
+        for (const cg of grouped.columns) {
+            const colHeader = `COLUMN: ${cg.title}\n${SECTION_LINE}`
+            const colBlocks: string[] = [colHeader]
+
+            for (const entry of cg.entries) {
+                const refs = promptRefsMap.get(entry.node.id) ?? []
+                const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
+                colBlocks.push(formatPromptBlock(entry, globalIdx, refs, incomingNotes, includeNotes, fvId, outId))
+                globalIdx++
+            }
+
+            // Column Notes (opt-in)
+            if (includeColumnNotes) {
+                const colNotes = columnNotesMap.get(cg.columnId) ?? []
+                const colNoteSection = formatNotesForBlock(colNotes)
+                if (colNoteSection) {
+                    colBlocks.push(`COLUMN NOTES\n${SECTION_LINE}${colNoteSection}`)
+                }
+            }
+
+            // Column Attachments (unlinked media inside column)
+            const colAttachments = columnAttachmentsMap.get(cg.columnId) ?? []
+            if (colAttachments.length > 0) {
+                colBlocks.push(formatAttachmentsForPack(colAttachments, fvId, outId))
+            }
+
+            blocks.push(colBlocks.join('\n\n'))
+        }
 
         if (includeNotes && noteNodes.length > 0) {
             // Also append unlinked notes (not connected to any prompt) at the end
@@ -475,7 +789,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
         }
 
         return blocks.join(`\n\n${PROMPT_SEPARATOR}\n\n`)
-    }, [promptEntries, promptRefsMap, promptNotesMap, includeNotes, noteNodes, fvId, outId])
+    }, [grouped, promptRefsMap, promptNotesMap, includeNotes, includeColumnNotes, columnNotesMap, columnAttachmentsMap, noteNodes, fvId, outId])
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
@@ -503,21 +817,23 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                 {/* Body — two columns */}
                 <div className="flex-1 overflow-y-auto">
                     <div className="flex min-h-0">
-                        {/* Left Column: Prompts (pure reflection + references) */}
+                        {/* Left Column: Prompts (pure reflection + references, column-aware) */}
                         <div className="flex-1 border-r border-zinc-800 px-6 py-4 overflow-y-auto">
                             <h3 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-4">
-                                Prompts {hasPrompts && <span className="text-zinc-600">({promptEntries.length})</span>}
+                                Prompts {hasPrompts && <span className="text-zinc-600">({grouped.flat.length})</span>}
                             </h3>
 
                             {!hasPrompts && (
                                 <p className="text-xs text-zinc-600 italic">No prompts in this Take.</p>
                             )}
 
-                            {promptEntries.map((entry, idx) => {
+                            {/* Loose prompts (no column) */}
+                            {grouped.loose.map((entry) => {
+                                const gIdx = grouped.flat.indexOf(entry)
                                 const refs = promptRefsMap.get(entry.node.id) ?? []
                                 const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
                                 const notesOn = !!blockNotesToggle[entry.node.id]
-                                const copyBlock = formatPromptBlock(entry, idx, refs, incomingNotes, notesOn, fvId, outId)
+                                const copyBlock = formatPromptBlock(entry, gIdx, refs, incomingNotes, notesOn, fvId, outId)
 
                                 return (
                                     <div key={entry.node.id} className="mb-5">
@@ -527,7 +843,10 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                     {entry.label}
                                                 </span>
                                                 <span className="text-[9px] text-zinc-600">
-                                                    #{idx + 1}
+                                                    #{gIdx + 1}
+                                                </span>
+                                                <span className="text-[10px] text-zinc-400 truncate max-w-[200px]">
+                                                    {entry.title}
                                                 </span>
                                             </div>
                                             <span className="text-[9px] text-zinc-500">
@@ -542,16 +861,10 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                             rows={Math.min(Math.max(entry.body.split('\n').length, 3), 10)}
                                         />
 
-                                        {/* Prompt References — 1-hop linked media nodes */}
                                         {refs.length > 0 && (
                                             <div className="flex flex-wrap gap-1.5 mt-2">
                                                 {refs.map(ref => (
-                                                    <RefChip
-                                                        key={ref.node.id}
-                                                        ref_={ref}
-                                                        currentFinalVisualId={fvId}
-                                                        outputVideoNodeId={outId}
-                                                    />
+                                                    <RefChip key={ref.node.id} ref_={ref} currentFinalVisualId={fvId} outputVideoNodeId={outId} />
                                                 ))}
                                             </div>
                                         )}
@@ -577,7 +890,129 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                 )
                             })}
 
-                            {/* Footer: Copy Prompt Pack + Include Notes toggle */}
+                            {/* Column sections */}
+                            {grouped.columns.map(cg => {
+                                const colNotes = columnNotesMap.get(cg.columnId) ?? []
+                                const colAttachments = columnAttachmentsMap.get(cg.columnId) ?? []
+                                const columnBlockText = formatColumnBlock(
+                                    cg, grouped.flat, promptRefsMap, promptNotesMap, blockNotesToggle,
+                                    colNotes, includeColumnNotes, colAttachments, fvId, outId,
+                                )
+                                return (
+                                    <div key={cg.columnId} className="mb-6">
+                                        {/* Column header */}
+                                        <div className="flex items-center justify-between mb-3 pb-1.5 border-b border-zinc-700/50">
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400">
+                                                    ▸ {cg.title}
+                                                </span>
+                                                <span className="text-[9px] text-zinc-600">
+                                                    ({cg.entries.length} prompt{cg.entries.length !== 1 ? 's' : ''})
+                                                </span>
+                                            </div>
+                                            <CopyButton text={columnBlockText} label="Copy Column Block" />
+                                        </div>
+
+                                        {/* Column prompts — ordered by childOrder */}
+                                        {cg.entries.map((entry) => {
+                                            const gIdx = grouped.flat.indexOf(entry)
+                                            const refs = promptRefsMap.get(entry.node.id) ?? []
+                                            const incomingNotes = promptNotesMap.get(entry.node.id) ?? []
+                                            const notesOn = !!blockNotesToggle[entry.node.id]
+                                            const copyBlock = formatPromptBlock(entry, gIdx, refs, incomingNotes, notesOn, fvId, outId)
+
+                                            return (
+                                                <div key={entry.node.id} className="mb-5 ml-3 border-l-2 border-blue-500/20 pl-3">
+                                                    <div className="flex items-center justify-between mb-1.5">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                                                                {entry.label}
+                                                            </span>
+                                                            <span className="text-[9px] text-zinc-600">
+                                                                #{gIdx + 1}
+                                                            </span>
+                                                            <span className="text-[10px] text-zinc-400 truncate max-w-[200px]">
+                                                                {entry.title}
+                                                            </span>
+                                                        </div>
+                                                        <span className="text-[9px] text-zinc-500">
+                                                            Origin: {entry.origin}
+                                                        </span>
+                                                    </div>
+
+                                                    <textarea
+                                                        readOnly
+                                                        value={entry.body || '(empty)'}
+                                                        className="w-full bg-zinc-800/50 border border-zinc-700 rounded text-xs text-zinc-300 p-3 resize-none focus:outline-none"
+                                                        rows={Math.min(Math.max(entry.body.split('\n').length, 3), 10)}
+                                                    />
+
+                                                    {refs.length > 0 && (
+                                                        <div className="flex flex-wrap gap-1.5 mt-2">
+                                                            {refs.map(ref => (
+                                                                <RefChip key={ref.node.id} ref_={ref} currentFinalVisualId={fvId} outputVideoNodeId={outId} />
+                                                            ))}
+                                                        </div>
+                                                    )}
+
+                                                    <div className="flex items-center gap-2 mt-1.5">
+                                                        <CopyButton text={entry.body} label="Copy Content" />
+                                                        <CopyButton text={copyBlock} label="Copy Block" />
+                                                        {incomingNotes.length > 0 && (
+                                                            <label className="flex items-center gap-1 cursor-pointer select-none ml-1">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={notesOn}
+                                                                    onChange={(e) => setBlockNotesToggle(prev => ({ ...prev, [entry.node.id]: e.target.checked }))}
+                                                                    className="w-3 h-3 rounded border-zinc-600 bg-zinc-800 text-amber-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                                                />
+                                                                <span className="text-[10px] text-zinc-500">
+                                                                    + Notes ({incomingNotes.length})
+                                                                </span>
+                                                            </label>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )
+                                        })}
+
+                                        {/* Column Notes count (visible if any) */}
+                                        {colNotes.length > 0 && (
+                                            <div className="ml-3 pl-3 border-l-2 border-blue-500/20">
+                                                <span className="text-[9px] text-zinc-600 italic">
+                                                    {colNotes.length} column note{colNotes.length !== 1 ? 's' : ''} {includeColumnNotes ? '(included in pack)' : '(toggle below to include)'}
+                                                </span>
+                                            </div>
+                                        )}
+
+                                        {/* Column Attachments — unlinked media inside column */}
+                                        {colAttachments.length > 0 && (
+                                            <div className="ml-3 pl-3 border-l-2 border-blue-500/20 mt-2">
+                                                <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 block mb-1.5">
+                                                    Column Attachments ({colAttachments.length})
+                                                </span>
+                                                <div className="flex flex-wrap gap-1.5">
+                                                    {colAttachments.map(att => (
+                                                        <div key={att.node.id} className="flex items-center gap-1.5 bg-zinc-800/70 border border-zinc-700 rounded px-1.5 py-1 max-w-[180px]">
+                                                            {att.src && (
+                                                                <div className="w-6 h-6 shrink-0 rounded overflow-hidden bg-zinc-700">
+                                                                    <img src={att.src} alt="" className="w-full h-full object-cover" loading="lazy" />
+                                                                </div>
+                                                            )}
+                                                            <div className="flex items-center gap-1 min-w-0 overflow-hidden">
+                                                                <span className="text-[9px] text-zinc-500 shrink-0">{nodeTypeLabel(att.node.type)}</span>
+                                                                <span className="text-[9px] text-zinc-400 truncate">{att.name}</span>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )
+                            })}
+
+                            {/* Footer: Copy Prompt Pack + toggles */}
                             {hasPrompts && (
                                 <div className="flex items-center gap-3 mt-4 pt-3 border-t border-zinc-800">
                                     <CopyButton text={promptPack} label="Copy Prompt Pack" />
@@ -591,6 +1026,19 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                             />
                                             <span className="text-[10px] text-zinc-400">
                                                 + Notes ({noteNodes.length})
+                                            </span>
+                                        </label>
+                                    )}
+                                    {grouped.columns.some(cg => (columnNotesMap.get(cg.columnId) ?? []).length > 0) && (
+                                        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                            <input
+                                                type="checkbox"
+                                                checked={includeColumnNotes}
+                                                onChange={(e) => setIncludeColumnNotes(e.target.checked)}
+                                                className="w-3 h-3 rounded border-zinc-600 bg-zinc-800 text-blue-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                            />
+                                            <span className="text-[10px] text-zinc-400">
+                                                + Column Notes
                                             </span>
                                         </label>
                                     )}
