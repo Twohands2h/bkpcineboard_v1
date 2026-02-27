@@ -103,35 +103,41 @@ function getImageRole(data: Record<string, any>): ImageRole {
     return 'reference'
 }
 
-// ── Image grouping ──
+// ── Media grouping (images + videos) ──
 
-interface ImageEntry {
+interface MediaEntry {
     node: ExportNode
     role: ImageRole
     src: string
     label: string
+    isVideo: boolean
+    bucket: string
+    storagePath: string
 }
 
-function groupImages(imageNodes: ExportNode[]): {
-    firstFrame: ImageEntry | null
-    lastFrame: ImageEntry | null
-    references: ImageEntry[]
+function groupMedia(mediaNodes: ExportNode[]): {
+    firstFrame: MediaEntry | null
+    lastFrame: MediaEntry | null
+    references: MediaEntry[]
 } {
     const result = {
-        firstFrame: null as ImageEntry | null,
-        lastFrame: null as ImageEntry | null,
-        references: [] as ImageEntry[],
+        firstFrame: null as MediaEntry | null,
+        lastFrame: null as MediaEntry | null,
+        references: [] as MediaEntry[],
     }
 
-    for (const node of imageNodes) {
+    for (const node of mediaNodes) {
         const role = getImageRole(node.data)
         const src = asString(node.data.src ?? node.data.url ?? node.data.publicUrl ?? node.data.storage_path ?? '')
         const label = humanMediaName(node.data as Record<string, unknown>, node.type) || asString(node.data.title ?? node.data.label ?? node.data.name ?? '')
-        const entry: ImageEntry = { node, role, src, label }
+        const isVideo = node.type === 'video'
+        const storagePath = asString(node.data.storage_path ?? node.data.storagePath ?? '')
+        const bucket = isVideo ? 'take-videos' : 'take-images'
+        const entry: MediaEntry = { node, role, src, label, isVideo, bucket, storagePath }
 
-        if (role === 'firstFrame' && !result.firstFrame) {
+        if (!isVideo && role === 'firstFrame' && !result.firstFrame) {
             result.firstFrame = entry
-        } else if (role === 'lastFrame' && !result.lastFrame) {
+        } else if (!isVideo && role === 'lastFrame' && !result.lastFrame) {
             result.lastFrame = entry
         } else {
             result.references.push(entry)
@@ -601,33 +607,40 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 
 // ── Download helper ──
 
-async function downloadImage(src: string, filename: string) {
-    try {
-        const response = await fetch(src)
-        if (response.ok) {
-            const blob = await response.blob()
-            const blobUrl = URL.createObjectURL(blob)
-            const a = document.createElement('a')
-            a.href = blobUrl
-            a.download = filename
-            document.body.appendChild(a)
-            a.click()
-            document.body.removeChild(a)
-            URL.revokeObjectURL(blobUrl)
-            return
+async function downloadMedia(bucket: string, storagePath: string, filename: string, fallbackSrc?: string) {
+    // Primary: server-side download for original quality
+    if (bucket && storagePath) {
+        try {
+            const params = new URLSearchParams({ bucket, storagePath, filename })
+            const response = await fetch(`/api/export-media?${params}`)
+            if (response.ok) {
+                const blob = await response.blob()
+                const blobUrl = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = blobUrl
+                a.download = filename
+                document.body.appendChild(a)
+                a.click()
+                document.body.removeChild(a)
+                URL.revokeObjectURL(blobUrl)
+                return
+            }
+        } catch {
+            // fall through to fallback
         }
-    } catch {
-        // fall through
     }
 
-    const a = document.createElement('a')
-    a.href = src
-    a.download = filename
-    a.target = '_blank'
-    a.rel = 'noopener noreferrer'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
+    // Fallback: direct src (preview quality)
+    if (fallbackSrc) {
+        const a = document.createElement('a')
+        a.href = fallbackSrc
+        a.download = filename
+        a.target = '_blank'
+        a.rel = 'noopener noreferrer'
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+    }
 }
 
 // ── Export ZIP helpers ──
@@ -878,7 +891,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
     const pad2 = (n: number) => String(n).padStart(2, '0')
     const zipPrefix = `cb_S${pad2(sceneIndex + 1)}_Sh${shotIndex}_T${pad2(takeNumber)}`
     const promptNodes = useMemo(() => nodes.filter(n => n.type === 'prompt'), [nodes])
-    const imageNodes = useMemo(() => nodes.filter(n => n.type === 'image'), [nodes])
+    const mediaNodes = useMemo(() => nodes.filter(n => n.type === 'image' || n.type === 'video'), [nodes])
     const noteNodes = useMemo(() => nodes.filter(n => n.type === 'note'), [nodes])
 
     const nodeMap = useMemo(() => {
@@ -889,7 +902,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
 
     const promptEntries = useMemo(() => buildPromptEntries(promptNodes), [promptNodes])
     const grouped = useMemo(() => groupPromptsByColumn(promptEntries, nodes), [promptEntries, nodes])
-    const images = useMemo(() => groupImages(imageNodes), [imageNodes])
+    const media = useMemo(() => groupMedia(mediaNodes), [mediaNodes])
 
     // Resolve references per prompt (memoized as a Map)
     const promptRefsMap = useMemo(() => {
@@ -952,7 +965,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
 
     const hasPrompts = promptEntries.length > 0
     const hasNotes = noteNodes.length > 0
-    const hasImages = images.firstFrame || images.lastFrame || images.references.length > 0
+    const hasMedia = media.firstFrame || media.lastFrame || media.references.length > 0
 
     const fvId = currentFinalVisualId ?? null
     const outId = outputVideoNodeId ?? null
@@ -1344,36 +1357,36 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                         <div className="w-[360px] shrink-0 px-6 py-4 overflow-y-auto">
                             <h3 className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-4">Media Kit</h3>
 
-                            {!hasImages && (
-                                <p className="text-xs text-zinc-600 italic">No images in this Take.</p>
+                            {!hasMedia && (
+                                <p className="text-xs text-zinc-600 italic">No media in this Take.</p>
                             )}
 
-                            {images.firstFrame && (
+                            {media.firstFrame && (
                                 <div className="mb-4">
                                     <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 block mb-2">
                                         First Frame
                                     </span>
-                                    <ImageThumbnail entry={images.firstFrame} />
+                                    <MediaThumbnail entry={media.firstFrame} />
                                 </div>
                             )}
 
-                            {images.lastFrame && (
+                            {media.lastFrame && (
                                 <div className="mb-4">
                                     <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 block mb-2">
                                         Last Frame
                                     </span>
-                                    <ImageThumbnail entry={images.lastFrame} />
+                                    <MediaThumbnail entry={media.lastFrame} />
                                 </div>
                             )}
 
-                            {images.references.length > 0 && (
+                            {media.references.length > 0 && (
                                 <div>
                                     <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block mb-2">
-                                        References ({images.references.length})
+                                        References ({media.references.length})
                                     </span>
                                     <div className="grid grid-cols-2 gap-2">
-                                        {images.references.map(entry => (
-                                            <ImageThumbnail key={entry.node.id} entry={entry} compact />
+                                        {media.references.map(entry => (
+                                            <MediaThumbnail key={entry.node.id} entry={entry} compact />
                                         ))}
                                     </div>
                                 </div>
@@ -1409,15 +1422,21 @@ function RefChip({ ref_, currentFinalVisualId, outputVideoNodeId }: {
 
     return (
         <div className="flex items-center gap-1.5 bg-zinc-800/70 border border-zinc-700 rounded px-1.5 py-1 max-w-[180px]">
-            {/* Thumbnail (image/video only) */}
+            {/* Thumbnail */}
             {hasThumbnail && (
                 <div className="w-6 h-6 shrink-0 rounded overflow-hidden bg-zinc-700">
-                    <img
-                        src={ref_.src}
-                        alt=""
-                        className="w-full h-full object-cover"
-                        loading="lazy"
-                    />
+                    {ref_.node.type === 'video' ? (
+                        <div className="w-full h-full flex items-center justify-center bg-zinc-700">
+                            <span className="text-[8px] text-zinc-400">▶</span>
+                        </div>
+                    ) : (
+                        <img
+                            src={ref_.src}
+                            alt=""
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                        />
+                    )}
                 </div>
             )}
 
@@ -1439,14 +1458,24 @@ function RefChip({ ref_, currentFinalVisualId, outputVideoNodeId }: {
     )
 }
 
-// ── Image thumbnail sub-component (INVARIATO) ──
+// ── Media thumbnail (images + videos) — Option 1: play icon tile for video ──
 
-function ImageThumbnail({ entry, compact }: { entry: ImageEntry; compact?: boolean }) {
+function MediaThumbnail({ entry, compact }: { entry: MediaEntry; compact?: boolean }) {
     const height = compact ? 'h-24' : 'h-36'
 
     return (
         <div className="group relative">
-            {entry.src ? (
+            {entry.isVideo ? (
+                /* Video: 16:9 tile with play icon + filename */
+                <div className={`${height} w-full bg-zinc-800 border border-zinc-700 rounded flex flex-col items-center justify-center gap-1.5`}>
+                    <div className="w-8 h-8 rounded-full bg-zinc-700/80 border border-zinc-600 flex items-center justify-center">
+                        <span className="text-zinc-300 text-sm ml-0.5">▶</span>
+                    </div>
+                    {entry.label && (
+                        <span className="text-[9px] text-zinc-500 truncate max-w-[90%] px-1">{entry.label}</span>
+                    )}
+                </div>
+            ) : entry.src ? (
                 <div className={`${height} w-full bg-zinc-800 border border-zinc-700 rounded overflow-hidden`}>
                     <img
                         src={entry.src}
@@ -1461,13 +1490,13 @@ function ImageThumbnail({ entry, compact }: { entry: ImageEntry; compact?: boole
                 </div>
             )}
 
-            {entry.label && (
+            {!entry.isVideo && entry.label && (
                 <p className="text-[9px] text-zinc-500 mt-1 truncate">{entry.label}</p>
             )}
 
             {entry.src && (
                 <button
-                    onClick={() => downloadImage(entry.src, entry.label || 'image.png')}
+                    onClick={() => downloadMedia(entry.bucket, entry.storagePath, entry.label || (entry.isVideo ? 'video.mp4' : 'image.png'), entry.src)}
                     className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 px-1.5 py-0.5 bg-zinc-900/80 text-zinc-300 text-[9px] rounded transition-opacity hover:bg-zinc-700"
                 >
                     ↓
