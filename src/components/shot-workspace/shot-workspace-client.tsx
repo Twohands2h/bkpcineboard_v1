@@ -155,7 +155,12 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const router = useRouter()
   const searchParams = useSearchParams()
 
-  const [takes, setTakes] = useState<Take[]>(initialTakes)
+  const [takes, setTakes] = useState<Take[]>(() =>
+    initialTakes.map((t, index) => {
+      const n = typeof t.take_number === 'number' ? t.take_number : (index + 1)
+      return { ...t, name: `Take ${String(n).padStart(2, '0')}` }
+    })
+  )
 
   const takeFromUrl = searchParams.get('take')
   const defaultTakeId = (takeFromUrl && takes.some(t => t.id === takeFromUrl))
