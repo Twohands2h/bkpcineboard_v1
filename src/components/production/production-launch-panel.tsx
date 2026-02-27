@@ -113,6 +113,7 @@ interface MediaEntry {
     isVideo: boolean
     bucket: string
     storagePath: string
+    frameRole: 'first' | 'last' | null
 }
 
 function groupMedia(mediaNodes: ExportNode[]): {
@@ -129,11 +130,13 @@ function groupMedia(mediaNodes: ExportNode[]): {
     for (const node of mediaNodes) {
         const role = getImageRole(node.data)
         const src = asString(node.data.src ?? node.data.url ?? node.data.publicUrl ?? node.data.storage_path ?? '')
-        const label = (humanMediaName(node.data as Record<string, unknown>, node.type) || asString(node.data.title ?? node.data.label ?? node.data.name ?? '')) + frameRoleSuffix(node.data)
+        const label = humanMediaName(node.data as Record<string, unknown>, node.type) || asString(node.data.title ?? node.data.label ?? node.data.name ?? '')
         const isVideo = node.type === 'video'
         const storagePath = asString(node.data.storage_path ?? node.data.storagePath ?? '')
         const bucket = isVideo ? 'take-videos' : 'take-images'
-        const entry: MediaEntry = { node, role, src, label, isVideo, bucket, storagePath }
+        const frRaw = asString(node.data.frame_role ?? '')
+        const frameRole: 'first' | 'last' | null = frRaw === 'first' ? 'first' : frRaw === 'last' ? 'last' : null
+        const entry: MediaEntry = { node, role, src, label, isVideo, bucket, storagePath, frameRole }
 
         if (!isVideo && role === 'firstFrame' && !result.firstFrame) {
             result.firstFrame = entry
@@ -347,7 +350,7 @@ function resolveColumnAttachments(
 
     return ordered.map((node, i) => {
         const src = asString(node.data.src ?? node.data.url ?? node.data.publicUrl ?? node.data.storage_path ?? node.data.thumbnail ?? '')
-        const name = humanMediaName(node.data as Record<string, unknown>, node.type, i + 1) + frameRoleSuffix(node.data)
+        const name = humanMediaName(node.data as Record<string, unknown>, node.type, i + 1)
         return { node, src, name: name || 'untitled' }
     })
 }
@@ -1303,19 +1306,26 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                     Column Attachments ({colAttachments.length})
                                                 </span>
                                                 <div className="flex flex-wrap gap-1.5">
-                                                    {colAttachments.map(att => (
-                                                        <div key={att.node.id} className="flex items-center gap-1.5 bg-zinc-800/70 border border-zinc-700 rounded px-1.5 py-1 max-w-[180px]">
-                                                            {att.src && (
-                                                                <div className="w-6 h-6 shrink-0 rounded overflow-hidden bg-zinc-700">
-                                                                    <img src={att.src} alt="" className="w-full h-full object-cover" loading="lazy" />
+                                                    {colAttachments.map(att => {
+                                                        const attFr = asString(att.node.data.frame_role ?? '')
+                                                        const attFrLabel = attFr === 'first' ? 'FF' : attFr === 'last' ? 'LF' : null
+                                                        return (
+                                                            <div key={att.node.id} className="flex items-center gap-1.5 bg-zinc-800/70 border border-zinc-700 rounded px-1.5 py-1 max-w-[200px]">
+                                                                {attFrLabel && (
+                                                                    <span className="bg-zinc-900/90 border border-zinc-600/60 text-zinc-100 text-[8px] font-semibold px-1 py-0.5 rounded shrink-0">{attFrLabel}</span>
+                                                                )}
+                                                                {att.src && (
+                                                                    <div className="w-6 h-6 shrink-0 rounded overflow-hidden bg-zinc-700">
+                                                                        <img src={att.src} alt="" className="w-full h-full object-cover" loading="lazy" />
+                                                                    </div>
+                                                                )}
+                                                                <div className="flex items-center gap-1 min-w-0 overflow-hidden">
+                                                                    <span className="text-[9px] text-zinc-500 shrink-0">{nodeTypeLabel(att.node.type)}</span>
+                                                                    <span className="text-[9px] text-zinc-400 truncate">{att.name}</span>
                                                                 </div>
-                                                            )}
-                                                            <div className="flex items-center gap-1 min-w-0 overflow-hidden">
-                                                                <span className="text-[9px] text-zinc-500 shrink-0">{nodeTypeLabel(att.node.type)}</span>
-                                                                <span className="text-[9px] text-zinc-400 truncate">{att.name}</span>
                                                             </div>
-                                                        </div>
-                                                    ))}
+                                                        )
+                                                    })}
                                                 </div>
                                             </div>
                                         )}
@@ -1419,9 +1429,11 @@ function RefChip({ ref_, currentFinalVisualId, outputVideoNodeId }: {
     outputVideoNodeId: string | null
 }) {
     const tag = refRoleTag(ref_, currentFinalVisualId, outputVideoNodeId)
-    const name = humanMediaName(ref_.node.data as Record<string, unknown>, ref_.node.type) + frameRoleSuffix(ref_.node.data)
+    const name = humanMediaName(ref_.node.data as Record<string, unknown>, ref_.node.type)
     const typeStr = nodeTypeLabel(ref_.node.type)
     const hasThumbnail = ref_.src && (ref_.node.type === 'image' || ref_.node.type === 'video')
+    const frRaw = asString(ref_.node.data.frame_role ?? '')
+    const frLabel = frRaw === 'first' ? 'FF' : frRaw === 'last' ? 'LF' : null
 
     // Tag color
     const tagColor = tag === 'FV'
@@ -1433,7 +1445,12 @@ function RefChip({ ref_, currentFinalVisualId, outputVideoNodeId }: {
                 : ''
 
     return (
-        <div className="flex items-center gap-1.5 bg-zinc-800/70 border border-zinc-700 rounded px-1.5 py-1 max-w-[180px]">
+        <div className="flex items-center gap-1.5 bg-zinc-800/70 border border-zinc-700 rounded px-1.5 py-1 max-w-[200px]">
+            {/* FF/LF badge — inline left */}
+            {frLabel && (
+                <span className="bg-zinc-900/90 border border-zinc-600/60 text-zinc-100 text-[8px] font-semibold px-1 py-0.5 rounded shrink-0">{frLabel}</span>
+            )}
+
             {/* Thumbnail */}
             {hasThumbnail && (
                 <div className="w-6 h-6 shrink-0 rounded overflow-hidden bg-zinc-700">
@@ -1476,6 +1493,7 @@ function MediaThumbnail({ entry, compact }: { entry: MediaEntry; compact?: boole
     const height = compact ? 'h-24' : 'h-36'
     const [hovering, setHovering] = useState(false)
     const [videoError, setVideoError] = useState(false)
+    const frLabel = entry.frameRole === 'first' ? 'FF' : entry.frameRole === 'last' ? 'LF' : null
 
     return (
         <div
@@ -1485,7 +1503,6 @@ function MediaThumbnail({ entry, compact }: { entry: MediaEntry; compact?: boole
         >
             {entry.isVideo ? (
                 <div className={`${height} w-full bg-zinc-800 border border-zinc-700 rounded overflow-hidden relative`}>
-                    {/* Hover: inline video preview */}
                     {hovering && entry.src && !videoError ? (
                         <>
                             <video
@@ -1496,7 +1513,6 @@ function MediaThumbnail({ entry, compact }: { entry: MediaEntry; compact?: boole
                                 className="w-full h-full object-cover"
                                 onError={() => setVideoError(true)}
                             />
-                            {/* Small play overlay */}
                             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                                 <div className="w-6 h-6 rounded-full bg-black/40 flex items-center justify-center">
                                     <span className="text-white/70 text-[10px] ml-px">▶</span>
@@ -1504,7 +1520,6 @@ function MediaThumbnail({ entry, compact }: { entry: MediaEntry; compact?: boole
                             </div>
                         </>
                     ) : (
-                        /* Default: static play icon tile */
                         <div className="w-full h-full flex flex-col items-center justify-center gap-1.5">
                             <div className="w-8 h-8 rounded-full bg-zinc-700/80 border border-zinc-600 flex items-center justify-center">
                                 <span className="text-zinc-300 text-sm ml-0.5">▶</span>
@@ -1514,15 +1529,23 @@ function MediaThumbnail({ entry, compact }: { entry: MediaEntry; compact?: boole
                             )}
                         </div>
                     )}
+                    {/* FF/LF badge overlay */}
+                    {frLabel && (
+                        <span className="absolute top-1 left-1 bg-zinc-900/90 border border-zinc-600/60 text-zinc-100 text-[10px] font-semibold px-1.5 py-0.5 rounded pointer-events-none">{frLabel}</span>
+                    )}
                 </div>
             ) : entry.src ? (
-                <div className={`${height} w-full bg-zinc-800 border border-zinc-700 rounded overflow-hidden`}>
+                <div className={`${height} w-full bg-zinc-800 border border-zinc-700 rounded overflow-hidden relative`}>
                     <img
                         src={entry.src}
                         alt={entry.label || 'image'}
                         className="w-full h-full object-contain"
                         loading="lazy"
                     />
+                    {/* FF/LF badge overlay */}
+                    {frLabel && (
+                        <span className="absolute top-1 left-1 bg-zinc-900/90 border border-zinc-600/60 text-zinc-100 text-[10px] font-semibold px-1.5 py-0.5 rounded pointer-events-none">{frLabel}</span>
+                    )}
                 </div>
             ) : (
                 <div className={`${height} w-full bg-zinc-800 border border-zinc-700 rounded flex items-center justify-center`}>
