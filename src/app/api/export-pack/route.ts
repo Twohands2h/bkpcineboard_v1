@@ -19,6 +19,7 @@ interface ExportPackBody {
     mode: 'prompt' | 'column' | 'pack'
     assets: AssetDescriptor[]
     promptFileText?: string
+    zipName?: string
 }
 
 // ── Helpers ──
@@ -234,12 +235,19 @@ export async function POST(req: NextRequest) {
 
         console.log(`[export-pack] ✓ ZIP ready: ${zipBuffer.byteLength} bytes`)
 
-        const ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19)
+        // Sanitize client-provided zipName for Content-Disposition
+        const rawName = body.zipName || `cineboard-${body.mode}.zip`
+        const safeName = rawName
+            .replace(/[^a-zA-Z0-9._\-]/g, '_') // strip unsafe chars
+            .replace(/_+/g, '_')                 // collapse runs
+            .substring(0, 120)                   // max length
+            || 'cineboard-export.zip'
+        const filename = safeName.endsWith('.zip') ? safeName : `${safeName}.zip`
 
         return new Response(zipBuffer, {
             headers: {
                 'Content-Type': 'application/zip',
-                'Content-Disposition': `attachment; filename="cineboard-${body.mode}-${ts}.zip"`,
+                'Content-Disposition': `attachment; filename="${filename}"`,
                 'Content-Length': String(zipBuffer.byteLength),
                 'Cache-Control': 'no-store',
             },

@@ -44,6 +44,9 @@ interface ProductionLaunchPanelProps {
     isApproved: boolean
     currentFinalVisualId?: string | null
     outputVideoNodeId?: string | null
+    sceneIndex: number   // 0-based
+    shotIndex: number    // 0-based (shot.order_index)
+    takeNumber: number   // 1-based (take.take_number)
     onClose: () => void
 }
 
@@ -772,6 +775,7 @@ async function triggerExportZip(
     assets: AssetDescriptor[],
     exportNameMap: Map<string, string>,
     promptFileText?: string,
+    zipName?: string,
 ): Promise<void> {
     if (assets.length === 0) {
         console.warn('[export-pack] no assets to export')
@@ -784,7 +788,7 @@ async function triggerExportZip(
         exportName: exportNameMap.get(a.nodeId) ?? a.originalFilename ?? 'file',
     }))
 
-    const payload = { mode, assets: enriched, promptFileText }
+    const payload = { mode, assets: enriched, promptFileText, zipName }
     console.log('[export-pack] payload', payload.mode, payload.assets.length, 'assets')
 
     try {
@@ -834,12 +838,13 @@ async function triggerExportZip(
 
 // ── Download Assets Button ──
 
-function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileText }: {
+function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileText, zipName }: {
     assets: AssetDescriptor[]
     mode: 'prompt' | 'column' | 'pack'
     label: string
     exportNameMap: Map<string, string>
     promptFileText?: string
+    zipName?: string
 }) {
     const [busy, setBusy] = useState(false)
 
@@ -848,11 +853,11 @@ function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileTe
         if (busy || assets.length === 0) return
         setBusy(true)
         try {
-            await triggerExportZip(mode, assets, exportNameMap, promptFileText)
+            await triggerExportZip(mode, assets, exportNameMap, promptFileText, zipName)
         } finally {
             setBusy(false)
         }
-    }, [assets, mode, busy, exportNameMap, promptFileText])
+    }, [assets, mode, busy, exportNameMap, promptFileText, zipName])
 
     if (assets.length === 0) return null
 
@@ -869,7 +874,9 @@ function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileTe
 
 // ── Component ──
 
-export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVisualId, outputVideoNodeId, onClose }: ProductionLaunchPanelProps) {
+export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVisualId, outputVideoNodeId, sceneIndex, shotIndex, takeNumber, onClose }: ProductionLaunchPanelProps) {
+    const pad2 = (n: number) => String(n).padStart(2, '0')
+    const zipPrefix = `cb_S${pad2(sceneIndex + 1)}_Sh${shotIndex}_T${pad2(takeNumber)}`
     const promptNodes = useMemo(() => nodes.filter(n => n.type === 'prompt'), [nodes])
     const imageNodes = useMemo(() => nodes.filter(n => n.type === 'image'), [nodes])
     const noteNodes = useMemo(() => nodes.filter(n => n.type === 'note'), [nodes])
@@ -1033,6 +1040,9 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                 <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 shrink-0">
                     <div className="flex items-center gap-3">
                         <h2 className="text-sm font-semibold text-zinc-100">Production Launch</h2>
+                        <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-bold tracking-wide uppercase text-zinc-300 bg-zinc-800 border border-zinc-600 rounded">
+                            Take {pad2(takeNumber)}
+                        </span>
                         {isApproved ? (
                             <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-medium tracking-wide uppercase text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded">
                                 Production Ready
@@ -1068,8 +1078,9 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                 const copyBlock = formatPromptBlock(entry, gIdx, refs, incomingNotes, notesOn, exportNameMap)
 
                                 return (
-                                    <div key={entry.node.id} className="mb-5">
-                                        <div className="flex items-center justify-between mb-1.5">
+                                    <div key={entry.node.id} className="mb-3 bg-zinc-800/40 border border-zinc-700/60 rounded-lg p-4">
+                                        {/* Card header */}
+                                        <div className="flex items-center justify-between mb-2">
                                             <div className="flex items-center gap-2">
                                                 <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
                                                     {entry.label}
@@ -1086,13 +1097,15 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                             </span>
                                         </div>
 
+                                        {/* Body */}
                                         <textarea
                                             readOnly
                                             value={entry.body || '(empty)'}
-                                            className="w-full bg-zinc-800/50 border border-zinc-700 rounded text-xs text-zinc-300 p-3 resize-none focus:outline-none"
+                                            className="w-full bg-zinc-900/60 border border-zinc-700/40 rounded text-xs text-zinc-300 p-3 resize-none focus:outline-none"
                                             rows={Math.min(Math.max(entry.body.split('\n').length, 3), 10)}
                                         />
 
+                                        {/* Refs */}
                                         {refs.length > 0 && (
                                             <div className="flex flex-wrap gap-1.5 mt-2">
                                                 {refs.map(ref => (
@@ -1101,22 +1114,10 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                             </div>
                                         )}
 
-                                        <div className="flex items-center gap-2 mt-1.5">
-                                            <CopyButton text={copyBlock} label="Copy Block" />
-                                            {(() => {
-                                                const promptAssets = buildAssetsFromRefs(refs, fvId, outId)
-                                                return (
-                                                    <DownloadAssetsButton
-                                                        assets={promptAssets}
-                                                        mode="prompt"
-                                                        label="Download"
-                                                        exportNameMap={exportNameMap}
-                                                        promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock)}
-                                                    />
-                                                )
-                                            })()}
+                                        {/* Action bar — bottom right */}
+                                        <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-zinc-700/30">
                                             {incomingNotes.length > 0 && (
-                                                <label className="flex items-center gap-1 cursor-pointer select-none ml-1">
+                                                <label className="flex items-center gap-1 cursor-pointer select-none mr-auto">
                                                     <input
                                                         type="checkbox"
                                                         checked={notesOn}
@@ -1128,6 +1129,20 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                     </span>
                                                 </label>
                                             )}
+                                            <CopyButton text={copyBlock} label="Copy Block" />
+                                            {(() => {
+                                                const promptAssets = buildAssetsFromRefs(refs, fvId, outId)
+                                                return (
+                                                    <DownloadAssetsButton
+                                                        assets={promptAssets}
+                                                        mode="prompt"
+                                                        label="Download"
+                                                        exportNameMap={exportNameMap}
+                                                        promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock)}
+                                                        zipName={`${zipPrefix}_p${pad2(gIdx + 1)}.zip`}
+                                                    />
+                                                )
+                                            })()}
                                         </div>
                                     </div>
                                 )
@@ -1151,10 +1166,11 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                     all.push(...buildAssetsFromAttachments(colAttachments))
                                     return dedupeAssets(all)
                                 })()
+                                const colSlug = cg.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 20) || 'col'
                                 return (
-                                    <div key={cg.columnId} className="mb-6">
+                                    <div key={cg.columnId} className="mb-4 bg-blue-950/20 border border-blue-500/15 rounded-lg p-4">
                                         {/* Column header */}
-                                        <div className="flex items-center justify-between mb-3 pb-1.5 border-b border-zinc-600/60">
+                                        <div className="flex items-center justify-between mb-3 pb-2 border-b border-blue-500/20">
                                             <div className="flex items-center gap-2">
                                                 <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300">
                                                     ▸ {cg.title}
@@ -1165,7 +1181,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                             </div>
                                             <div className="flex items-center gap-2">
                                                 <CopyButton text={columnBlockText} label="Copy Column Block" />
-                                                <DownloadAssetsButton assets={columnAssets} mode="column" label="Download" exportNameMap={exportNameMap} promptFileText={buildPromptFileText(columnAssets, exportNameMap, columnBlockText)} />
+                                                <DownloadAssetsButton assets={columnAssets} mode="column" label="Download" exportNameMap={exportNameMap} promptFileText={buildPromptFileText(columnAssets, exportNameMap, columnBlockText)} zipName={`${zipPrefix}_col-${colSlug}.zip`} />
                                             </div>
                                         </div>
 
@@ -1178,8 +1194,9 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                             const copyBlock = formatPromptBlock(entry, gIdx, refs, incomingNotes, notesOn, exportNameMap)
 
                                             return (
-                                                <div key={entry.node.id} className="mb-5 ml-3 border-l-2 border-blue-500/20 pl-3">
-                                                    <div className="flex items-center justify-between mb-1.5">
+                                                <div key={entry.node.id} className="mb-3 bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3 ml-2">
+                                                    {/* Card header */}
+                                                    <div className="flex items-center justify-between mb-2">
                                                         <div className="flex items-center gap-2">
                                                             <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
                                                                 {entry.label}
@@ -1199,7 +1216,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                     <textarea
                                                         readOnly
                                                         value={entry.body || '(empty)'}
-                                                        className="w-full bg-zinc-800/50 border border-zinc-700 rounded text-xs text-zinc-300 p-3 resize-none focus:outline-none"
+                                                        className="w-full bg-zinc-900/60 border border-zinc-700/40 rounded text-xs text-zinc-300 p-3 resize-none focus:outline-none"
                                                         rows={Math.min(Math.max(entry.body.split('\n').length, 3), 10)}
                                                     />
 
@@ -1211,22 +1228,10 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                         </div>
                                                     )}
 
-                                                    <div className="flex items-center gap-2 mt-1.5">
-                                                        <CopyButton text={copyBlock} label="Copy Block" />
-                                                        {(() => {
-                                                            const promptAssets = buildAssetsFromRefs(refs, fvId, outId)
-                                                            return (
-                                                                <DownloadAssetsButton
-                                                                    assets={promptAssets}
-                                                                    mode="prompt"
-                                                                    label="Download"
-                                                                    exportNameMap={exportNameMap}
-                                                                    promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock)}
-                                                                />
-                                                            )
-                                                        })()}
+                                                    {/* Action bar — bottom right */}
+                                                    <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-zinc-700/30">
                                                         {incomingNotes.length > 0 && (
-                                                            <label className="flex items-center gap-1 cursor-pointer select-none ml-1">
+                                                            <label className="flex items-center gap-1 cursor-pointer select-none mr-auto">
                                                                 <input
                                                                     type="checkbox"
                                                                     checked={notesOn}
@@ -1238,23 +1243,37 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                                 </span>
                                                             </label>
                                                         )}
+                                                        <CopyButton text={copyBlock} label="Copy Block" />
+                                                        {(() => {
+                                                            const promptAssets = buildAssetsFromRefs(refs, fvId, outId)
+                                                            return (
+                                                                <DownloadAssetsButton
+                                                                    assets={promptAssets}
+                                                                    mode="prompt"
+                                                                    label="Download"
+                                                                    exportNameMap={exportNameMap}
+                                                                    promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock)}
+                                                                    zipName={`${zipPrefix}_p${pad2(gIdx + 1)}.zip`}
+                                                                />
+                                                            )
+                                                        })()}
                                                     </div>
                                                 </div>
                                             )
                                         })}
 
-                                        {/* Column Notes count (visible if any) */}
+                                        {/* Column Notes */}
                                         {colNotes.length > 0 && (
-                                            <div className="ml-3 pl-3 border-l-2 border-blue-500/20">
+                                            <div className="ml-2 mt-1">
                                                 <span className="text-[9px] text-zinc-600 italic">
                                                     {colNotes.length} column note{colNotes.length !== 1 ? 's' : ''} {includeColumnNotes ? '(included in pack)' : '(toggle below to include)'}
                                                 </span>
                                             </div>
                                         )}
 
-                                        {/* Column Attachments — unlinked media inside column */}
+                                        {/* Column Attachments */}
                                         {colAttachments.length > 0 && (
-                                            <div className="ml-3 pl-3 border-l-2 border-blue-500/20 mt-2">
+                                            <div className="ml-2 mt-2">
                                                 <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 block mb-1.5">
                                                     Column Attachments ({colAttachments.length})
                                                 </span>
@@ -1289,6 +1308,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                         label="Download Pack"
                                         exportNameMap={exportNameMap}
                                         promptFileText={buildPromptFileText(allPackAssets, exportNameMap, promptPack)}
+                                        zipName={`${zipPrefix}_pack.zip`}
                                     />
                                     {hasNotes && (
                                         <label className="flex items-center gap-1.5 cursor-pointer select-none">
@@ -1320,9 +1340,9 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                             )}
                         </div>
 
-                        {/* Right Column: Media Kit (INVARIATO) */}
+                        {/* Right Column: Media Kit */}
                         <div className="w-[360px] shrink-0 px-6 py-4 overflow-y-auto">
-                            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-4">Media Kit</h3>
+                            <h3 className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-4">Media Kit</h3>
 
                             {!hasImages && (
                                 <p className="text-xs text-zinc-600 italic">No images in this Take.</p>
@@ -1330,7 +1350,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
 
                             {images.firstFrame && (
                                 <div className="mb-4">
-                                    <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400 block mb-2">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 block mb-2">
                                         First Frame
                                     </span>
                                     <ImageThumbnail entry={images.firstFrame} />
@@ -1339,7 +1359,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
 
                             {images.lastFrame && (
                                 <div className="mb-4">
-                                    <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-400 block mb-2">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 block mb-2">
                                         Last Frame
                                     </span>
                                     <ImageThumbnail entry={images.lastFrame} />
@@ -1348,7 +1368,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
 
                             {images.references.length > 0 && (
                                 <div>
-                                    <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 block mb-2">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block mb-2">
                                         References ({images.references.length})
                                     </span>
                                     <div className="grid grid-cols-2 gap-2">
@@ -1422,7 +1442,7 @@ function RefChip({ ref_, currentFinalVisualId, outputVideoNodeId }: {
 // ── Image thumbnail sub-component (INVARIATO) ──
 
 function ImageThumbnail({ entry, compact }: { entry: ImageEntry; compact?: boolean }) {
-    const height = compact ? 'h-20' : 'h-32'
+    const height = compact ? 'h-24' : 'h-36'
 
     return (
         <div className="group relative">
