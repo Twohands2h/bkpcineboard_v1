@@ -1565,7 +1565,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                     const fr = (node.data as any).frame_role
                                     const label = fr === 'first' ? 'FF' : fr === 'last' ? 'LF' : null
                                     if (!label) return null
-                                    const color = fr === 'first' ? 'text-cyan-400 border-cyan-500/40' : 'text-violet-400 border-violet-500/40'
+                                    const color = 'text-zinc-200 border-zinc-600/60'
                                     return <div className="absolute left-0 pointer-events-none select-none" style={{ top: -18, transform: `scale(${1 / viewport.scale})`, transformOrigin: 'bottom left' }}><div className={`px-1 py-0.5 rounded bg-zinc-900/90 border text-[9px] leading-none font-bold ${color}`}>{label}</div></div>
                                 })()}
                                 {/* Frame role toggle — selected image only */}
@@ -1576,8 +1576,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                         setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
                                     }
                                     return <div className="absolute left-0 flex gap-0.5 select-none" style={{ bottom: -22, transform: `scale(${1 / viewport.scale})`, transformOrigin: 'top left' }}>
-                                        <button onClick={e => { e.stopPropagation(); setRole(fr === 'first' ? null : 'first') }} className={`px-1.5 py-0.5 rounded text-[9px] font-bold leading-none border transition-colors ${fr === 'first' ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300'}`}>FF</button>
-                                        <button onClick={e => { e.stopPropagation(); setRole(fr === 'last' ? null : 'last') }} className={`px-1.5 py-0.5 rounded text-[9px] font-bold leading-none border transition-colors ${fr === 'last' ? 'bg-violet-500/20 text-violet-300 border-violet-500/40' : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300'}`}>LF</button>
+                                        <button onClick={e => { e.stopPropagation(); setRole(fr === 'first' ? null : 'first') }} className={`px-1.5 py-0.5 rounded text-[9px] font-bold leading-none border transition-colors ${fr === 'first' ? 'bg-zinc-700/60 text-zinc-100 border-zinc-500/60' : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300'}`}>FF</button>
+                                        <button onClick={e => { e.stopPropagation(); setRole(fr === 'last' ? null : 'last') }} className={`px-1.5 py-0.5 rounded text-[9px] font-bold leading-none border transition-colors ${fr === 'last' ? 'bg-zinc-700/60 text-zinc-100 border-zinc-500/60' : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300'}`}>LF</button>
                                     </div>
                                 })()}
                             </NodeShell>
