@@ -471,6 +471,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         storage_path: storagePath,
         naturalWidth: dimensions.w,
         naturalHeight: dimensions.h,
+        display_name: file.name,
       })
 
       // 3. Upload async to pre-determined path
@@ -517,6 +518,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         src: previewUrl,
         storage_path: storagePath,
         filename: file.name,
+        display_name: file.name,
         mime_type: file.type || 'video/mp4',
         size: file.size,
       })
@@ -1110,6 +1112,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                   const nodeId = canvasRef.current?.createImageNodeAtScreen(screenX, screenY, {
                     src: previewUrl, storage_path: storagePath,
                     naturalWidth: dimensions.w, naturalHeight: dimensions.h,
+                    display_name: file.name,
                   })
                   const { error: uploadError } = await supabase.storage
                     .from(bucket)
@@ -1122,7 +1125,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 } else {
                   const nodeId = canvasRef.current?.createVideoNodeAtScreen(screenX, screenY, {
                     src: previewUrl, storage_path: storagePath,
-                    filename: file.name, mime_type: file.type || 'video/mp4', size: file.size,
+                    filename: file.name, display_name: file.name, mime_type: file.type || 'video/mp4', size: file.size,
                   })
                   const { error: uploadError } = await supabase.storage
                     .from(bucket)
@@ -1181,10 +1184,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 ? canvasRef.current?.createImageNodeAtScreen(sx, sy, {
                   src: p.previewUrl, storage_path: p.storagePath,
                   naturalWidth: dim.w, naturalHeight: dim.h,
+                  display_name: p.file.name,
                 })
                 : canvasRef.current?.createVideoNodeAtScreen(sx, sy, {
                   src: p.previewUrl, storage_path: p.storagePath,
-                  filename: p.file.name, mime_type: p.file.type || 'video/mp4', size: p.file.size,
+                  filename: p.file.name, display_name: p.file.name, mime_type: p.file.type || 'video/mp4', size: p.file.size,
                 })
 
               if (nodeId) items.push({ ...p, nodeId } as any)

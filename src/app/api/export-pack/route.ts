@@ -11,13 +11,14 @@ interface AssetDescriptor {
     bucket: string
     storagePath: string
     originalFilename: string
+    exportName?: string
     role: 'ref' | 'attachment' | 'final_visual' | 'output'
 }
 
 interface ExportPackBody {
     mode: 'prompt' | 'column' | 'pack'
     assets: AssetDescriptor[]
-    promptPackText?: string
+    promptFileText?: string
 }
 
 // ── Helpers ──
@@ -114,45 +115,25 @@ export async function POST(req: NextRequest) {
 
         const assets = assetsFiltered
 
-        // ── 3. Assign deterministic names ──
+        // ── 3. Use client-provided export names (human filenames, collision-resolved) ──
         interface ResolvedAsset {
             descriptor: AssetDescriptor
             exportName: string
             zipPath: string
         }
 
-        let refCounter = 0
         const resolved: ResolvedAsset[] = []
-        const usedNames = new Set<string>()
 
         for (const asset of assets) {
-            const origExt = extFromFilename(asset.originalFilename)
-            let baseName: string
-            let ext = origExt
-
-            if (asset.role === 'final_visual') {
-                baseName = 'FV'
-                if (!ext) ext = asset.type === 'video' ? '.mp4' : '.png'
-            } else if (asset.role === 'output') {
-                baseName = 'OUTPUT'
-                if (!ext) ext = '.mp4'
-            } else {
-                refCounter++
-                baseName = `REF_${String(refCounter).padStart(2, '0')}`
-                if (!ext) ext = '.bin'
+            // Client sends exportName; fallback to originalFilename or generic name
+            let exportName = asset.exportName || asset.originalFilename || `file-${asset.nodeId.substring(0, 8)}`
+            // Ensure extension
+            const ext = extFromFilename(exportName)
+            if (!ext) {
+                exportName += asset.type === 'video' ? '.mp4' : '.png'
             }
 
-            let exportName = `${baseName}${ext}`
-            if (usedNames.has(exportName)) {
-                exportName = `${baseName}_${asset.nodeId.substring(0, 6)}${ext}`
-            }
-            usedNames.add(exportName)
-
-            const zipPath = (asset.role === 'final_visual' || asset.role === 'output')
-                ? exportName
-                : `refs/${exportName}`
-
-            resolved.push({ descriptor: asset, exportName, zipPath })
+            resolved.push({ descriptor: asset, exportName, zipPath: exportName })
         }
 
         // ── 4. Build ZIP ──
@@ -232,17 +213,9 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        // prompt.txt — text from PLP already uses REF_01 names, just add upload order header
-        if (body.promptPackText) {
-            const fileList = resolved.map(ra => ra.exportName)
-            const header = [
-                'UPLOAD IMAGES IN THIS ORDER:',
-                ...fileList,
-                '',
-                '─'.repeat(40),
-                '',
-            ].join('\n')
-            archive.append(header + body.promptPackText, { name: 'prompt.txt' })
+        // 00_prompt.txt — complete content (header + body) built by PLP client
+        if (body.promptFileText) {
+            archive.append(body.promptFileText, { name: '00_prompt.txt' })
         }
 
         // ── 5. Finalize archive, then await collected buffer ──
