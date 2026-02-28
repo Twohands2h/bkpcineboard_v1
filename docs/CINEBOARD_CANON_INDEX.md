@@ -40,7 +40,7 @@ Prima di introdurre nuove UI surface o cambiare flussi core:
 
 ## 4) Active UX Proposals / Pending Amendments
 
-### AD-PENDING — Inspector Overlay Panel (“Drawer”)
+### AD-001 — Inspector Overlay Panel (“Drawer”)
 Status: PENDING (needs Amendment; Bibbia è congelata)  
 Evidence/Spec: `docs/CINEBOARD_DRAWER_INSPECTOR_ENTITIES_CANON.md`  
 Keywords: inspector, overlay, drawer, provenance, entity pack
