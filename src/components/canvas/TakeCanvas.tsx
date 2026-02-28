@@ -66,6 +66,8 @@ interface TakeCanvasProps {
     outputVideoNodeId?: string | null
     onSetOutputVideo?: (nodeId: string, videoSrc: string) => void
     onClearOutputVideo?: () => void
+    onSelectionChange?: (selectedIds: Set<string>, primaryId: string | null) => void
+    onToggleInspector?: () => void
 }
 
 export type CanvasNode = NoteNode | ImageNode | VideoNode | ColumnNode | PromptNode
@@ -175,7 +177,7 @@ interface SelectionBoxRect { left: number; top: number; width: number; height: n
 interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onSetFinalVisual, onClearFinalVisual, currentFinalVisualNodeId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, ratingMap, onSetRating }, ref) {
+    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onSetFinalVisual, onClearFinalVisual, currentFinalVisualNodeId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, ratingMap, onSetRating, onSelectionChange, onToggleInspector }, ref) {
         const [nodes, _setNodesRaw] = useState<CanvasNode[]>(() => initialNodes ?? [])
         const [edges, _setEdgesRaw] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
@@ -255,6 +257,9 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const selectedNodeIdsRef = useRef<Set<string>>(selectedNodeIds); useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds }, [selectedNodeIds])
         const primarySelectedId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null
         const activeNodeId = primarySelectedId ?? hoveredNodeId
+
+        // Emit selection changes to workspace (read-only consumption for Inspector)
+        useEffect(() => { onSelectionChange?.(selectedNodeIds, primarySelectedId) }, [selectedNodeIds, primarySelectedId, onSelectionChange])
 
         const setDetachingOffset = useCallback((val: { dx: number; dy: number } | null) => {
             detachingOffsetRef.current = val; setDetachingOffsetState(val)
@@ -1190,6 +1195,12 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
                 if (mod && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo() }
 
+                // Inspector toggle: I (no modifier, not editing, not in input)
+                if (e.key === 'i' && !mod && !e.shiftKey && !e.altKey && interactionMode !== 'editing') {
+                    const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
+                    e.preventDefault(); onToggleInspector?.()
+                }
+
                 // Copy: selected nodes + internal edges, strip editorial fields
                 if (mod && e.key === 'c' && !e.shiftKey && interactionMode === 'idle') {
                     const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
@@ -1395,7 +1406,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             }
             window.addEventListener('keydown', kd); window.addEventListener('keyup', ku)
             return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku) }
-        }, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange, endInteraction])
+        }, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange, endInteraction, onToggleInspector])
 
         // R4-005: Double-click canvas = reset viewport
         // R4-005b: Only on truly empty canvas — not on nodes, columns, or their children
@@ -1565,7 +1576,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                     const fr = (node.data as any).frame_role
                                     const label = fr === 'first' ? 'FF' : fr === 'last' ? 'LF' : null
                                     if (!label) return null
-                                    const color = 'text-zinc-200 border-zinc-600/60'
+                                    const color = fr === 'first' ? 'text-cyan-400 border-cyan-500/40' : 'text-violet-400 border-violet-500/40'
                                     return <div className="absolute left-0 pointer-events-none select-none" style={{ top: -18, transform: `scale(${1 / viewport.scale})`, transformOrigin: 'bottom left' }}><div className={`px-1 py-0.5 rounded bg-zinc-900/90 border text-[9px] leading-none font-bold ${color}`}>{label}</div></div>
                                 })()}
                                 {/* Frame role toggle — selected image only */}
@@ -1576,8 +1587,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                         setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
                                     }
                                     return <div className="absolute left-0 flex gap-0.5 select-none" style={{ bottom: -22, transform: `scale(${1 / viewport.scale})`, transformOrigin: 'top left' }}>
-                                        <button onClick={e => { e.stopPropagation(); setRole(fr === 'first' ? null : 'first') }} className={`px-1.5 py-0.5 rounded text-[9px] font-bold leading-none border transition-colors ${fr === 'first' ? 'bg-zinc-700/60 text-zinc-100 border-zinc-500/60' : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300'}`}>FF</button>
-                                        <button onClick={e => { e.stopPropagation(); setRole(fr === 'last' ? null : 'last') }} className={`px-1.5 py-0.5 rounded text-[9px] font-bold leading-none border transition-colors ${fr === 'last' ? 'bg-zinc-700/60 text-zinc-100 border-zinc-500/60' : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300'}`}>LF</button>
+                                        <button onClick={e => { e.stopPropagation(); setRole(fr === 'first' ? null : 'first') }} className={`px-1.5 py-0.5 rounded text-[9px] font-bold leading-none border transition-colors ${fr === 'first' ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300'}`}>FF</button>
+                                        <button onClick={e => { e.stopPropagation(); setRole(fr === 'last' ? null : 'last') }} className={`px-1.5 py-0.5 rounded text-[9px] font-bold leading-none border transition-colors ${fr === 'last' ? 'bg-violet-500/20 text-violet-300 border-violet-500/40' : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300'}`}>LF</button>
                                     </div>
                                 })()}
                             </NodeShell>
