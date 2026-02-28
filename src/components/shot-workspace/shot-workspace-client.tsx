@@ -26,6 +26,7 @@ import { ProductionLaunchPanel } from '@/components/production/production-launch
 import { createClient } from '@/lib/supabase/client'
 import { SceneShotStrip, setLastTakeForShot, type StripScene, type StripShot } from './scene-shot-strip'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
+import { InspectorPanel } from '@/components/inspector/inspector-panel'
 
 // ===================================================
 // SHOT WORKSPACE CLIENT — ORCHESTRATOR (R4-003)
@@ -155,12 +156,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const router = useRouter()
   const searchParams = useSearchParams()
 
-  const [takes, setTakes] = useState<Take[]>(() =>
-    initialTakes.map((t, index) => {
-      const n = typeof t.take_number === 'number' ? t.take_number : (index + 1)
-      return { ...t, name: `Take ${String(n).padStart(2, '0')}` }
-    })
-  )
+  const [takes, setTakes] = useState<Take[]>(initialTakes)
 
   const takeFromUrl = searchParams.get('take')
   const defaultTakeId = (takeFromUrl && takes.some(t => t.id === takeFromUrl))
@@ -182,6 +178,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   const [readyTakeId, setReadyTakeId] = useState<string | null>(null)
   const [readyPayload, setReadyPayload] = useState<SnapshotPayload | undefined>(undefined)
+  // Live nodes ref for Inspector: updated on every canvas change, read-only consumption
+  const liveNodesRef = useRef<CanvasNode[]>([])
 
   // Viewport persist: restore from sessionStorage, driven only by readyTakeId
   const readyViewport = useMemo<ViewportState>(() => {
@@ -328,6 +326,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   }, [projectId, shot.scene_id, shot.id, currentTakeId])
 
   const handleNodesChange = useCallback((nodes: CanvasNode[], edges: CanvasEdge[]) => {
+    liveNodesRef.current = nodes
     if (persistTimerRef.current) {
       clearTimeout(persistTimerRef.current)
     }
@@ -402,6 +401,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           }
         }
         setReadyPayload(payload)
+        liveNodesRef.current = payload?.nodes ?? []
 
         setIsLoading(false)
       })
@@ -476,7 +476,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         storage_path: storagePath,
         naturalWidth: dimensions.w,
         naturalHeight: dimensions.h,
-        display_name: file.name,
       })
 
       // 3. Upload async to pre-determined path
@@ -523,7 +522,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         src: previewUrl,
         storage_path: storagePath,
         filename: file.name,
-        display_name: file.name,
         mime_type: file.type || 'video/mp4',
         size: file.size,
       })
@@ -559,7 +557,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         const localTake: Take = {
           id: newTake.id,
           shot_id: newTake.shot_id ?? shot.id,
-          name: `Take ${pad2(newTake.take_number)}`,
+          name: `Take ${newTake.take_number}`,
           description: null,
           status: newTake.status,
           order_index: prev.length,
@@ -636,7 +634,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         const localTake: Take = {
           id: newTake.id,
           shot_id: newTake.shot_id ?? shot.id,
-          name: `Take ${pad2(newTake.take_number)}`,
+          name: `Take ${newTake.take_number}`,
           description: null,
           status: newTake.status,
           order_index: prev.length,
@@ -738,6 +736,41 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [showPLP, setShowPLP] = useState(false)
   const [plpNodes, setPlpNodes] = useState<CanvasNode[]>([])
   const [plpEdges, setPlpEdges] = useState<CanvasEdge[]>([])
+
+  // ── Inspector Overlay (read-only, no persistence) ──
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const inspectorSelectionRef = useRef<{ ids: Set<string>; primaryId: string | null }>({ ids: new Set(), primaryId: null })
+  const [inspectorPrimaryId, setInspectorPrimaryId] = useState<string | null>(null)
+
+  const handleSelectionChange = useCallback((ids: Set<string>, primaryId: string | null) => {
+    inspectorSelectionRef.current = { ids, primaryId }
+    // Only trigger re-render if inspector is open — avoids render storms when closed
+    if (inspectorOpen) setInspectorPrimaryId(primaryId)
+  }, [inspectorOpen])
+
+  const handleToggleInspector = useCallback(() => {
+    setInspectorOpen(prev => {
+      if (!prev) {
+        // Opening: sync current selection from ref
+        setInspectorPrimaryId(inspectorSelectionRef.current.primaryId)
+      }
+      return !prev
+    })
+  }, [])
+
+  // When inspector is open and selection changes, keep it synced
+  useEffect(() => {
+    if (inspectorOpen) setInspectorPrimaryId(inspectorSelectionRef.current.primaryId)
+  }, [inspectorOpen])
+
+  // Auto-close inspector when PLP or Export opens (safe UX)
+  useEffect(() => { if (showPLP || exportNodes) setInspectorOpen(false) }, [showPLP, exportNodes])
+
+  // Derive inspected node from live nodes
+  const inspectorNode = useMemo(() => {
+    if (!inspectorOpen || !inspectorPrimaryId) return null
+    return liveNodesRef.current.find(n => n.id === inspectorPrimaryId) ?? null
+  }, [inspectorOpen, inspectorPrimaryId])
 
   const handleOpenPLP = () => {
     if (!canvasRef.current) return
@@ -1117,7 +1150,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                   const nodeId = canvasRef.current?.createImageNodeAtScreen(screenX, screenY, {
                     src: previewUrl, storage_path: storagePath,
                     naturalWidth: dimensions.w, naturalHeight: dimensions.h,
-                    display_name: file.name,
                   })
                   const { error: uploadError } = await supabase.storage
                     .from(bucket)
@@ -1130,7 +1162,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 } else {
                   const nodeId = canvasRef.current?.createVideoNodeAtScreen(screenX, screenY, {
                     src: previewUrl, storage_path: storagePath,
-                    filename: file.name, display_name: file.name, mime_type: file.type || 'video/mp4', size: file.size,
+                    filename: file.name, mime_type: file.type || 'video/mp4', size: file.size,
                   })
                   const { error: uploadError } = await supabase.storage
                     .from(bucket)
@@ -1189,11 +1221,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 ? canvasRef.current?.createImageNodeAtScreen(sx, sy, {
                   src: p.previewUrl, storage_path: p.storagePath,
                   naturalWidth: dim.w, naturalHeight: dim.h,
-                  display_name: p.file.name,
                 })
                 : canvasRef.current?.createVideoNodeAtScreen(sx, sy, {
                   src: p.previewUrl, storage_path: p.storagePath,
-                  filename: p.file.name, display_name: p.file.name, mime_type: p.file.type || 'video/mp4', size: p.file.size,
+                  filename: p.file.name, mime_type: p.file.type || 'video/mp4', size: p.file.size,
                 })
 
               if (nodeId) items.push({ ...p, nodeId } as any)
@@ -1284,6 +1315,31 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 })
                 await setShotMediaRating({ shotId: shot.id, storagePath, rating })
               }}
+              onSelectionChange={handleSelectionChange}
+              onToggleInspector={handleToggleInspector}
+            />
+          )}
+
+          {/* Inspector handle icon — right edge, visible only when inspector is closed */}
+          {!inspectorOpen && readyTakeId && (
+            <button
+              onClick={handleToggleInspector}
+              className="absolute right-0 top-1/2 -translate-y-1/2 z-20 w-6 h-12 bg-zinc-800/80 hover:bg-zinc-700 border border-r-0 border-zinc-600/60 rounded-l flex items-center justify-center transition-colors"
+              title="Inspector (I)"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-400">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="16" x2="12" y2="12" />
+                <line x1="12" y1="8" x2="12.01" y2="8" />
+              </svg>
+            </button>
+          )}
+
+          {/* Inspector overlay — absolute right, z-30 (under PLP z-50, under modals z-[99999]) */}
+          {inspectorOpen && readyTakeId && (
+            <InspectorPanel
+              node={inspectorNode}
+              onClose={() => setInspectorOpen(false)}
             />
           )}
 
@@ -1300,9 +1356,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           nodes={plpNodes}
           edges={plpEdges}
           isApproved={shot.approved_take_id === readyTakeId}
-          sceneIndex={sceneIdx}
-          shotIndex={shot.order_index}
-          takeNumber={takes.find(t => t.id === currentTakeId)?.take_number ?? 1}
+
           onClose={() => setShowPLP(false)}
         />
       )}
