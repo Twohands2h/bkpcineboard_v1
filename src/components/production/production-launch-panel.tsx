@@ -394,7 +394,7 @@ function resolvePromptRefs(
 
         // Rank: FV=0, Output=1, Asset(promoted)=2, others=3
         let rank = 3
-        if (node.type === 'image' && currentFinalVisualId && (node.data as any).promotedSelectionId === currentFinalVisualId) {
+        if (node.type === 'image' && currentFinalVisualId && node.id === currentFinalVisualId) {
             rank = 0
         } else if (node.type === 'video' && node.id === outputVideoNodeId) {
             rank = 1
@@ -423,7 +423,7 @@ function resolvePromptRefs(
 }
 
 function refRoleTag(ref: PromptRef, currentFinalVisualId: string | null, outputVideoNodeId: string | null): string | null {
-    if (ref.node.type === 'image' && currentFinalVisualId && (ref.node.data as any).promotedSelectionId === currentFinalVisualId) return 'FV'
+    if (ref.node.type === 'image' && currentFinalVisualId && ref.node.id === currentFinalVisualId) return 'FV'
     if (ref.node.type === 'video' && ref.node.id === outputVideoNodeId) return 'Output'
     if (ref.node.type === 'image' && (ref.node.data as any).promotedSelectionId) return 'Asset'
     return null
@@ -688,7 +688,7 @@ function buildAssetsFromRefs(
         if (seen.has(ref.node.id)) continue
         seen.add(ref.node.id)
         let role: 'ref' | 'final_visual' | 'output' = 'ref'
-        if (ref.node.type === 'image' && currentFinalVisualId && (ref.node.data as any).promotedSelectionId === currentFinalVisualId) role = 'final_visual'
+        if (ref.node.type === 'image' && currentFinalVisualId && ref.node.id === currentFinalVisualId) role = 'final_visual'
         else if (ref.node.type === 'video' && ref.node.id === outputVideoNodeId) role = 'output'
         const desc = nodeToAssetDescriptor(ref.node, role)
         if (desc) assets.push(desc)
@@ -904,7 +904,7 @@ function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileTe
 
 export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVisualId, outputVideoNodeId, sceneIndex, shotIndex, takeNumber, onClose }: ProductionLaunchPanelProps) {
     const pad2 = (n: number) => String(n).padStart(2, '0')
-    const zipPrefix = `cb_S${pad2(sceneIndex + 1)}_Sh${shotIndex}_T${pad2(takeNumber)}`
+    const zipPrefix = `cb_S${pad2(sceneIndex + 1)}_Sh${pad2(shotIndex + 1)}_T${pad2(takeNumber)}`
     const promptNodes = useMemo(() => nodes.filter(n => n.type === 'prompt'), [nodes])
     const mediaNodes = useMemo(() => nodes.filter(n => n.type === 'image' || n.type === 'video'), [nodes])
     const noteNodes = useMemo(() => nodes.filter(n => n.type === 'note'), [nodes])
@@ -1507,6 +1507,7 @@ function MediaThumbnail({ entry, compact }: { entry: MediaEntry; compact?: boole
                         <>
                             <video
                                 src={entry.src}
+                                autoPlay
                                 muted
                                 playsInline
                                 preload="metadata"

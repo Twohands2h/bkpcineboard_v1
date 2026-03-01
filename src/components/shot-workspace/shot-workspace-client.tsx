@@ -1369,7 +1369,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           nodes={plpNodes}
           edges={plpEdges}
           isApproved={shot.approved_take_id === readyTakeId}
-
+          currentFinalVisualId={finalVisual?.takeId === readyTakeId ? (finalVisual?.nodeId ?? null) : null}
+          outputVideoNodeId={shotOutputNodeId}
+          sceneIndex={sceneIdx}
+          shotIndex={shot.order_index}
+          takeNumber={currentTake?.take_number ?? 1}
           onClose={() => setShowPLP(false)}
         />
       )}
