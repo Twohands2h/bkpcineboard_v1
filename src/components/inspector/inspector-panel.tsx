@@ -76,7 +76,8 @@ interface InspectorPanelProps {
 
 // ── Component ──
 
-export function InspectorPanel({ node, onClose, onUpdateNodeData }: InspectorPanelProps) {
+export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEdit }: InspectorPanelProps) {
+
     const filename = useMemo(() => node ? humanFilename(node.data as any) : null, [node])
     const dimensions = useMemo(() => node ? formatDimensions(node) : null, [node])
     const data = (node?.data ?? {}) as Record<string, any>
