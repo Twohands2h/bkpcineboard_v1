@@ -27,7 +27,11 @@ import { createClient } from '@/lib/supabase/client'
 import { SceneShotStrip, setLastTakeForShot, type StripScene, type StripShot } from './scene-shot-strip'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { InspectorPanel } from '@/components/inspector/inspector-panel'
+import { EntityLibrary } from '@/components/entities/entity-library-v3'
 
+
+import { crystallizeEntityAction } from '@/app/actions/entities'
+import type { Entity } from '@/app/actions/entities'
 // ===================================================
 // SHOT WORKSPACE CLIENT — ORCHESTRATOR (R4-003)
 // ===================================================
@@ -738,7 +742,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [showPLP, setShowPLP] = useState(false)
   const [plpNodes, setPlpNodes] = useState<CanvasNode[]>([])
   const [plpEdges, setPlpEdges] = useState<CanvasEdge[]>([])
-
+  const [showEntityLibrary, setShowEntityLibrary] = useState(false)
   // ── Inspector Overlay (read-only, no persistence) ──
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const inspectorOpenRef = useRef(false)
@@ -798,6 +802,75 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     }
     setShowPLP(true)
   }
+  const handleInsertEntityRef = useCallback((entity: Entity) => {
+    if (!canvasRef.current) return
+    // Insert at canvas center
+    canvasRef.current.createEntityRefNodeAtScreen(
+      window.innerWidth / 2,
+      window.innerHeight / 2,
+      {
+        entity_id: entity.id,
+        entity_name: entity.name,
+        entity_type: entity.entity_type,
+        thumbnail_path: (entity.content as any)?.thumbnail_path,
+      }
+    )
+    setShowEntityLibrary(false)
+  }, [])
+
+  const handleCrystallize = useCallback(async () => {
+    if (!canvasRef.current) return
+    const snap = canvasRef.current.getSnapshot()
+    const selectedIds = canvasRef.current.getSelectedNodeIds()  // need to expose this
+    if (!selectedIds || selectedIds.length === 0) return
+
+    // Collect content from selected nodes for entity
+    const selectedNodes = snap.nodes.filter(n => selectedIds.includes(n.id))
+    const entityContent = {
+      media: selectedNodes.filter(n => n.type === 'image' || n.type === 'video').map(n => ({
+        storage_path: n.data.storage_path ?? '',
+        bucket: n.type === 'video' ? 'take-videos' : 'take-images',
+        display_name: n.data.display_name ?? n.data.filename ?? '',
+        asset_type: (n.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+      })).filter(m => m.storage_path),
+      prompts: selectedNodes.filter(n => n.type === 'prompt').map(n => ({
+        body: n.data.body ?? n.data.text ?? '',
+        promptType: n.data.promptType ?? 'prompt',
+        origin: n.data.origin ?? 'Manual',
+        title: n.data.title ?? '',
+      })).filter(p => p.body),
+      notes: selectedNodes.filter(n => n.type === 'note').map(n => ({
+        body: n.data.body ?? n.data.text ?? '',
+      })).filter(n => n.body),
+    }
+
+    // Create the entity (prompt user for name — or use first prompt title)
+    const defaultName = entityContent.prompts[0]?.title
+      || selectedNodes[0]?.data?.title
+      || 'New Entity'
+    const entityName = prompt('Entity name:', defaultName)
+    if (!entityName) return
+    console.log('[crystallize] STEP 1 - about to create entity', projectId, entityName)  // ← AGGIUNGI
+
+    const entity = await crystallizeEntityAction({
+      projectId,
+      name: entityName,
+      entityType: 'character',  // default, user can change in edit
+      content: entityContent,
+    })
+    console.log('[crystallize] STEP 2 - entity result:', entity)  // ← AGGIUNGI
+    if (!entity) return
+
+
+    // Replace selection with entity ref node
+    canvasRef.current.crystallize({
+      entity_id: entity.id,
+      entity_name: entity.name,
+      entity_type: entity.entity_type,
+      thumbnail_path: (entity.content as any)?.thumbnail_path,
+    })
+  }, [projectId])
+
 
   // ── Shot Final Visual ──
   const fvUndoStackRef = useRef<{ nodeId: string | null; takeId: string | null }[]>([])
@@ -964,7 +1037,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       <div className="flex-1 flex">
         <aside className="w-12 bg-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
           {/* Tool rail ALTO: azioni */}
-
+          <button onClick={() => setShowEntityLibrary(true)} title="Entity Library">
+            👤
+          </button>
           {/* More menu (⋯) — secondary actions */}
           <div className="relative group">
             <button
@@ -1091,6 +1166,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
             title="Drag to canvas to create Prompt"
           >
             <span className="text-[9px] text-amber-400 pointer-events-none">Prm</span>
+          </button>
+          <button onClick={handleCrystallize} title="Crystallize Selection → Entity">
+            💎
           </button>
         </aside>
 
@@ -1377,7 +1455,13 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           onClose={() => setShowPLP(false)}
         />
       )}
-
+      {showEntityLibrary && (
+        <EntityLibrary
+          projectId={projectId}
+          onClose={() => setShowEntityLibrary(false)}
+          onInsertRef={handleInsertEntityRef}
+        />
+      )}
       {exportNodes && readyTakeId && (
         <ExportTakeModal
           takeId={readyTakeId}

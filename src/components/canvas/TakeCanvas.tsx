@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHand
 import { NodeShell } from './NodeShell'
 import { NoteContent, ImageContent, ColumnContent, VideoContent, type NoteData, type ImageData, type ColumnData, type VideoData } from './NodeContent'
 import { PromptContent, type PromptData, type PromptType } from './PromptContent'
+import { EntityRefContent, type EntityRefData } from './NodeContent'
 import { ImageInspectOverlay } from './ImageInspectOverlay'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import {
@@ -51,6 +52,8 @@ const PROMPT_DEFAULT_HEIGHT = 180
 const VIDEO_DEFAULT_WIDTH = 360
 const VIDEO_DEFAULT_HEIGHT = 240
 
+const ENTITY_REF_DEFAULT_WIDTH = 160
+const ENTITY_REF_DEFAULT_HEIGHT = 120
 interface TakeCanvasProps {
     takeId: string
     initialNodes?: CanvasNode[]
@@ -70,34 +73,42 @@ interface TakeCanvasProps {
     onToggleInspector?: () => void
 }
 
-export type CanvasNode = NoteNode | ImageNode | VideoNode | ColumnNode | PromptNode
+export type CanvasNode = NoteNode | ImageNode | VideoNode | ColumnNode | PromptNode | EntityRefNode
 
 interface NoteNode { id: string; type: 'note'; x: number; y: number; width: number; height: number; zIndex: number; data: NoteData & { parentId?: string | null } }
 interface ImageNode { id: string; type: 'image'; x: number; y: number; width: number; height: number; zIndex: number; data: ImageData & { parentId?: string | null; origin_prompt_id?: string; aspectRatio?: number } }
 interface VideoNode { id: string; type: 'video'; x: number; y: number; width: number; height: number; zIndex: number; data: VideoData & { parentId?: string | null } }
 interface ColumnNode { id: string; type: 'column'; x: number; y: number; width: number; height: number; zIndex: number; data: ColumnData & { expandedHeight?: number; childOrder?: string[] } }
 interface PromptNode { id: string; type: 'prompt'; x: number; y: number; width: number; height: number; zIndex: number; data: PromptData & { parentId?: string | null } }
-
+interface EntityRefNode {
+    id: string; type: 'entity_ref'; x: number; y: number;
+    width: number; height: number; zIndex: number;
+    data: EntityRefData & { parentId?: string | null }
+}
 export interface CanvasEdge { id: string; from: string; to: string; label?: string }
 
 export interface TakeCanvasHandle {
     getSnapshot: () => { nodes: CanvasNode[]; edges: CanvasEdge[] }
+    getSelectedNodeIds: () => string[]
     createNodeAt: (x: number, y: number) => void
     createImageNodeAt: (x: number, y: number, imageData: ImageData) => string
     createVideoNodeAt: (x: number, y: number, videoData: VideoData) => string
     createColumnNodeAt: (x: number, y: number) => void
     createPromptNodeAt: (x: number, y: number) => void
+    createEntityRefNodeAt: (x: number, y: number, refData: EntityRefData) => string
     createNodeAtScreen: (screenX: number, screenY: number) => void
     createImageNodeAtScreen: (screenX: number, screenY: number, imageData: ImageData) => string
     createVideoNodeAtScreen: (screenX: number, screenY: number, videoData: VideoData) => string
     createColumnNodeAtScreen: (screenX: number, screenY: number) => void
     createPromptNodeAtScreen: (screenX: number, screenY: number) => void
+    createEntityRefNodeAtScreen: (screenX: number, screenY: number, refData: EntityRefData) => string
     getCanvasRect: () => DOMRect | null
     getViewportScale: () => number
     updateNodeData: (nodeId: string, patch: Record<string, any>) => void
     updateNodeDataWithHistory: (nodeId: string, patch: Record<string, any>) => void
     beginBatch: () => void
     endBatch: () => void
+    crystallize: (entityRefData: EntityRefData) => string | null
 }
 
 type InteractionMode = 'idle' | 'dragging' | 'editing' | 'resizing' | 'selecting' | 'connecting' | 'panning'
@@ -459,6 +470,27 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
         }, [pushHistory, emitNodesChange])
 
+        const createEntityRefNodeAt = useCallback((x: number, y: number, refData: EntityRefData): string => {
+            const n: EntityRefNode = {
+                id: crypto.randomUUID(),
+                type: 'entity_ref',
+                x: Math.round(x - ENTITY_REF_DEFAULT_WIDTH / 2),
+                y: Math.round(y - ENTITY_REF_DEFAULT_HEIGHT / 2),
+                width: ENTITY_REF_DEFAULT_WIDTH,
+                height: ENTITY_REF_DEFAULT_HEIGHT,
+                zIndex: nodesRef.current.length + 1,
+                data: refData,
+            }
+            setNodes(p => [...p, n])
+            setSelectedNodeIds(new Set([n.id]))
+            setSelectedEdgeId(null)
+            setEditingEdgeLabel(null)
+            setInteractionMode('idle')
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+            return n.id
+        }, [pushHistory, emitNodesChange])
+
+
         // Screen-coordinate delegates: convert screen → world, then call world-coordinate creators.
         // Encapsulates viewport knowledge inside TakeCanvas. Sidebar never sees viewport.
         const screenToWorldCoord = useCallback((screenX: number, screenY: number) => {
@@ -485,6 +517,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             const w = screenToWorldCoord(sx, sy); createPromptNodeAt(w.x, w.y)
         }, [screenToWorldCoord, createPromptNodeAt])
 
+        const createEntityRefNodeAtScreen = useCallback((sx: number, sy: number, refData: EntityRefData): string => {
+            const w = screenToWorldCoord(sx, sy); return createEntityRefNodeAt(w.x, w.y, refData)
+        }, [screenToWorldCoord, createEntityRefNodeAt])
+
         const updateNodeData = useCallback((nodeId: string, patch: Record<string, any>) => {
             setNodes(p => p.map(n => n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n))
             setTimeout(emitNodesChange, 0)
@@ -507,12 +543,53 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
         useImperativeHandle(ref, () => ({
             getSnapshot: () => ({ nodes: structuredClone(nodes), edges: structuredClone(edges) }),
-            createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt,
+            getSelectedNodeIds: () => Array.from(selectedNodeIdsRef.current),
+            createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createEntityRefNodeAt, createEntityRefNodeAtScreen,
             createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen,
             getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
             getViewportScale: () => viewportRef.current.scale,
             updateNodeData, updateNodeDataWithHistory, beginBatch, endBatch,
-        }), [nodes, edges, createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen, updateNodeData, updateNodeDataWithHistory, beginBatch, endBatch])
+            crystallize: (entityRefData: EntityRefData): string | null => {
+                const selected = Array.from(selectedNodeIdsRef.current)
+                if (selected.length === 0) return null
+
+                // Compute center of selection for entity_ref placement
+                const selectedNodes = nodesRef.current.filter(n => selected.includes(n.id))
+                if (selectedNodes.length === 0) return null
+
+                const minX = Math.min(...selectedNodes.map(n => n.x))
+                const maxX = Math.max(...selectedNodes.map(n => n.x + n.width))
+                const minY = Math.min(...selectedNodes.map(n => n.y))
+                const maxY = Math.max(...selectedNodes.map(n => n.y + n.height))
+                const cx = (minX + maxX) / 2
+                const cy = (minY + maxY) / 2
+
+                // Remove selected nodes and their edges
+                const removeIds = new Set(selected)
+                setNodes(prev => prev.filter(n => !removeIds.has(n.id)))
+                setEdges(prev => prev.filter(e => !removeIds.has(e.from) && !removeIds.has(e.to)))
+
+                // Insert entity ref node at center
+                const refNode: EntityRefNode = {
+                    id: crypto.randomUUID(),
+                    type: 'entity_ref',
+                    x: Math.round(cx - ENTITY_REF_DEFAULT_WIDTH / 2),
+                    y: Math.round(cy - ENTITY_REF_DEFAULT_HEIGHT / 2),
+                    width: ENTITY_REF_DEFAULT_WIDTH,
+                    height: ENTITY_REF_DEFAULT_HEIGHT,
+                    zIndex: nodesRef.current.length + 1,
+                    data: entityRefData,
+                }
+
+                setNodes(prev => [...prev, refNode])
+                setSelectedNodeIds(new Set([refNode.id]))
+
+                // Push to history so Undo restores original nodes
+                setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+
+                return refNode.id
+            }
+        }), [nodes, edges, createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createEntityRefNodeAt, createEntityRefNodeAtScreen, createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen, updateNodeData, updateNodeDataWithHistory, beginBatch, endBatch])
 
         useEffect(() => {
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
@@ -1570,7 +1647,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                     : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} isFinalVisual={node.id === currentFinalVisualNodeId} onInspect={() => setInspectImage({ src: node.data.src, naturalWidth: node.data.naturalWidth, naturalHeight: node.data.naturalHeight, storagePath: node.data.storage_path })} />
                                         : node.type === 'video' ? <VideoContent data={node.data} viewportScale={viewport.scale} />
                                             : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
-                                                : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
+                                                : node.type === 'entity_ref' ? <EntityRefContent data={node.data as EntityRefData} />
+                                                    : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
                                 {/* Passive rating indicator — outside top-right */}
                                 {(node.type === 'image' || node.type === 'video') && (() => {
                                     const sp = (node.data as any)?.storage_path

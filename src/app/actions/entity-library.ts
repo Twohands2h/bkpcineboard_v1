@@ -1,217 +1,1855 @@
-'use server'
+'use client'
 
-import { createClient } from '@/lib/supabase/server'
+import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle, useMemo } from 'react'
+import { NodeShell } from './NodeShell'
+import { NoteContent, ImageContent, ColumnContent, VideoContent, type NoteData, type ImageData, type ColumnData, type VideoData } from './NodeContent'
+import { PromptContent, type PromptData, type PromptType } from './PromptContent'
+import { EntityRefContent, type EntityRefData } from './NodeContent'
+import { ImageInspectOverlay } from './ImageInspectOverlay'
+import { ConfirmModal } from '@/components/ui/ConfirmModal'
+import {
+    screenToWorld,
+    screenDeltaToWorld,
+    zoomAtPoint,
+    VIEWPORT_INITIAL,
+    ZOOM_MIN,
+    ZOOM_MAX,
+    type ViewportState,
+} from '@/utils/screenToWorld'
 
-// ============================================
-// TYPES
-// ============================================
+// ===================================================
+// TAKE CANVAS — PURE WORK AREA (R4-005)
+// ===================================================
+// R4-004c: Column Spatial Influence — collapse/expand shifts nearby free nodes vertically
+// R4-005: Zoom & Pan — viewport transform, screenToWorld on all interaction points
+//
+// PRINCIPLE: Nodes live in WORLD space. The viewport transforms for display.
+//            Zoom/Pan does NOT enter undo history.
 
-export interface LibraryEntity {
-  id: string
-  name: string
-  type: 'character' | 'environment' | 'asset'
-  slug: string
-  description: string | null
-  master_prompt: string | null
-  reference_images: string[] | null
-  project_id: string
+export interface UndoHistory { stack: CanvasSnapshot[]; cursor: number }
+interface CanvasSnapshot { nodes: CanvasNode[]; edges: CanvasEdge[] }
+
+const HISTORY_MAX = 50
+const MIN_WIDTH = 120
+const MIN_HEIGHT = 80
+const MIN_IMAGE_SIZE = 32
+const COLUMN_COLLAPSED_HEIGHT = 32
+const COLUMN_DEFAULT_WIDTH = 240
+const COLUMN_DEFAULT_HEIGHT = 300
+const COLUMN_HEADER_HEIGHT = 36
+const COLUMN_PADDING = 4
+const CHILD_GAP = 4
+const COLUMN_MIN_BODY_HEIGHT = 60
+
+// R4-004c — Column Toggle: Vertical Wall Cascade
+const MIN_GAP = 15
+
+// Blocco 4 — Prompt Node (Memory Node)
+const PROMPT_DEFAULT_WIDTH = 280
+const PROMPT_DEFAULT_HEIGHT = 180
+
+// Step 1A — Video Node defaults
+const VIDEO_DEFAULT_WIDTH = 360
+const VIDEO_DEFAULT_HEIGHT = 240
+
+const ENTITY_REF_DEFAULT_WIDTH = 160
+const ENTITY_REF_DEFAULT_HEIGHT = 120
+interface TakeCanvasProps {
+    takeId: string
+    initialNodes?: CanvasNode[]
+    initialEdges?: CanvasEdge[]
+    onNodesChange?: (nodes: CanvasNode[], edges: CanvasEdge[]) => void
+    initialUndoHistory?: UndoHistory
+    onUndoHistoryChange?: (history: UndoHistory) => void
+    onSetFinalVisual?: (nodeId: string) => void
+    onClearFinalVisual?: () => void
+    currentFinalVisualNodeId?: string | null
+    ratingMap?: Record<string, number>
+    onSetRating?: (storagePath: string, rating: number) => void
+    outputVideoNodeId?: string | null
+    onSetOutputVideo?: (nodeId: string, videoSrc: string) => void
+    onClearOutputVideo?: () => void
+    onSelectionChange?: (selectedIds: Set<string>, primaryId: string | null) => void
+    onToggleInspector?: () => void
 }
 
-export interface EntityDetailWithWorkspace extends LibraryEntity {
-  status: 'active' | 'archived'
-  workspace: {
-    board_id: string
-    board_title: string
-  } | null
+export type CanvasNode = NoteNode | ImageNode | VideoNode | ColumnNode | PromptNode | EntityRefNode
+
+interface NoteNode { id: string; type: 'note'; x: number; y: number; width: number; height: number; zIndex: number; data: NoteData & { parentId?: string | null } }
+interface ImageNode { id: string; type: 'image'; x: number; y: number; width: number; height: number; zIndex: number; data: ImageData & { parentId?: string | null; origin_prompt_id?: string; aspectRatio?: number } }
+interface VideoNode { id: string; type: 'video'; x: number; y: number; width: number; height: number; zIndex: number; data: VideoData & { parentId?: string | null } }
+interface ColumnNode { id: string; type: 'column'; x: number; y: number; width: number; height: number; zIndex: number; data: ColumnData & { expandedHeight?: number; childOrder?: string[] } }
+interface PromptNode { id: string; type: 'prompt'; x: number; y: number; width: number; height: number; zIndex: number; data: PromptData & { parentId?: string | null } }
+interface EntityRefNode {
+    id: string; type: 'entity_ref'; x: number; y: number;
+    width: number; height: number; zIndex: number;
+    data: EntityRefData & { parentId?: string | null }
+}
+export interface CanvasEdge { id: string; from: string; to: string; label?: string }
+
+export interface TakeCanvasHandle {
+    getSnapshot: () => { nodes: CanvasNode[]; edges: CanvasEdge[] }
+    createNodeAt: (x: number, y: number) => void
+    createImageNodeAt: (x: number, y: number, imageData: ImageData) => string
+    createVideoNodeAt: (x: number, y: number, videoData: VideoData) => string
+    createColumnNodeAt: (x: number, y: number) => void
+    createPromptNodeAt: (x: number, y: number) => void
+    createEntityRefNodeAt: (x: number, y: number, refData: EntityRefData) => string
+    createNodeAtScreen: (screenX: number, screenY: number) => void
+    createImageNodeAtScreen: (screenX: number, screenY: number, imageData: ImageData) => string
+    createVideoNodeAtScreen: (screenX: number, screenY: number, videoData: VideoData) => string
+    createColumnNodeAtScreen: (screenX: number, screenY: number) => void
+    createPromptNodeAtScreen: (screenX: number, screenY: number) => void
+    createEntityRefNodeAtScreen: (screenX: number, screenY: number, refData: EntityRefData) => string
+    getCanvasRect: () => DOMRect | null
+    getViewportScale: () => number
+    updateNodeData: (nodeId: string, patch: Record<string, any>) => void
+    updateNodeDataWithHistory: (nodeId: string, patch: Record<string, any>) => void
+    beginBatch: () => void
+    endBatch: () => void
+    crystallize: (entityRefData: EntityRefData) => string | null
 }
 
-// ============================================
-// ACTION: Get Entities for Library
-// ============================================
+type InteractionMode = 'idle' | 'dragging' | 'editing' | 'resizing' | 'selecting' | 'connecting' | 'panning'
 
-/**
- * Recupera tutte le entities attive di un progetto
- * per la Entity Library.
- */
-export async function getEntitiesForLibraryAction(
-  projectId: string
-): Promise<LibraryEntity[]> {
-  const supabase = await createClient()
+const DRAG_THRESHOLD = 3
+const MAX_INITIAL_IMAGE_WIDTH = 400
+const MAX_INITIAL_IMAGE_HEIGHT = 300
+const EDGE_HIT_DISTANCE = 8
 
-  const { data, error } = await supabase
-    .from('entities')
-    .select('id, name, type, slug, description, master_prompt, reference_images, project_id')
-    .eq('project_id', projectId)
-    .eq('status', 'active')
-    .order('type')
-    .order('name')
-
-  if (error) {
-    console.error('Failed to fetch entities for library:', error)
-    throw new Error('Failed to fetch entities')
-  }
-
-  return data as LibraryEntity[]
+interface Rect { x: number; y: number; width: number; height: number }
+function rectCenter(r: Rect) { return { x: r.x + r.width / 2, y: r.y + r.height / 2 } }
+function edgeAnchor(r: Rect, tx: number, ty: number) {
+    const cx = r.x + r.width / 2, cy = r.y + r.height / 2, dx = tx - cx, dy = ty - cy
+    if (dx === 0 && dy === 0) return { x: cx, y: cy }
+    const s = Math.abs(dx) / (r.width / 2) > Math.abs(dy) / (r.height / 2) ? (r.width / 2) / Math.abs(dx) : (r.height / 2) / Math.abs(dy)
+    return { x: cx + dx * s, y: cy + dy * s }
+}
+function distToSeg(px: number, py: number, x1: number, y1: number, x2: number, y2: number) {
+    const dx = x2 - x1, dy = y2 - y1, l2 = dx * dx + dy * dy
+    if (l2 === 0) return Math.hypot(px - x1, py - y1)
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / l2))
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+}
+function insideColBodyRect(colRect: Rect, px: number, py: number, inflate = 0) {
+    return px >= colRect.x - inflate && px <= colRect.x + colRect.width + inflate && py >= colRect.y + COLUMN_HEADER_HEIGHT - inflate && py <= colRect.y + colRect.height + inflate
+}
+function nodeHidden(node: CanvasNode, all: CanvasNode[]) {
+    if (node.type === 'column') return false
+    const pid = (node.data as any).parentId; if (!pid) return false
+    const p = all.find(n => n.id === pid)
+    return p?.type === 'column' && !!(p.data as ColumnData).collapsed
 }
 
-// ============================================
-// ACTION: Get Entity Detail with Workspace
-// ============================================
-
-/**
- * Recupera dettaglio entity con info workspace.
- * Include anche entity archiviate (per visualizzazione read-only)
- */
-export async function getEntityDetailAction(
-  entityId: string
-): Promise<EntityDetailWithWorkspace | null> {
-  const supabase = await createClient()
-
-  // Fetch entity (inclusa archiviata - no filtro status)
-  const { data: entity, error: entityError } = await supabase
-    .from('entities')
-    .select('id, name, type, slug, description, master_prompt, reference_images, project_id, status')
-    .eq('id', entityId)
-    .single()
-
-  if (entityError) {
-    if (entityError.code === 'PGRST116') return null
-    console.error('Failed to fetch entity detail:', entityError)
-    throw new Error('Failed to fetch entity')
-  }
-
-  // Fetch workspace link (solo se entity è attiva)
-  let workspace = null
-  if (entity.status === 'active') {
-    const { data: workspaceLink } = await supabase
-      .from('board_links')
-      .select('board_id, boards!inner(title)')
-      .eq('target_type', 'entity')
-      .eq('target_id', entityId)
-      .eq('link_type', 'workspace')
-      .eq('status', 'active')
-      .maybeSingle()
-
-    if (workspaceLink) {
-      const linkData = workspaceLink as { board_id: string; boards: { title: string } }
-      workspace = {
-        board_id: linkData.board_id,
-        board_title: linkData.boards.title,
-      }
+// ── Derived layout ──
+function computeRenderRects(nodes: CanvasNode[], frozenColumnId: string | null, frozenRects: Map<string, Rect> | null): Map<string, Rect> {
+    const rects = new Map<string, Rect>()
+    for (const n of nodes) {
+        if (!(n.data as any).parentId || n.type === 'column')
+            rects.set(n.id, { x: n.x, y: n.y, width: n.width, height: n.height })
     }
-  }
-
-  return {
-    ...entity,
-    workspace,
-  } as EntityDetailWithWorkspace
+    for (const n of nodes) {
+        if (n.type !== 'column') continue
+        const col = n as ColumnNode
+        if (col.data.collapsed) { rects.set(col.id, { x: col.x, y: col.y, width: col.width, height: COLUMN_COLLAPSED_HEIGHT }); continue }
+        if (col.id === frozenColumnId && frozenRects) {
+            const children = nodes.filter(c => c.type !== 'column' && (c.data as any).parentId === col.id)
+            for (const child of children) { const fr = frozenRects.get(child.id); if (fr) rects.set(child.id, fr) }
+            const fcr = frozenRects.get(col.id)
+            if (fcr) rects.set(col.id, { ...fcr, width: col.width }); continue
+        }
+        const order = col.data.childOrder || []
+        const children = nodes.filter(c => c.type !== 'column' && (c.data as any).parentId === col.id)
+        children.sort((a, b) => { const ai = order.indexOf(a.id), bi = order.indexOf(b.id); if (ai !== -1 && bi !== -1) return ai - bi; if (ai !== -1) return -1; if (bi !== -1) return 1; return 0 })
+        const iw = col.width - COLUMN_PADDING * 2
+        let cy = col.y + COLUMN_HEADER_HEIGHT + COLUMN_PADDING
+        for (const child of children) {
+            let h = child.height
+            if (child.type === 'image') { const d = child.data as ImageData; h = Math.round(iw / (d.naturalWidth / d.naturalHeight)) }
+            rects.set(child.id, { x: col.x + COLUMN_PADDING, y: cy, width: iw, height: h }); cy += h + CHILD_GAP
+        }
+        const minHeight = COLUMN_HEADER_HEIGHT + COLUMN_MIN_BODY_HEIGHT + COLUMN_PADDING * 2
+        const contentBottom = children.length > 0 ? cy - CHILD_GAP + COLUMN_PADDING : col.y + minHeight
+        const derivedHeight = Math.max(minHeight, contentBottom - col.y)
+        rects.set(col.id, { x: col.x, y: col.y, width: col.width, height: derivedHeight })
+    }
+    return rects
 }
 
-// ============================================
-// ACTION: Create Entity Workspace
-// ============================================
-
-interface CreateWorkspaceResult {
-  success: boolean
-  error?: string
-  workspace?: {
-    board_id: string
-    board_title: string
-  }
+function getInsertionIndex(nodes: CanvasNode[], rects: Map<string, Rect>, columnId: string, dropY: number, excludeNodeId: string): number {
+    const col = nodes.find(n => n.id === columnId) as ColumnNode | undefined
+    if (!col) return 0
+    const order = (col.data.childOrder || []).filter(id => id !== excludeNodeId)
+    for (let i = 0; i < order.length; i++) { const childRect = rects.get(order[i]); if (childRect && dropY < childRect.y + childRect.height / 2) return i }
+    return order.length
 }
 
-export async function createEntityWorkspaceAction(
-  entityId: string,
-  projectId: string
-): Promise<CreateWorkspaceResult> {
-  const supabase = await createClient()
+interface SelectionBoxRect { left: number; top: number; width: number; height: number }
+interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
-  try {
-    // 1. Fetch entity per nome e tipo
-    const { data: entity, error: entityError } = await supabase
-      .from('entities')
-      .select('id, name, type, reference_images')
-      .eq('id', entityId)
-      .single()
+export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
+    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onSetFinalVisual, onClearFinalVisual, currentFinalVisualNodeId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, ratingMap, onSetRating, onSelectionChange, onToggleInspector }, ref) {
+        const [nodes, _setNodesRaw] = useState<CanvasNode[]>(() => initialNodes ?? [])
+        const [edges, _setEdgesRaw] = useState<CanvasEdge[]>(() => initialEdges ?? [])
+        const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
+        const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
+        const [editingEdgeLabel, setEditingEdgeLabel] = useState<string | null>(null)
+        const [interactionMode, setInteractionMode] = useState<InteractionMode>('idle')
+        const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
+        const [selectionBoxRect, setSelectionBoxRect] = useState<SelectionBoxRect | null>(null)
+        const [connectionGhost, setConnectionGhost] = useState<{ fromX: number; fromY: number; toX: number; toY: number } | null>(null)
+        const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
 
-    if (entityError || !entity) {
-      return { success: false, error: 'Entity not found' }
+        // Viewport state — persisted per-take in sessionStorage
+        const [viewport, setViewport] = useState<ViewportState>(() => {
+            try {
+                const raw = sessionStorage.getItem(`cineboard.viewport.v1:${takeId}`)
+                if (raw) {
+                    const v = JSON.parse(raw)
+                    if (typeof v.scale === 'number' && typeof v.offsetX === 'number' && typeof v.offsetY === 'number') return v
+                }
+            } catch { }
+            return VIEWPORT_INITIAL
+        })
+        const viewportRef = useRef<ViewportState>(viewport)
+        useEffect(() => {
+            viewportRef.current = viewport
+            const t = setTimeout(() => {
+                try { sessionStorage.setItem(`cineboard.viewport.v1:${takeId}`, JSON.stringify({ scale: viewport.scale, offsetX: viewport.offsetX, offsetY: viewport.offsetY })) } catch { }
+            }, 120)
+            return () => clearTimeout(t)
+        }, [viewport, takeId])
+        const spaceDownRef = useRef(false)
+        const panRef = useRef<{ startMouseX: number; startMouseY: number; startOffsetX: number; startOffsetY: number } | null>(null)
+
+        // Batch mode: suppress per-node pushHistory/emitNodesChange during multi-create
+        const batchRef = useRef(false)
+
+        const detachingRef = useRef<DetachingState | null>(null)
+        const detachingOffsetRef = useRef<{ dx: number; dy: number } | null>(null)
+        const [detachingOffsetState, setDetachingOffsetState] = useState<{ dx: number; dy: number } | null>(null)
+        const [frozenColumnId, setFrozenColumnId] = useState<string | null>(null)
+        const frozenRectsRef = useRef<Map<string, Rect> | null>(null)
+        const dropTargetColIdRef = useRef<string | null>(null)
+        const [dropTargetColId, setDropTargetColId] = useState<string | null>(null)
+        const columnRectsRef = useRef<Map<string, Rect> | null>(null)
+
+        // R4.0a: Image Inspect overlay
+        const [inspectImage, setInspectImage] = useState<{ src: string; naturalWidth: number; naturalHeight: number; storagePath?: string } | null>(null)
+        const [confirmState, setConfirmState] = useState<{ title: string; body: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void } | null>(null)
+
+        const canvasRef = useRef<HTMLDivElement>(null)
+        const dragRef = useRef<{ nodeId: string; offsets: Map<string, { startX: number; startY: number }>; startMouseX: number; startMouseY: number; hasMoved: boolean } | null>(null)
+        const resizeRef = useRef<{ nodeId: string; startWidth: number; startHeight: number; startMouseX: number; startMouseY: number; aspectRatio: number | null } | null>(null)
+        const selBoxRef = useRef<{ startX: number; startY: number; canvasRect: DOMRect } | null>(null)
+        const connectionRef = useRef<{ fromNodeId: string; startX: number; startY: number; canvasRect: DOMRect } | null>(null)
+
+        const shiftedNodesRef = useRef<Map<string, Map<string, number>>>(new Map())
+        const dataChangeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+        const nodesRef = useRef<CanvasNode[]>(nodes)
+        const edgesRef = useRef<CanvasEdge[]>(edges)
+        // Eager ref sync: wrappers keep refs in sync inside the updater,
+        // before React renders, so setTimeout(emitNodesChange, 0) always reads fresh state.
+        const setNodes = useCallback((updater: CanvasNode[] | ((prev: CanvasNode[]) => CanvasNode[])) => {
+            _setNodesRaw(prev => {
+                const next = typeof updater === 'function' ? updater(prev) : updater
+                nodesRef.current = next
+                return next
+            })
+        }, [])
+        const setEdges = useCallback((updater: CanvasEdge[] | ((prev: CanvasEdge[]) => CanvasEdge[])) => {
+            _setEdgesRaw(prev => {
+                const next = typeof updater === 'function' ? updater(prev) : updater
+                edgesRef.current = next
+                return next
+            })
+        }, [])
+        const selectedNodeIdsRef = useRef<Set<string>>(selectedNodeIds); useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds }, [selectedNodeIds])
+        const primarySelectedId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null
+        const activeNodeId = primarySelectedId ?? hoveredNodeId
+
+        // Emit selection changes to workspace (read-only consumption for Inspector)
+        useEffect(() => { onSelectionChange?.(selectedNodeIds, primarySelectedId) }, [selectedNodeIds, primarySelectedId, onSelectionChange])
+
+        const setDetachingOffset = useCallback((val: { dx: number; dy: number } | null) => {
+            detachingOffsetRef.current = val; setDetachingOffsetState(val)
+        }, [])
+
+        // R4-005: Helper — get world coords from mouse event
+        const mouseToWorld = useCallback((e: MouseEvent | React.MouseEvent): { x: number; y: number } => {
+            const cr = canvasRef.current?.getBoundingClientRect()
+            if (!cr) return { x: 0, y: 0 }
+            return screenToWorld(e.clientX - cr.left, e.clientY - cr.top, viewportRef.current)
+        }, [])
+
+        const baseRenderRects = useMemo(() => computeRenderRects(nodes, frozenColumnId, frozenRectsRef.current), [nodes, frozenColumnId])
+        const renderRects = useMemo(() => {
+            if (!detachingRef.current || !detachingOffsetState) return baseRenderRects
+            const d = detachingRef.current, result = new Map(baseRenderRects)
+            result.set(d.nodeId, { x: d.frozenRect.x + detachingOffsetState.dx, y: d.frozenRect.y + detachingOffsetState.dy, width: d.frozenRect.width, height: d.frozenRect.height })
+            return result
+        }, [baseRenderRects, detachingOffsetState])
+
+        // ── History ──
+        const historyRef = useRef<UndoHistory>(initialUndoHistory ? structuredClone(initialUndoHistory) : { stack: [{ nodes: structuredClone(initialNodes ?? []), edges: structuredClone(initialEdges ?? []) }], cursor: 0 })
+        const emitNodesChange = useCallback(() => { if (onNodesChange) onNodesChange(structuredClone(nodesRef.current), structuredClone(edgesRef.current)) }, [onNodesChange])
+        const emitHistoryChange = useCallback(() => { if (onUndoHistoryChange) onUndoHistoryChange(structuredClone(historyRef.current)) }, [onUndoHistoryChange])
+        const pushHistory = useCallback(() => {
+            const h = historyRef.current; h.stack = h.stack.slice(0, h.cursor + 1)
+            h.stack.push({ nodes: structuredClone(nodesRef.current), edges: structuredClone(edgesRef.current) })
+            if (h.stack.length > HISTORY_MAX) h.stack.shift(); else h.cursor++; emitHistoryChange()
+        }, [emitHistoryChange])
+        const undo = useCallback(() => {
+            const h = historyRef.current; if (h.cursor <= 0) return
+            h.cursor--
+            const p = structuredClone(h.stack[h.cursor])
+            setNodes(p.nodes); setEdges(p.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0)
+        }, [emitNodesChange, emitHistoryChange])
+        const redo = useCallback(() => {
+            const h = historyRef.current; if (h.cursor >= h.stack.length - 1) return
+            h.cursor++
+            const n = structuredClone(h.stack[h.cursor])
+            setNodes(n.nodes); setEdges(n.edges); emitHistoryChange(); setTimeout(emitNodesChange, 0)
+        }, [emitNodesChange, emitHistoryChange])
+
+        // ── R4-005: Zoom (Ctrl+Wheel) + R4-005b: Trackpad Pan (plain Wheel) ──
+        useEffect(() => {
+            const el = canvasRef.current; if (!el) return
+            const handleWheel = (e: WheelEvent) => {
+                // Ctrl/Meta + Wheel = Zoom (trackpad pinch also sends ctrlKey)
+                if (e.ctrlKey || e.metaKey) {
+                    e.preventDefault()
+                    const cr = el.getBoundingClientRect()
+                    const screenX = e.clientX - cr.left
+                    const screenY = e.clientY - cr.top
+                    const delta = -e.deltaY * 0.01
+                    const vp = viewportRef.current
+                    const newScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, vp.scale + delta))
+                    if (newScale === vp.scale) return
+                    setViewport(zoomAtPoint(vp, screenX, screenY, newScale))
+                    return
+                }
+
+                // R4-005b: Plain wheel (two-finger trackpad swipe) = Pan
+                e.preventDefault()
+                const vp = viewportRef.current
+                setViewport({
+                    ...vp,
+                    offsetX: vp.offsetX - e.deltaX,
+                    offsetY: vp.offsetY - e.deltaY,
+                })
+            }
+            el.addEventListener('wheel', handleWheel, { passive: false })
+            return () => el.removeEventListener('wheel', handleWheel)
+        }, [])
+
+        // ── Create ──
+        const createNodeAt = useCallback((x: number, y: number) => {
+            // x, y are expected in WORLD coordinates (caller converts if needed)
+            const n: NoteNode = { id: crypto.randomUUID(), type: 'note', x: Math.round(x - 100), y: Math.round(y - 60), width: 200, height: 120, zIndex: nodesRef.current.length + 1, data: {} }
+            const rects = computeRenderRects(nodesRef.current, null, null)
+            let targetColId: string | null = null
+            for (const c of nodesRef.current) {
+                if (c.type !== 'column' || (c as ColumnNode).data.collapsed) continue
+                const cr = rects.get(c.id)
+                if (cr && insideColBodyRect(cr, x, y)) { targetColId = c.id; break }
+            }
+            if (targetColId) {
+                (n.data as any).parentId = targetColId
+                const insertIdx = getInsertionIndex(nodesRef.current, rects, targetColId, y, n.id)
+                setNodes(p => p.map(nd => {
+                    if (nd.id === targetColId && nd.type === 'column') {
+                        const order = [...((nd as ColumnNode).data.childOrder || [])].filter(id => id !== n.id)
+                        order.splice(insertIdx, 0, n.id)
+                        return { ...nd, data: { ...nd.data, childOrder: order } }
+                    }
+                    return nd
+                }).concat(n))
+            } else {
+                setNodes(p => [...p, n])
+            }
+            setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
+
+        const createImageNodeAt = useCallback((x: number, y: number, imgData: ImageData): string => {
+            const { naturalWidth: nw, naturalHeight: nh } = imgData; const r = nw / nh
+            let w: number, h: number
+            if (nw > MAX_INITIAL_IMAGE_WIDTH || nh > MAX_INITIAL_IMAGE_HEIGHT) { if (r > MAX_INITIAL_IMAGE_WIDTH / MAX_INITIAL_IMAGE_HEIGHT) { w = MAX_INITIAL_IMAGE_WIDTH; h = w / r } else { h = MAX_INITIAL_IMAGE_HEIGHT; w = h * r } } else { w = nw; h = nh }
+            const n: ImageNode = { id: crypto.randomUUID(), type: 'image', x: Math.round(x - w / 2), y: Math.round(y - h / 2), width: Math.round(w), height: Math.round(h), zIndex: nodesRef.current.length + 1, data: imgData }
+            // Check if drop point falls inside a column → auto-parent
+            const rects = computeRenderRects(nodesRef.current, null, null)
+            let targetColId: string | null = null
+            for (const c of nodesRef.current) {
+                if (c.type !== 'column' || (c as ColumnNode).data.collapsed) continue
+                const cr = rects.get(c.id)
+                if (cr && insideColBodyRect(cr, x, y)) { targetColId = c.id; break }
+            }
+            if (targetColId) {
+                n.data = { ...n.data, parentId: targetColId } as any
+                const insertIdx = getInsertionIndex(nodesRef.current, rects, targetColId, y, n.id)
+                setNodes(p => p.map(nd => {
+                    if (nd.id === targetColId && nd.type === 'column') {
+                        const order = [...((nd as ColumnNode).data.childOrder || [])].filter(id => id !== n.id)
+                        order.splice(insertIdx, 0, n.id)
+                        return { ...nd, data: { ...nd.data, childOrder: order } }
+                    }
+                    return nd
+                }).concat(n))
+            } else {
+                setNodes(p => [...p, n])
+            }
+            setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
+            if (!batchRef.current) setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+            return n.id
+        }, [pushHistory, emitNodesChange])
+
+        // Step 1A — Video Node
+        const createVideoNodeAt = useCallback((x: number, y: number, vidData: VideoData): string => {
+            const n: VideoNode = { id: crypto.randomUUID(), type: 'video', x: Math.round(x - VIDEO_DEFAULT_WIDTH / 2), y: Math.round(y - VIDEO_DEFAULT_HEIGHT / 2), width: VIDEO_DEFAULT_WIDTH, height: VIDEO_DEFAULT_HEIGHT, zIndex: nodesRef.current.length + 1, data: vidData }
+            const rects = computeRenderRects(nodesRef.current, null, null)
+            let targetColId: string | null = null
+            for (const c of nodesRef.current) {
+                if (c.type !== 'column' || (c as ColumnNode).data.collapsed) continue
+                const cr = rects.get(c.id)
+                if (cr && insideColBodyRect(cr, x, y)) { targetColId = c.id; break }
+            }
+            if (targetColId) {
+                n.data = { ...n.data, parentId: targetColId } as any
+                const insertIdx = getInsertionIndex(nodesRef.current, rects, targetColId, y, n.id)
+                setNodes(p => p.map(nd => {
+                    if (nd.id === targetColId && nd.type === 'column') {
+                        const order = [...((nd as ColumnNode).data.childOrder || [])].filter(id => id !== n.id)
+                        order.splice(insertIdx, 0, n.id)
+                        return { ...nd, data: { ...nd.data, childOrder: order } }
+                    }
+                    return nd
+                }).concat(n))
+            } else {
+                setNodes(p => [...p, n])
+            }
+            setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
+            if (!batchRef.current) setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+            return n.id
+        }, [pushHistory, emitNodesChange])
+
+        const createColumnNodeAt = useCallback((x: number, y: number) => {
+            const n: ColumnNode = { id: crypto.randomUUID(), type: 'column', x: Math.round(x - COLUMN_DEFAULT_WIDTH / 2), y: Math.round(y - COLUMN_DEFAULT_HEIGHT / 2), width: COLUMN_DEFAULT_WIDTH, height: COLUMN_DEFAULT_HEIGHT, zIndex: nodesRef.current.length + 1, data: { collapsed: false } }
+            setNodes(p => [...p, n]); setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
+
+        // Blocco 4 — Create Prompt Node (Memory Node)
+        // Default promptType/origin assigned ONLY at creation time.
+        const createPromptNodeAt = useCallback((x: number, y: number) => {
+            const n: PromptNode = { id: crypto.randomUUID(), type: 'prompt', x: Math.round(x - PROMPT_DEFAULT_WIDTH / 2), y: Math.round(y - PROMPT_DEFAULT_HEIGHT / 2), width: PROMPT_DEFAULT_WIDTH, height: PROMPT_DEFAULT_HEIGHT, zIndex: nodesRef.current.length + 1, data: { body: '', promptType: 'prompt', origin: 'manual', createdAt: new Date().toISOString() } }
+            const rects = computeRenderRects(nodesRef.current, null, null)
+            let targetColId: string | null = null
+            for (const c of nodesRef.current) {
+                if (c.type !== 'column' || (c as ColumnNode).data.collapsed) continue
+                const cr = rects.get(c.id)
+                if (cr && insideColBodyRect(cr, x, y)) { targetColId = c.id; break }
+            }
+            if (targetColId) {
+                (n.data as any).parentId = targetColId
+                const insertIdx = getInsertionIndex(nodesRef.current, rects, targetColId, y, n.id)
+                setNodes(p => p.map(nd => {
+                    if (nd.id === targetColId && nd.type === 'column') {
+                        const order = [...((nd as ColumnNode).data.childOrder || [])].filter(id => id !== n.id)
+                        order.splice(insertIdx, 0, n.id)
+                        return { ...nd, data: { ...nd.data, childOrder: order } }
+                    }
+                    return nd
+                }).concat(n))
+            } else {
+                setNodes(p => [...p, n])
+            }
+            setSelectedNodeIds(new Set([n.id])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle')
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
+
+        const createEntityRefNodeAt = useCallback((x: number, y: number, refData: EntityRefData): string => {
+            const n: EntityRefNode = {
+                id: crypto.randomUUID(),
+                type: 'entity_ref',
+                x: Math.round(x - ENTITY_REF_DEFAULT_WIDTH / 2),
+                y: Math.round(y - ENTITY_REF_DEFAULT_HEIGHT / 2),
+                width: ENTITY_REF_DEFAULT_WIDTH,
+                height: ENTITY_REF_DEFAULT_HEIGHT,
+                zIndex: nodesRef.current.length + 1,
+                data: refData,
+            }
+            setNodes(p => [...p, n])
+            setSelectedNodeIds(new Set([n.id]))
+            setSelectedEdgeId(null)
+            setEditingEdgeLabel(null)
+            setInteractionMode('idle')
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+            return n.id
+        }, [pushHistory, emitNodesChange])
+
+
+        // Screen-coordinate delegates: convert screen → world, then call world-coordinate creators.
+        // Encapsulates viewport knowledge inside TakeCanvas. Sidebar never sees viewport.
+        const screenToWorldCoord = useCallback((screenX: number, screenY: number) => {
+            return screenToWorld(screenX, screenY, viewportRef.current)
+        }, [])
+
+        const createNodeAtScreen = useCallback((sx: number, sy: number) => {
+            const w = screenToWorldCoord(sx, sy); createNodeAt(w.x, w.y)
+        }, [screenToWorldCoord, createNodeAt])
+
+        const createImageNodeAtScreen = useCallback((sx: number, sy: number, imgData: ImageData): string => {
+            const w = screenToWorldCoord(sx, sy); return createImageNodeAt(w.x, w.y, imgData)
+        }, [screenToWorldCoord, createImageNodeAt])
+
+        const createVideoNodeAtScreen = useCallback((sx: number, sy: number, vidData: VideoData): string => {
+            const w = screenToWorldCoord(sx, sy); return createVideoNodeAt(w.x, w.y, vidData)
+        }, [screenToWorldCoord, createVideoNodeAt])
+
+        const createColumnNodeAtScreen = useCallback((sx: number, sy: number) => {
+            const w = screenToWorldCoord(sx, sy); createColumnNodeAt(w.x, w.y)
+        }, [screenToWorldCoord, createColumnNodeAt])
+
+        const createPromptNodeAtScreen = useCallback((sx: number, sy: number) => {
+            const w = screenToWorldCoord(sx, sy); createPromptNodeAt(w.x, w.y)
+        }, [screenToWorldCoord, createPromptNodeAt])
+
+        const createEntityRefNodeAtScreen = useCallback((sx: number, sy: number, refData: EntityRefData): string => {
+            const w = screenToWorldCoord(sx, sy); return createEntityRefNodeAt(w.x, w.y, refData)
+        }, [screenToWorldCoord, createEntityRefNodeAt])
+
+        const updateNodeData = useCallback((nodeId: string, patch: Record<string, any>) => {
+            setNodes(p => p.map(n => n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n))
+            setTimeout(emitNodesChange, 0)
+        }, [emitNodesChange])
+
+        // Variant with undo history — used by Inspector provenance edits only
+        const updateNodeDataWithHistory = useCallback((nodeId: string, patch: Record<string, any>) => {
+            setNodes(p => p.map(n => n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n))
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
+
+        const beginBatch = useCallback(() => { batchRef.current = true }, [])
+        const endBatch = useCallback(() => {
+            batchRef.current = false
+            // Defer to next microtask: React 18 batches setState updaters,
+            // nodesRef.current is only synced when updaters execute during commit.
+            // setTimeout(0) ensures we read the fully-updated nodesRef.
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
+
+        useImperativeHandle(ref, () => ({
+            getSnapshot: () => ({ nodes: structuredClone(nodes), edges: structuredClone(edges) }),
+            createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createEntityRefNodeAt, createEntityRefNodeAtScreen,
+            createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen,
+            getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
+            getViewportScale: () => viewportRef.current.scale,
+            updateNodeData, updateNodeDataWithHistory, beginBatch, endBatch,
+            crystallize: (entityRefData: EntityRefData): string | null => {
+            const selected = Array.from(selectedNodeIdsRef.current)
+            if (selected.length === 0) return null
+
+            // Compute center of selection for entity_ref placement
+            const selectedNodes = nodesRef.current.filter(n => selected.includes(n.id))
+            if (selectedNodes.length === 0) return null
+
+            const minX = Math.min(...selectedNodes.map(n => n.x))
+            const maxX = Math.max(...selectedNodes.map(n => n.x + n.width))
+            const minY = Math.min(...selectedNodes.map(n => n.y))
+            const maxY = Math.max(...selectedNodes.map(n => n.y + n.height))
+            const cx = (minX + maxX) / 2
+            const cy = (minY + maxY) / 2
+
+            // Remove selected nodes and their edges
+            const removeIds = new Set(selected)
+            setNodes(prev => prev.filter(n => !removeIds.has(n.id)))
+            setEdges(prev => prev.filter(e => !removeIds.has(e.from) && !removeIds.has(e.to)))
+
+            // Insert entity ref node at center
+            const refNode: EntityRefNode = {
+                id: crypto.randomUUID(),
+                type: 'entity_ref',
+                x: Math.round(cx - ENTITY_REF_DEFAULT_WIDTH / 2),
+                y: Math.round(cy - ENTITY_REF_DEFAULT_HEIGHT / 2),
+                width: ENTITY_REF_DEFAULT_WIDTH,
+                height: ENTITY_REF_DEFAULT_HEIGHT,
+                zIndex: nodesRef.current.length + 1,
+                data: entityRefData,
+            }
+
+            setNodes(prev => [...prev, refNode])
+            setSelectedNodeIds(new Set([refNode.id]))
+
+            // Push to history so Undo restores original nodes
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+
+            return refNode.id
+        }
+    }), [nodes, edges, createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createEntityRefNodeAt, createEntityRefNodeAtScreen, createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen, updateNodeData, updateNodeDataWithHistory, beginBatch, endBatch])
+
+    useEffect(() => {
+        setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
+        dragRef.current = null; resizeRef.current = null; selBoxRef.current = null; connectionRef.current = null
+        detachingRef.current = null; setDetachingOffset(null); setFrozenColumnId(null); frozenRectsRef.current = null
+        dropTargetColIdRef.current = null; setDropTargetColId(null); columnRectsRef.current = null
+        shiftedNodesRef.current = new Map()
+        if (dataChangeTimerRef.current) { clearTimeout(dataChangeTimerRef.current); dataChangeTimerRef.current = null }
+        // Restore viewport for new take (or default)
+        try {
+            const raw = sessionStorage.getItem(`cineboard.viewport.v1:${takeId}`)
+            if (raw) {
+                const v = JSON.parse(raw)
+                if (typeof v.scale === 'number' && typeof v.offsetX === 'number' && typeof v.offsetY === 'number') { setViewport(v); return }
+            }
+        } catch { }
+        setViewport(VIEWPORT_INITIAL)
+        setSelectionBoxRect(null); setConnectionGhost(null)
+    }, [takeId])
+
+// ── Content measured ──
+const handleContentMeasured = useCallback((nodeId: string, measuredHeight: number) => {
+    const node = nodesRef.current.find(n => n.id === nodeId)
+    if (!node || (node.type !== 'note' && node.type !== 'prompt')) return
+    if (!(node.data as any).parentId) return
+    const rounded = Math.ceil(measuredHeight)
+    if (Math.abs(node.height - rounded) < 1) return
+    setNodes(p => p.map(n => n.id === nodeId ? { ...n, height: rounded } : n))
+}, [])
+
+// ============================================
+// DRAG (R4-005: delta converted to world space)
+// ============================================
+const handleWindowMouseMove = useCallback((e: MouseEvent) => {
+    // R4-005: Pan mode (Space + Drag)
+    if (panRef.current) {
+        const dx = e.clientX - panRef.current.startMouseX
+        const dy = e.clientY - panRef.current.startMouseY
+        setViewport({
+            ...viewportRef.current,
+            offsetX: panRef.current.startOffsetX + dx,
+            offsetY: panRef.current.startOffsetY + dy,
+        })
+        return
     }
 
-    // 2. Verifica che non esista già una workspace
-    const { data: existingLink } = await supabase
-      .from('board_links')
-      .select('id')
-      .eq('target_type', 'entity')
-      .eq('target_id', entityId)
-      .eq('link_type', 'workspace')
-      .eq('status', 'active')
-      .maybeSingle()
+    if (!dragRef.current) return
+    const screenDx = e.clientX - dragRef.current.startMouseX
+    const screenDy = e.clientY - dragRef.current.startMouseY
+    if (!dragRef.current.hasMoved && Math.hypot(screenDx, screenDy) > DRAG_THRESHOLD) { dragRef.current.hasMoved = true; setInteractionMode('dragging') }
+    if (!dragRef.current.hasMoved) return
+    e.preventDefault()
 
-    if (existingLink) {
-      return { success: false, error: 'Workspace already exists' }
+    // R4-005: Convert screen delta to world delta
+    const { dx, dy } = screenDeltaToWorld(screenDx, screenDy, viewportRef.current.scale)
+
+    if (detachingRef.current) {
+        setDetachingOffset({ dx, dy })
+        const det = detachingRef.current
+        const fx = det.frozenRect.x + dx, fy = det.frozenRect.y + dy
+        const cx = fx + det.frozenRect.width / 2, cy = fy + det.frozenRect.height / 2
+        let hovered: string | null = null
+        if (columnRectsRef.current) {
+            for (const [colId, cr] of columnRectsRef.current) {
+                if (colId === det.nodeId) continue
+                if (insideColBodyRect(cr, cx, cy, 24)) { hovered = colId; break }
+            }
+        }
+        if (hovered !== dropTargetColIdRef.current) { dropTargetColIdRef.current = hovered; setDropTargetColId(hovered) }
+        return
+    }
+    const off = dragRef.current.offsets
+    setNodes(p => p.map(n => { const o = off.get(n.id); return o ? { ...n, x: o.startX + dx, y: o.startY + dy } : n }))
+    // Column drop overlay — free drag (single node, not already parented)
+    if (off.size === 1 && columnRectsRef.current) {
+        const [dragId] = off.keys()
+        const o = off.get(dragId)!
+        const nd = nodesRef.current.find(n => n.id === dragId)
+        if (nd && nd.type !== 'column' && !(nd.data as any).parentId) {
+            const ncx = o.startX + dx + nd.width / 2
+            const ncy = o.startY + dy + nd.height / 2
+            let hovered: string | null = null
+            for (const [colId, cr] of columnRectsRef.current) {
+                if (colId === dragId) continue
+                if (insideColBodyRect(cr, ncx, ncy, 24)) { hovered = colId; break }
+            }
+            if (hovered !== dropTargetColIdRef.current) { dropTargetColIdRef.current = hovered; setDropTargetColId(hovered) }
+        }
+    }
+}, [])
+
+const handleWindowMouseUp = useCallback(() => {
+    window.removeEventListener('mousemove', handleWindowMouseMove)
+    window.removeEventListener('mouseup', handleWindowMouseUp)
+
+    // R4-005: End pan
+    if (panRef.current) { panRef.current = null; setInteractionMode('idle'); return }
+
+    if (!dragRef.current?.hasMoved) {
+        dragRef.current = null; detachingRef.current = null; setDetachingOffset(null)
+        setFrozenColumnId(null); frozenRectsRef.current = null
+        dropTargetColIdRef.current = null; setDropTargetColId(null); columnRectsRef.current = null; return
     }
 
-    // 3. Crea nuova board
-    const boardTitle = `${entity.name} — Workspace`
-    const { data: newBoard, error: boardError } = await supabase
-      .from('boards')
-      .insert({
-        project_id: projectId,
-        title: boardTitle,
-        description: `Workspace for ${entity.type}: ${entity.name}`,
-      })
-      .select('id')
-      .single()
+    const det = detachingRef.current
+    const off = detachingOffsetRef.current
+    detachingRef.current = null; setDetachingOffset(null); setFrozenColumnId(null); frozenRectsRef.current = null
+    dropTargetColIdRef.current = null; setDropTargetColId(null); columnRectsRef.current = null
+    if (det && off) {
+        const fx = det.frozenRect.x + off.dx, fy = det.frozenRect.y + off.dy
+        const cx = fx + det.frozenRect.width / 2, cy = fy + det.frozenRect.height / 2
 
-    if (boardError) {
-      return { success: false, error: 'Failed to create board' }
+        setNodes(prev => {
+            const rects = computeRenderRects(prev, null, null)
+            let targetColId: string | null = null
+            for (const n of prev) {
+                if (n.type !== 'column' || n.id === det.nodeId || (n as ColumnNode).data.collapsed) continue
+                const colRect = rects.get(n.id)
+                if (colRect && insideColBodyRect(colRect, cx, cy, 12)) { targetColId = n.id; break }
+            }
+            const insertIdx = targetColId ? getInsertionIndex(prev, rects, targetColId, cy, det.nodeId) : 0
+
+            return prev.map(n => {
+                if (n.id === det.nodeId) {
+                    return targetColId
+                        ? { ...n, data: { ...n.data, parentId: targetColId } }
+                        : { ...n, x: fx, y: fy, width: det.frozenRect.width, data: { ...n.data, parentId: null } }
+                }
+                if (n.type === 'column') {
+                    const col = n as ColumnNode; let order = [...(col.data.childOrder || [])]
+                    if (n.id === det.originalParentId && n.id === targetColId) { order = order.filter(id => id !== det.nodeId); order.splice(insertIdx, 0, det.nodeId); return { ...n, data: { ...n.data, childOrder: order } } }
+                    if (n.id === targetColId) { order = order.filter(id => id !== det.nodeId); order.splice(insertIdx, 0, det.nodeId); return { ...n, data: { ...n.data, childOrder: order } } }
+                    if (n.id === det.originalParentId && n.id !== targetColId) { return { ...n, data: { ...n.data, childOrder: order.filter(id => id !== det.nodeId) } } }
+                }
+                return n
+            })
+        })
+    } else {
+        const ids = new Set(dragRef.current!.offsets.keys())
+        setNodes(prev => {
+            let u = [...prev]
+            for (const id of ids) {
+                const rects = computeRenderRects(u, null, null)
+                const nd = u.find(n => n.id === id)
+                if (!nd || nd.type === 'column' || (nd.data as any).parentId) continue
+                const ncx = nd.x + nd.width / 2, ncy = nd.y + nd.height / 2
+                let tgt: string | null = null
+                for (const c of u) {
+                    if (c.type !== 'column' || c.id === id || (c as ColumnNode).data.collapsed) continue
+                    const colRect = rects.get(c.id)
+                    if (colRect && insideColBodyRect(colRect, ncx, ncy, 12)) { tgt = c.id; break }
+                }
+                if (tgt) {
+                    const insertIdx = getInsertionIndex(u, rects, tgt, ncy, id)
+                    u = u.map(n => {
+                        if (n.id === id) return { ...n, data: { ...n.data, parentId: tgt } }
+                        if (n.id === tgt && n.type === 'column') { const o = [...((n as ColumnNode).data.childOrder || [])].filter(cid => cid !== id); o.splice(insertIdx, 0, id); return { ...n, data: { ...n.data, childOrder: o } } }
+                        return n
+                    })
+                }
+            }
+            return u
+        })
     }
 
-    // 4. Crea workspace link
-    await supabase.from('board_links').insert({
-      board_id: newBoard.id,
-      link_type: 'workspace',
-      target_type: 'entity',
-      target_id: entityId,
-      status: 'active',
+    // Bring dragged node(s) above overlapping nodes (per-node intersection, preserve height)
+    if (dragRef.current?.offsets) {
+        const draggedIds = new Set(dragRef.current.offsets.keys())
+        setNodes(prev => {
+            const rects = computeRenderRects(prev, null, null)
+            const safeZ = (n: CanvasNode) => (typeof n.zIndex === 'number' && Number.isFinite(n.zIndex)) ? n.zIndex : 0
+            let localTopZ = 0
+            for (const did of draggedIds) {
+                const dr = rects.get(did)
+                if (!dr) continue
+                for (const n of prev) {
+                    if (draggedIds.has(n.id)) continue
+                    const r = rects.get(n.id)
+                    if (r && r.x < dr.x + dr.width && r.x + r.width > dr.x && r.y < dr.y + dr.height && r.y + r.height > dr.y) {
+                        const z = safeZ(n)
+                        if (z > localTopZ) localTopZ = z
+                    }
+                }
+            }
+            let draggedTopZ = 0
+            for (const did of draggedIds) {
+                const n = prev.find(nd => nd.id === did)
+                if (n) { const z = safeZ(n); if (z > draggedTopZ) draggedTopZ = z }
+            }
+            let nextZ = Math.max(localTopZ, draggedTopZ) + 1
+            return prev.map(n => draggedIds.has(n.id) ? { ...n, zIndex: nextZ++ } : n)
+        })
+    }
+    setInteractionMode('idle')
+    dragRef.current = null
+    dropTargetColIdRef.current = null; setDropTargetColId(null); columnRectsRef.current = null
+    setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+}, [handleWindowMouseMove, pushHistory, emitNodesChange, setDetachingOffset])
+
+useEffect(() => { return () => { window.removeEventListener('mousemove', handleWindowMouseMove); window.removeEventListener('mouseup', handleWindowMouseUp) } }, [handleWindowMouseMove, handleWindowMouseUp])
+
+// ── Selection box (R4-005b: threshold-based, ref-driven, zero stale closures) ──
+const selBoxRectRef = useRef<SelectionBoxRect | null>(null)
+const selBoxActiveRef = useRef(false)
+const SEL_BOX_THRESHOLD = 4
+
+const handleSelBoxMouseMove = useCallback((e: MouseEvent) => {
+    const sb = selBoxRef.current; if (!sb) return
+    e.preventDefault()
+    const world = mouseToWorld(e)
+    const dx = Math.abs(world.x - sb.startX), dy = Math.abs(world.y - sb.startY)
+
+    // R4-005b: Only activate after threshold (ref-driven, no interactionMode dependency)
+    if (!selBoxActiveRef.current) {
+        if (dx < SEL_BOX_THRESHOLD && dy < SEL_BOX_THRESHOLD) return
+        selBoxActiveRef.current = true
+        setInteractionMode('selecting')
+    }
+
+    const rect: SelectionBoxRect = {
+        left: Math.min(sb.startX, world.x),
+        top: Math.min(sb.startY, world.y),
+        width: Math.abs(world.x - sb.startX),
+        height: Math.abs(world.y - sb.startY),
+    }
+    selBoxRectRef.current = rect
+    setSelectionBoxRect(rect)
+}, [mouseToWorld])
+
+const handleSelBoxMouseUp = useCallback(() => {
+    window.removeEventListener('mousemove', handleSelBoxMouseMove)
+    window.removeEventListener('mouseup', handleSelBoxMouseUp)
+
+    const wasActive = selBoxActiveRef.current
+    const box = selBoxRectRef.current
+    const additive = selBoxRef.current?.additive ?? false
+
+    if (wasActive && box && box.width > 2 && box.height > 2) {
+        // Finalize selection — synchronous
+        const rects = computeRenderRects(nodesRef.current, null, null)
+        // R4-005d: Start from previous selection if additive (Cmd/Ctrl)
+        const sel = additive ? new Set(selectedNodeIdsRef.current) : new Set<string>()
+        nodesRef.current.forEach(n => {
+            if (nodeHidden(n, nodesRef.current)) return
+            const rc = rects.get(n.id)
+            if (rc && rc.x < box.left + box.width && rc.x + rc.width > box.left
+                && rc.y < box.top + box.height && rc.y + rc.height > box.top) sel.add(n.id)
+        })
+        selectedNodeIdsRef.current = sel
+        setSelectedNodeIds(sel)
+    } else if (!additive) {
+        // Click on empty canvas without modifier — clear selection
+        selectedNodeIdsRef.current = new Set()
+        setSelectedNodeIds(new Set())
+        setSelectedEdgeId(null)
+        setEditingEdgeLabel(null)
+        setEditingField(null)
+    }
+
+    // Synchronous cleanup — always
+    setSelectionBoxRect(null)
+    selBoxRectRef.current = null
+    selBoxActiveRef.current = false
+    selBoxRef.current = null
+    setInteractionMode('idle')
+}, [handleSelBoxMouseMove])
+
+useEffect(() => { return () => { window.removeEventListener('mousemove', handleSelBoxMouseMove); window.removeEventListener('mouseup', handleSelBoxMouseUp) } }, [handleSelBoxMouseMove, handleSelBoxMouseUp])
+
+// ── Connection (R4-005: world coords) ──
+const handleConnectionMouseMove = useCallback((e: MouseEvent) => {
+    const c = connectionRef.current; if (!c) return; e.preventDefault()
+    const rects = computeRenderRects(nodesRef.current, null, null); const fr = rects.get(c.fromNodeId); if (!fr) return
+    // R4-005: mouse to world
+    const world = mouseToWorld(e)
+    const f = edgeAnchor(fr, world.x, world.y)
+    setConnectionGhost({ fromX: f.x, fromY: f.y, toX: world.x, toY: world.y })
+}, [mouseToWorld])
+
+const handleConnectionMouseUp = useCallback((e: MouseEvent) => {
+    window.removeEventListener('mousemove', handleConnectionMouseMove); window.removeEventListener('mouseup', handleConnectionMouseUp)
+    const c = connectionRef.current
+    if (c) {
+        const world = mouseToWorld(e)
+        const rects = computeRenderRects(nodesRef.current, null, null)
+        // Hit-test: collect all nodes under cursor
+        const hits = nodesRef.current.filter(n => {
+            if (n.id === c.fromNodeId || nodeHidden(n, nodesRef.current)) return false
+            const r = rects.get(n.id)
+            return r && world.x >= r.x && world.x <= r.x + r.width && world.y >= r.y && world.y <= r.y + r.height
+        })
+        // Priority: prompt > image/video/note > column
+        const tgt = hits.find(n => n.type === 'prompt')
+            ?? hits.find(n => n.type === 'image' || n.type === 'video' || n.type === 'note')
+            ?? hits.find(n => n.type === 'column')
+            ?? null
+
+        if (tgt) {
+            const fromNode = nodesRef.current.find(n => n.id === c.fromNodeId)
+            const fromType = fromNode?.type ?? ''
+            const toType = tgt.type
+
+            let edgeFrom: string
+            let edgeTo: string
+            let edgeLabel: string | undefined
+
+            if (fromType === 'column' || toType === 'column') {
+                // Structural link — grey, not used by PLP
+                edgeFrom = c.fromNodeId; edgeTo = tgt.id; edgeLabel = 'struct'
+            } else if ((fromType === 'image' || fromType === 'video') && toType === 'prompt') {
+                // Media → prompt (canonical ref direction)
+                edgeFrom = c.fromNodeId; edgeTo = tgt.id; edgeLabel = 'ref'
+            } else if (fromType === 'prompt' && (toType === 'image' || toType === 'video')) {
+                // Prompt → media: reverse to canonical media → prompt
+                edgeFrom = tgt.id; edgeTo = c.fromNodeId; edgeLabel = 'ref'
+            } else {
+                // All other links: neutral (no label)
+                edgeFrom = c.fromNodeId; edgeTo = tgt.id
+            }
+
+            // Duplicate check (label-aware)
+            const isDupe = edgeLabel === 'ref'
+                ? edgesRef.current.some(ex => ex.from === edgeFrom && ex.to === edgeTo && ex.label === 'ref')
+                : edgeLabel === 'struct'
+                    ? edgesRef.current.some(ex => ex.label === 'struct' && ((ex.from === edgeFrom && ex.to === edgeTo) || (ex.from === edgeTo && ex.to === edgeFrom)))
+                    : edgesRef.current.some(ex => (ex.from === edgeFrom && ex.to === edgeTo) || (ex.from === edgeTo && ex.to === edgeFrom))
+
+            if (!isDupe) {
+                setEdges(p => [...p, { id: crypto.randomUUID(), from: edgeFrom, to: edgeTo, label: edgeLabel }])
+                setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+            }
+        }
+    }
+    connectionRef.current = null; setConnectionGhost(null); setInteractionMode('idle')
+}, [handleConnectionMouseMove, pushHistory, emitNodesChange, mouseToWorld])
+
+const handleConnectionStart = useCallback((nodeId: string, mx: number, my: number) => {
+    const cr = canvasRef.current?.getBoundingClientRect(); if (!cr) return
+    connectionRef.current = { fromNodeId: nodeId, startX: mx - cr.left, startY: mx - cr.top, canvasRect: cr }
+    setInteractionMode('connecting'); setSelectedEdgeId(null); setEditingEdgeLabel(null)
+    window.addEventListener('mousemove', handleConnectionMouseMove); window.addEventListener('mouseup', handleConnectionMouseUp)
+}, [handleConnectionMouseMove, handleConnectionMouseUp])
+useEffect(() => { return () => { window.removeEventListener('mousemove', handleConnectionMouseMove); window.removeEventListener('mouseup', handleConnectionMouseUp) } }, [handleConnectionMouseMove, handleConnectionMouseUp])
+
+// ── Resize (R4-005: delta in world space) ──
+const handleResizeMouseMove = useCallback((e: MouseEvent) => {
+    if (!resizeRef.current) return; e.preventDefault()
+    // R4-005: Convert screen delta to world delta
+    const screenDx = e.clientX - resizeRef.current.startMouseX
+    const screenDy = e.clientY - resizeRef.current.startMouseY
+    const { dx, dy } = screenDeltaToWorld(screenDx, screenDy, viewportRef.current.scale)
+
+    let nw: number, nh: number
+    if (resizeRef.current.aspectRatio !== null) {
+        nw = Math.max(MIN_IMAGE_SIZE, resizeRef.current.startWidth + dx); nh = nw / resizeRef.current.aspectRatio
+        if (nh < MIN_IMAGE_SIZE) { nh = MIN_IMAGE_SIZE; nw = nh * resizeRef.current.aspectRatio }
+    } else {
+        nw = Math.max(MIN_WIDTH, resizeRef.current.startWidth + dx)
+        const node = nodesRef.current.find(n => n.id === resizeRef.current!.nodeId)
+        if (node?.type === 'column') { nh = node.height } else { nh = Math.max(MIN_HEIGHT, resizeRef.current.startHeight + dy) }
+    }
+    const rid = resizeRef.current.nodeId
+    setNodes(p => p.map(n => n.id === rid ? { ...n, width: Math.round(nw), height: Math.round(nh) } : n))
+}, [])
+
+const handleResizeMouseUp = useCallback(() => {
+    window.removeEventListener('mousemove', handleResizeMouseMove); window.removeEventListener('mouseup', handleResizeMouseUp)
+    if (resizeRef.current) { setInteractionMode('idle'); pushHistory(); emitNodesChange() }
+    resizeRef.current = null
+}, [handleResizeMouseMove, pushHistory, emitNodesChange])
+
+const handleResizeStart = useCallback((nodeId: string, mx: number, my: number) => {
+    const nd = nodesRef.current.find(n => n.id === nodeId); if (!nd) return
+    if (nd.type !== 'column' && (nd.data as any).parentId) return
+    if (nd.type === 'column' && (nd.data as ColumnData).collapsed) return
+    const ar = (nd.type === 'image' || nd.type === 'video') ? nd.width / nd.height : null
+    resizeRef.current = { nodeId, startWidth: nd.width, startHeight: nd.height, startMouseX: mx, startMouseY: my, aspectRatio: ar }
+    setInteractionMode('resizing')
+    window.addEventListener('mousemove', handleResizeMouseMove); window.addEventListener('mouseup', handleResizeMouseUp)
+}, [handleResizeMouseMove, handleResizeMouseUp])
+useEffect(() => { return () => { window.removeEventListener('mousemove', handleResizeMouseMove); window.removeEventListener('mouseup', handleResizeMouseUp) } }, [handleResizeMouseMove, handleResizeMouseUp])
+
+const handleRequestHeight = useCallback((nodeId: string, rh: number) => {
+    setNodes(p => p.map(n => n.id === nodeId && rh > n.height ? { ...n, height: rh } : n)); emitNodesChange()
+}, [emitNodesChange])
+
+// ============================================
+// R4-004c — VERTICAL WALL CASCADE
+// ============================================
+const handleToggleCollapse = useCallback((nodeId: string) => {
+    if (detachingRef.current?.originalParentId === nodeId) return
+    const currentCol = nodesRef.current.find(n => n.id === nodeId && n.type === 'column') as ColumnNode | undefined
+    const isCurrentlyCollapsed = currentCol?.data.collapsed ?? false
+
+    let collapseMemory: Map<string, number> | null = null
+    if (!isCurrentlyCollapsed) {
+        collapseMemory = shiftedNodesRef.current.get(nodeId) ?? null
+        shiftedNodesRef.current.delete(nodeId)
+    }
+
+    setNodes(prevNodes => {
+        const col = prevNodes.find(n => n.id === nodeId && n.type === 'column') as ColumnNode | undefined
+        if (!col) return prevNodes
+        const wasCollapsed = col.data.collapsed ?? false
+
+        if (wasCollapsed) {
+            const toggledNodes = prevNodes.map(n => n.id === nodeId ? { ...n, data: { ...n.data, collapsed: false } } as CanvasNode : n)
+            const newRects = computeRenderRects(toggledNodes, null, null)
+            const colRect = newRects.get(nodeId)
+            if (!colRect) return toggledNodes
+
+            const occupiedBottom = colRect.y + colRect.height
+            const colLeft = col.x, colRight = col.x + colRect.width
+
+            const candidates: { id: string; y: number; height: number }[] = []
+            for (const n of toggledNodes) {
+                if (n.id === nodeId) continue
+                if ((n.data as any).parentId != null) continue
+                const nRight = n.x + n.width
+                if (nRight <= colLeft || n.x >= colRight) continue
+                if (n.y < colRect.y) continue
+                const nRect = newRects.get(n.id); const nHeight = nRect ? nRect.height : n.height
+                candidates.push({ id: n.id, y: n.y, height: nHeight })
+            }
+            candidates.sort((a, b) => a.y - b.y)
+
+            let currentBottom = occupiedBottom
+            const savedPositions = new Map<string, number>()
+            const newPositions = new Map<string, number>()
+
+            for (const el of candidates) {
+                if (el.y >= currentBottom + MIN_GAP) { currentBottom = el.y + el.height; continue }
+                savedPositions.set(el.id, el.y)
+                const newY = currentBottom + MIN_GAP
+                newPositions.set(el.id, newY)
+                currentBottom = newY + el.height
+            }
+
+            if (savedPositions.size > 0) shiftedNodesRef.current.set(nodeId, savedPositions)
+            if (newPositions.size === 0) return toggledNodes
+            return toggledNodes.map(n => { const newY = newPositions.get(n.id); return newY !== undefined ? { ...n, y: newY } : n })
+        } else {
+            const savedPositions = collapseMemory
+            return prevNodes.map(n => {
+                if (n.id === nodeId) return { ...n, data: { ...n.data, collapsed: true } } as CanvasNode
+                if (savedPositions && savedPositions.has(n.id)) return { ...n, y: savedPositions.get(n.id)! }
+                return n
+            })
+        }
     })
+    setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+}, [pushHistory, emitNodesChange])
 
-    // 5. Crea EntityRefNode nella nuova workspace
-    const entityRefContent = {
-      variant: 'entity',
-      ref_type: 'entity',
-      ref_id: entityId,
-      entity_type: entity.type,
-      display_title: entity.name,
-      display_image: entity.reference_images?.[0] || null,
-      ui: { collapsed: false },
+// ── Node handlers ──
+const handleSelect = useCallback((nodeId: string, additive: boolean) => {
+    let next: Set<string>
+    if (additive) {
+        // Cmd/Ctrl + Click: toggle node in/out of selection
+        next = new Set(selectedNodeIdsRef.current)
+        if (next.has(nodeId)) { next.delete(nodeId) } else { next.add(nodeId) }
+    } else {
+        // Plain click: replace selection (but keep multi-selection intact for drag)
+        if (selectedNodeIdsRef.current.has(nodeId) && selectedNodeIdsRef.current.size > 1) return
+        next = new Set([nodeId])
+    }
+    // R4-005d: Sync ref immediately so handlePotentialDragStart sees updated selection in same event
+    selectedNodeIdsRef.current = next
+    setSelectedNodeIds(next)
+    setSelectedEdgeId(null); setEditingEdgeLabel(null)
+}, [])
+
+const handlePotentialDragStart = useCallback((nodeId: string, mouseX: number, mouseY: number) => {
+    const nd = nodesRef.current.find(n => n.id === nodeId); if (!nd) return
+    const isChild = nd.type !== 'column' && !!(nd.data as any).parentId
+
+    if (isChild) {
+        const currentRects = computeRenderRects(nodesRef.current, null, null)
+        const renderRect = currentRects.get(nodeId); if (!renderRect) return
+        const parentId = (nd.data as any).parentId as string
+        frozenRectsRef.current = currentRects; setFrozenColumnId(parentId)
+        detachingRef.current = { nodeId, frozenRect: { ...renderRect }, originalParentId: parentId }
+        setDetachingOffset({ dx: 0, dy: 0 })
+        dragRef.current = { nodeId, offsets: new Map([[nodeId, { startX: renderRect.x, startY: renderRect.y }]]), startMouseX: mouseX, startMouseY: mouseY, hasMoved: false }
+    } else {
+        const sel = selectedNodeIdsRef.current.has(nodeId) ? selectedNodeIdsRef.current : new Set([nodeId])
+        const off = new Map<string, { startX: number; startY: number }>()
+        nodesRef.current.forEach(n => { if (sel.has(n.id)) off.set(n.id, { startX: n.x, startY: n.y }) })
+        dragRef.current = { nodeId, offsets: off, startMouseX: mouseX, startMouseY: mouseY, hasMoved: false }
     }
 
-    await supabase.from('board_nodes').insert({
-      board_id: newBoard.id,
-      node_type: 'reference',
-      position_x: 100,
-      position_y: 100,
-      width: 64,
-      height: 64,
-      content: entityRefContent,
-      status: 'active',
+    // Cache column rects for drop overlay (avoid recompute per frame)
+    const startRects = computeRenderRects(nodesRef.current, null, null)
+    const colRects = new Map<string, Rect>()
+    for (const n of nodesRef.current) {
+        if (n.type === 'column' && !(n as ColumnNode).data.collapsed) {
+            const r = startRects.get(n.id)
+            if (r) colRects.set(n.id, r)
+        }
+    }
+    columnRectsRef.current = colRects
+    // R4-005d: Don't override selection — handleSelect already set it correctly                                  
+    window.addEventListener('mousemove', handleWindowMouseMove); window.addEventListener('mouseup', handleWindowMouseUp)
+}, [handleWindowMouseMove, handleWindowMouseUp])
+
+const handleDelete = useCallback((nodeId: string) => {
+    // Guard: if deleting the image node that is the current FV, only clear FV (keep node)
+    const targetNode = nodesRef.current.find(n => n.id === nodeId)
+    if (targetNode?.type === 'image' && nodeId === currentFinalVisualNodeId) {
+        setConfirmState({
+            title: 'Clear Final Visual',
+            body: 'This image is the current Final Visual.\n\nClearing Final Visual status. The image will be kept.',
+            confirmLabel: 'Clear FV',
+            danger: true,
+            onConfirm: () => { setConfirmState(null); onClearFinalVisual?.() },
+        })
+        return
+    }
+
+    // Guard: if deleting a video node that is the current Output, clear shot output first
+    if (targetNode?.type === 'video' && targetNode.id === outputVideoNodeId) {
+        setConfirmState({
+            title: 'Delete Output Video',
+            body: 'This video is the current Shot Output.\n\nOutput will be cleared and the video will be deleted.',
+            confirmLabel: 'Delete',
+            danger: true,
+            onConfirm: () => { setConfirmState(null); void onClearOutputVideo?.(); executeNodeDelete(nodeId) },
+        })
+        return
+    }
+
+    executeNodeDelete(nodeId)
+}, [currentFinalVisualNodeId, onClearFinalVisual, outputVideoNodeId, onClearOutputVideo])
+
+const executeNodeDelete = useCallback((nodeId: string) => {
+    setNodes(p => {
+        const node = p.find(n => n.id === nodeId)
+        const deleteIds = new Set([nodeId])
+        if (node?.type === 'column') { p.forEach(n => { if ((n.data as any).parentId === nodeId) deleteIds.add(n.id) }) }
+        let u = p.filter(n => !deleteIds.has(n.id))
+        return u.map(n => {
+            if (n.type === 'column' && (n as ColumnNode).data.childOrder) {
+                const filtered = (n as ColumnNode).data.childOrder!.filter(id => !deleteIds.has(id))
+                if (filtered.length !== (n as ColumnNode).data.childOrder!.length) return { ...n, data: { ...n.data, childOrder: filtered } }
+            }
+            return n
+        })
     })
+    setEdges(p => {
+        const node = nodesRef.current.find(n => n.id === nodeId)
+        const deleteIds = new Set([nodeId])
+        if (node?.type === 'column') { nodesRef.current.forEach(n => { if ((n.data as any).parentId === nodeId) deleteIds.add(n.id) }) }
+        return p.filter(e => !deleteIds.has(e.from) && !deleteIds.has(e.to))
+    })
+    setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
+    setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+}, [pushHistory, emitNodesChange])
 
-    return {
-      success: true,
-      workspace: {
-        board_id: newBoard.id,
-        board_title: boardTitle,
-      },
+const executeKeyboardDelete = useCallback((del: Set<string>) => {
+    nodesRef.current.forEach(n => {
+        if (n.type === 'column' && del.has(n.id)) {
+            nodesRef.current.forEach(c => { if ((c.data as any).parentId === n.id) del.add(c.id) })
+        }
+    })
+    setNodes(p => {
+        let u = p.filter(n => !del.has(n.id))
+        return u.map(n => n.type === 'column' && (n as ColumnNode).data.childOrder ? { ...n, data: { ...n.data, childOrder: (n as ColumnNode).data.childOrder!.filter(id => !del.has(id)) } } : n)
+    })
+    setEdges(p => p.filter(ed => !del.has(ed.from) && !del.has(ed.to)))
+    setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
+    setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+}, [pushHistory, emitNodesChange])
+
+const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => { setSelectedNodeIds(new Set([nodeId])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('editing'); setEditingField(field) }, [])
+const handleFieldFocus = useCallback((f: 'title' | 'body') => setEditingField(f), [])
+// Flush: on blur, commit any pending debounced history immediately.
+// emitNodesChange deferred via setTimeout(0) in handleDataChange — only pushHistory needs flush.
+const handleFieldBlur = useCallback(() => {
+    if (dataChangeTimerRef.current) { clearTimeout(dataChangeTimerRef.current); dataChangeTimerRef.current = null; pushHistory() }
+    setInteractionMode('idle'); setEditingField(null)
+}, [pushHistory])
+// Debounced history push: groups rapid keystrokes into single undo steps (like Word/Figma).
+// CRITICAL: pushHistory is debounced (operator), emitNodesChange fires immediately (memory/persist).
+// Persist and undo are separate concerns — memory must never depend on debounce.
+const DATA_CHANGE_DEBOUNCE = 500
+const handleDataChange = useCallback((nodeId: string, data: NoteData | ColumnData | PromptData) => {
+    setNodes(p => p.map(n => n.id === nodeId ? { ...n, data: data as any } : n))
+    setTimeout(emitNodesChange, 0)
+    if (dataChangeTimerRef.current) clearTimeout(dataChangeTimerRef.current)
+    dataChangeTimerRef.current = setTimeout(() => { dataChangeTimerRef.current = null; pushHistory() }, DATA_CHANGE_DEBOUNCE)
+}, [pushHistory, emitNodesChange])
+
+// ── Edge click (R4-005: world coords) ──
+const handleSvgClick = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+    // R4-005: mouse to world for edge hit test
+    const world = mouseToWorld(e)
+    let best: CanvasEdge | null = null, bd = EDGE_HIT_DISTANCE / viewportRef.current.scale
+    edgesRef.current.forEach(edge => {
+        const fn = nodesRef.current.find(n => n.id === edge.from), tn = nodesRef.current.find(n => n.id === edge.to)
+        if (!fn || !tn || nodeHidden(fn, nodesRef.current) || nodeHidden(tn, nodesRef.current)) return
+        const fr = renderRects.get(edge.from), tr = renderRects.get(edge.to); if (!fr || !tr) return
+        const a = edgeAnchor(fr, rectCenter(tr).x, rectCenter(tr).y), b = edgeAnchor(tr, rectCenter(fr).x, rectCenter(fr).y)
+        const d = distToSeg(world.x, world.y, a.x, a.y, b.x, b.y); if (d < bd) { bd = d; best = edge }
+    })
+    if (best) { e.stopPropagation(); setSelectedEdgeId(best.id); setEditingEdgeLabel(null); setSelectedNodeIds(new Set()) }
+}, [renderRects, mouseToWorld])
+
+// ── Canvas mousedown (R4-005: pan or selection box) ──
+const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
+    if (interactionMode === 'editing') return
+
+    // R4-005: Space + Click or Middle Mouse = Pan
+    if (spaceDownRef.current || e.button === 1) {
+        e.preventDefault()
+        panRef.current = {
+            startMouseX: e.clientX,
+            startMouseY: e.clientY,
+            startOffsetX: viewportRef.current.offsetX,
+            startOffsetY: viewportRef.current.offsetY,
+        }
+        setInteractionMode('panning')
+        window.addEventListener('mousemove', handleWindowMouseMove)
+        window.addEventListener('mouseup', handleWindowMouseUp)
+        return
     }
 
-  } catch (error) {
-    console.error('Create workspace failed:', error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
+    // R4-005b: Selection box — stay idle, register listeners.
+    // Mode changes to 'selecting' only after mousemove exceeds threshold.
+    // R4-005d: Capture additive flag for union vs replace on mouseup.
+    const world = mouseToWorld(e)
+    selBoxRef.current = { startX: world.x, startY: world.y, canvasRect: canvasRef.current!.getBoundingClientRect(), additive: e.metaKey || e.ctrlKey }
+    selBoxRectRef.current = null
+    selBoxActiveRef.current = false
+    // Don't clear selection yet — that happens on mouseup if it was just a click
+    // Don't setInteractionMode('selecting') — that happens on threshold in mousemove
+    window.addEventListener('mousemove', handleSelBoxMouseMove); window.addEventListener('mouseup', handleSelBoxMouseUp)
+}, [interactionMode, handleSelBoxMouseMove, handleSelBoxMouseUp, handleWindowMouseMove, handleWindowMouseUp, mouseToWorld])
+
+// R4-005b: Failsafe — reset interaction mode + clean up all refs
+// Catches stuck states from mouseup outside canvas, lost focus, etc.
+const endInteraction = useCallback(() => {
+    if (dragRef.current) {
+        window.removeEventListener('mousemove', handleWindowMouseMove)
+        window.removeEventListener('mouseup', handleWindowMouseUp)
+        dragRef.current = null
     }
-  }
-}
+    if (panRef.current) { panRef.current = null }
+    if (selBoxRef.current) {
+        window.removeEventListener('mousemove', handleSelBoxMouseMove)
+        window.removeEventListener('mouseup', handleSelBoxMouseUp)
+        selBoxRef.current = null; selBoxRectRef.current = null; selBoxActiveRef.current = false; setSelectionBoxRect(null)
+    }
+    if (connectionRef.current) {
+        window.removeEventListener('mousemove', handleConnectionMouseMove)
+        window.removeEventListener('mouseup', handleConnectionMouseUp)
+        connectionRef.current = null; setConnectionGhost(null)
+    }
+    if (resizeRef.current) {
+        window.removeEventListener('mousemove', handleResizeMouseMove)
+        window.removeEventListener('mouseup', handleResizeMouseUp)
+        resizeRef.current = null
+    }
+    detachingRef.current = null; setDetachingOffset(null)
+    setFrozenColumnId(null); frozenRectsRef.current = null
+    dropTargetColIdRef.current = null; setDropTargetColId(null); columnRectsRef.current = null
+    setInteractionMode('idle')
+}, [handleWindowMouseMove, handleWindowMouseUp, handleSelBoxMouseMove, handleSelBoxMouseUp, handleConnectionMouseMove, handleConnectionMouseUp, handleResizeMouseMove, handleResizeMouseUp, setDetachingOffset])
+
+// R4-005b: Window blur failsafe — if user switches tab/window mid-interaction
+useEffect(() => {
+    const handleBlur = () => { endInteraction() }
+    window.addEventListener('blur', handleBlur)
+    return () => window.removeEventListener('blur', handleBlur)
+}, [endInteraction])
+
+// ── Keyboard (Space for pan, Undo/Redo, Delete) ──
+// R4-005b: Positioned after endInteraction to avoid TDZ.
+//          Space keyup calls endInteraction() — single reset path.
+useEffect(() => {
+    const kd = (e: KeyboardEvent) => {
+        if (e.code === 'Space' && !e.repeat) {
+            const a = document.activeElement
+            if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
+            e.preventDefault()
+            spaceDownRef.current = true
+        }
+        const mod = e.metaKey || e.ctrlKey
+        if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
+        if (mod && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo() }
+
+        // Inspector toggle: I (no modifier, not editing, not in input)
+        if (e.key === 'i' && !mod && !e.shiftKey && !e.altKey && interactionMode !== 'editing') {
+            const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
+            e.preventDefault(); onToggleInspector?.()
+        }
+
+        // Copy: selected nodes + internal edges, strip editorial fields
+        if (mod && e.key === 'c' && !e.shiftKey && interactionMode === 'idle') {
+            const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
+            const sel = selectedNodeIdsRef.current; if (sel.size === 0) return
+            e.preventDefault()
+            // Expand selection: include column descendants by parentId
+            const ids = new Set<string>(sel)
+            let added = true
+            while (added) {
+                added = false
+                for (const n of nodesRef.current) {
+                    const pid = (n.data as any)?.parentId
+                    if (pid && ids.has(pid) && !ids.has(n.id)) { ids.add(n.id); added = true }
+                }
+            }
+            const selNodes = nodesRef.current.filter(n => ids.has(n.id))
+            const stripped = selNodes.map(n => {
+                const d = { ...n.data } as any
+                delete d.promotedSelectionId
+                delete d.selectionNumber
+                delete d.isFinalVisual
+
+                return { ...n, data: d }
+            })
+            const intEdges = edgesRef.current.filter(ed => ids.has(ed.from) && ids.has(ed.to))
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+            for (const n of stripped) {
+                minX = Math.min(minX, n.x); minY = Math.min(minY, n.y)
+                maxX = Math.max(maxX, n.x + n.width); maxY = Math.max(maxY, n.y + n.height)
+            }
+            try {
+                sessionStorage.setItem('cineboard.clipboard.v1', JSON.stringify({
+                    version: 1, nodes: stripped, edges: intEdges,
+                    bbox: { minX, minY, maxX, maxY },
+                    sourceTakeId: takeId,
+                }))
+            } catch { }
+        }
+
+        // Paste: fresh IDs, remap edges, center in viewport, 1 undo step
+        if (mod && e.key === 'v' && !e.shiftKey && interactionMode === 'idle') {
+            const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
+            let clip: any
+            try { clip = JSON.parse(sessionStorage.getItem('cineboard.clipboard.v1') || '') } catch { return }
+            if (!clip?.nodes?.length) return
+            e.preventDefault()
+
+            const idMap = new Map<string, string>()
+            for (const n of clip.nodes) idMap.set(n.id, crypto.randomUUID())
+
+            const vp = viewportRef.current
+            const cr = canvasRef.current?.getBoundingClientRect()
+            const cw = cr?.width ?? 800, ch = cr?.height ?? 600
+
+            // Viewport rect in world space
+            const vpMinX = (0 - vp.offsetX) / vp.scale
+            const vpMinY = (0 - vp.offsetY) / vp.scale
+            const vpMaxX = (cw - vp.offsetX) / vp.scale
+            const vpMaxY = (ch - vp.offsetY) / vp.scale
+
+            const bboxW = clip.bbox.maxX - clip.bbox.minX
+            const bboxH = clip.bbox.maxY - clip.bbox.minY
+
+            let dx: number, dy: number
+
+            if (clip.sourceTakeId === takeId) {
+                // Same take: try legacy +20/+20
+                const nudge = 20
+                const candMinX = clip.bbox.minX + nudge
+                const candMinY = clip.bbox.minY + nudge
+                const candMaxX = clip.bbox.maxX + nudge
+                const candMaxY = clip.bbox.maxY + nudge
+                // Check intersection with viewport (80px padding in world)
+                const pad = 80 / vp.scale
+                const visible = candMaxX > vpMinX + pad && candMinX < vpMaxX - pad
+                    && candMaxY > vpMinY + pad && candMinY < vpMaxY - pad
+                if (visible) {
+                    dx = nudge; dy = nudge
+                } else {
+                    // Fallback: viewport center
+                    const worldCx = (cw / 2 - vp.offsetX) / vp.scale
+                    const worldCy = (ch / 2 - vp.offsetY) / vp.scale
+                    dx = worldCx - bboxW / 2 - clip.bbox.minX
+                    dy = worldCy - bboxH / 2 - clip.bbox.minY
+                }
+            } else {
+                // Cross-take: always viewport center
+                const worldCx = (cw / 2 - vp.offsetX) / vp.scale
+                const worldCy = (ch / 2 - vp.offsetY) / vp.scale
+                dx = worldCx - bboxW / 2 - clip.bbox.minX
+                dy = worldCy - bboxH / 2 - clip.bbox.minY
+            }
+
+            const maxZ = nodesRef.current.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0)
+            let zi = maxZ + 1
+
+            const newNodes: CanvasNode[] = clip.nodes.map((n: any) => {
+                const oldParentId = n.data?.parentId ?? null
+                const newParentId = oldParentId ? (idMap.get(oldParentId) ?? null) : null
+                const nd = { ...n.data, parentId: newParentId }
+                // Remap childOrder for columns
+                if (n.type === 'column' && nd.childOrder) {
+                    nd.childOrder = (nd.childOrder as string[]).map((cid: string) => idMap.get(cid) ?? cid)
+                }
+                return {
+                    ...n,
+                    id: idMap.get(n.id)!,
+                    x: n.x + dx,
+                    y: n.y + dy,
+                    zIndex: zi++,
+                    data: nd,
+                }
+            })
+            const newEdges: CanvasEdge[] = (clip.edges || []).map((ed: any) => ({
+                ...ed,
+                id: crypto.randomUUID(),
+                from: idMap.get(ed.from) ?? ed.from,
+                to: idMap.get(ed.to) ?? ed.to,
+            }))
+
+            setNodes(p => [...p, ...newNodes])
+            setEdges(p => [...p, ...newEdges])
+            setSelectedNodeIds(new Set(newNodes.map(n => n.id)))
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }
+
+        if (e.key === 'Escape') { endInteraction(); setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setEditingField(null) }
+        if ((e.key === 'Delete' || e.key === 'Backspace') && interactionMode === 'idle') {
+            const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return
+            if (selectedEdgeId) { e.preventDefault(); setEdges(p => p.filter(ed => ed.id !== selectedEdgeId)); setSelectedEdgeId(null); setEditingEdgeLabel(null); setTimeout(() => { pushHistory(); emitNodesChange() }, 0); return }
+            if (selectedNodeIdsRef.current.size > 0) {
+                e.preventDefault(); const del = new Set(selectedNodeIdsRef.current)
+                // If any selected node is the current FV image, need confirmation
+                const fvNodeId = currentFinalVisualNodeId && del.has(currentFinalVisualNodeId)
+                    ? currentFinalVisualNodeId
+                    : undefined
+                const hasOutput = outputVideoNodeId && del.has(outputVideoNodeId)
+                    && nodesRef.current.some(n => n.id === outputVideoNodeId && n.type === 'video')
+
+                // No guards needed — delete immediately
+                if (!fvNodeId && !hasOutput) {
+                    executeKeyboardDelete(del); return
+                }
+
+                // FV guard needed
+                if (fvNodeId && !hasOutput) {
+                    setConfirmState({
+                        title: 'Delete Selection + Clear Final Visual',
+                        body: 'Selection includes the current Final Visual image.\n\nFinal Visual will be cleared. The FV image will be kept; other selected items will be deleted.',
+                        confirmLabel: 'Delete + Clear FV',
+                        danger: true,
+                        onConfirm: () => {
+                            setConfirmState(null)
+                            onClearFinalVisual?.()
+                            del.delete(fvNodeId)
+                            if (del.size === 0) return
+                            executeKeyboardDelete(del)
+                        },
+                    })
+                    return
+                }
+
+                // Output guard needed (no FV)
+                if (!fvNodeId && hasOutput) {
+                    setConfirmState({
+                        title: 'Delete Selection + Clear Output',
+                        body: 'Selection includes the current Shot Output video.\n\nOutput will be cleared and the video will be deleted.',
+                        confirmLabel: 'Delete + Clear Output',
+                        danger: true,
+                        onConfirm: () => {
+                            setConfirmState(null)
+                            void onClearOutputVideo?.()
+                            executeKeyboardDelete(del)
+                        },
+                    })
+                    return
+                }
+
+                // Both FV + Output in selection
+                setConfirmState({
+                    title: 'Delete Selection + Clear FV & Output',
+                    body: 'Selection includes both the Final Visual image and the Shot Output video.\n\nFinal Visual will be cleared (FV image kept). Output will be cleared and deleted along with other selected items.',
+                    confirmLabel: 'Delete + Clear Both',
+                    danger: true,
+                    onConfirm: () => {
+                        setConfirmState(null)
+                        onClearFinalVisual?.()
+                        del.delete(fvNodeId!)
+                        void onClearOutputVideo?.()
+                        if (del.size === 0) return
+                        executeKeyboardDelete(del)
+                    },
+                })
+            }
+        }
+    }
+    const ku = (e: KeyboardEvent) => {
+        if (e.code === 'Space') {
+            spaceDownRef.current = false
+            // R4-005b: Single reset path via endInteraction
+            if (panRef.current) endInteraction()
+        }
+    }
+    window.addEventListener('keydown', kd); window.addEventListener('keyup', ku)
+    return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku) }
+}, [undo, redo, selectedEdgeId, interactionMode, pushHistory, emitNodesChange, endInteraction, onToggleInspector])
+
+// R4-005: Double-click canvas = reset viewport
+// R4-005b: Only on truly empty canvas — not on nodes, columns, or their children
+const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
+    const target = e.target as HTMLElement
+    if (target.closest('[data-node-shell]')) return
+    if (target.closest('button') || target.closest('input') || target.closest('textarea')) return
+
+    const visible = nodesRef.current.filter(n => !nodeHidden(n, nodesRef.current))
+    if (visible.length === 0) { setViewport(VIEWPORT_INITIAL); return }
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const n of visible) {
+        minX = Math.min(minX, n.x); minY = Math.min(minY, n.y)
+        maxX = Math.max(maxX, n.x + n.width); maxY = Math.max(maxY, n.y + n.height)
+    }
+    const bboxW = maxX - minX
+    const bboxH = maxY - minY
+    const bboxCx = minX + bboxW / 2
+    const bboxCy = minY + bboxH / 2
+
+    const cr = canvasRef.current?.getBoundingClientRect()
+    if (!cr) { setViewport(VIEWPORT_INITIAL); return }
+
+    const vp = viewportRef.current
+    const isFarFromOne = Math.abs(vp.scale - 1) > 0.05
+
+    if (isFarFromOne) {
+        // Anchor zoom: keep click point stable on screen
+        const screenX = e.clientX - cr.left
+        const screenY = e.clientY - cr.top
+        const worldX = (screenX - vp.offsetX) / vp.scale
+        const worldY = (screenY - vp.offsetY) / vp.scale
+        setViewport({
+            scale: 1,
+            offsetX: screenX - worldX,
+            offsetY: screenY - worldY,
+        })
+    } else {
+        // Fit-to-bounds: center on all content
+        const padding = 80
+        const scaleX = (cr.width - padding * 2) / Math.max(bboxW, 1)
+        const scaleY = (cr.height - padding * 2) / Math.max(bboxH, 1)
+        const fitScale = Math.min(scaleX, scaleY, ZOOM_MAX)
+        const clampedScale = Math.max(fitScale, ZOOM_MIN)
+        setViewport({
+            scale: clampedScale,
+            offsetX: cr.width / 2 - bboxCx * clampedScale,
+            offsetY: cr.height / 2 - bboxCy * clampedScale,
+        })
+    }
+}, [setViewport])
+
+const visibleNodes = nodes.filter(n => !nodeHidden(n, nodes))
+const edgeLines = useMemo(() => edges.map(edge => {
+    const fn = nodes.find(n => n.id === edge.from), tn = nodes.find(n => n.id === edge.to)
+    if (!fn || !tn || nodeHidden(fn, nodes) || nodeHidden(tn, nodes)) return null
+    const fr = renderRects.get(edge.from), tr = renderRects.get(edge.to); if (!fr || !tr) return null
+    const fc = rectCenter(fr), tc = rectCenter(tr)
+    return { edge, from: edgeAnchor(fr, tc.x, tc.y), to: edgeAnchor(tr, fc.x, fc.y), fromType: fn.type, toType: tn.type }
+}).filter(Boolean) as { edge: CanvasEdge; from: { x: number; y: number }; to: { x: number; y: number }; fromType: string; toType: string }[], [edges, nodes, renderRects])
+
+return (
+    <div
+        ref={canvasRef}
+        className="flex-1 bg-zinc-950 relative overflow-hidden"
+        style={{ cursor: spaceDownRef.current || interactionMode === 'panning' ? 'grab' : undefined }}
+        onMouseDown={handleCanvasMouseDown}
+        onDoubleClick={handleCanvasDoubleClick}
+    >
+        {/* R4-005: Viewport transform wrapper — everything inside scales/pans */}
+        <div
+            style={{
+                transform: `translate(${viewport.offsetX}px, ${viewport.offsetY}px) scale(${viewport.scale})`,
+                transformOrigin: '0 0',
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                // No width/height — children positioned absolutely in world space
+            }}
+        >
+            {/* R4.0a: Dot grid — inside viewport, same transform, zero desync */}
+            <div
+                className="absolute pointer-events-none"
+                style={{
+                    top: -4000,
+                    left: -4000,
+                    width: 8000,
+                    height: 8000,
+                    backgroundImage: 'radial-gradient(circle, rgba(161,161,170,0.15) 1px, transparent 1px)',
+                    backgroundSize: '20px 20px',
+                }}
+            />
+            {/* SVG for edges — in world space */}
+            <svg className="absolute pointer-events-none" style={{ zIndex: 0, overflow: 'visible', width: 1, height: 1 }}>
+                <defs>
+                    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#71717a" /></marker>
+                    <marker id="arrowhead-selected" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#3b82f6" /></marker>
+                    <marker id="arrowhead-in" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#60a5fa" /></marker>
+                    <marker id="arrowhead-out" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#34d399" /></marker>
+                </defs>
+                <g style={{ pointerEvents: 'stroke' }} onClick={handleSvgClick as any}>
+                    {edgeLines.map(({ edge, from, to }) => <line key={`h-${edge.id}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="transparent" strokeWidth={EDGE_HIT_DISTANCE * 2} style={{ cursor: 'pointer', pointerEvents: 'stroke' }} />)}
+                </g>
+                {edgeLines.map(({ edge, from, to, fromType, toType }) => {
+                    const s = edge.id === selectedEdgeId
+                    // Edge Grammar v1: semantic coloring only for prompt ↔ image/video
+                    const isPromptIn = toType === 'prompt' && fromType !== 'prompt' && (fromType === 'image' || fromType === 'video')
+                    const isPromptOut = fromType === 'prompt' && (toType === 'image' || toType === 'video')
+                    const strokeColor = s ? '#3b82f6' : isPromptIn ? '#60a5fa' : isPromptOut ? '#34d399' : '#71717a'
+                    const marker = s ? 'url(#arrowhead-selected)' : isPromptIn ? 'url(#arrowhead-in)' : isPromptOut ? 'url(#arrowhead-out)' : 'url(#arrowhead)'
+                    return <line key={edge.id} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={strokeColor} strokeWidth={s ? 2 : 1.5} strokeDasharray={!s && (isPromptIn || isPromptOut) ? '6 4' : undefined} markerEnd={marker} />
+                })}
+                {connectionGhost && <line x1={connectionGhost.fromX} y1={connectionGhost.fromY} x2={connectionGhost.toX} y2={connectionGhost.toY} stroke="#10b981" strokeWidth={2} strokeDasharray="6 3" markerEnd="url(#arrowhead)" />}
+            </svg>
+
+            {/* Edge labels — in world space */}
+            {edgeLines.map(({ edge, from, to }) => {
+                const s = edge.id === selectedEdgeId; if (!s && !edge.label) return null
+                const mx = (from.x + to.x) / 2, my = (from.y + to.y) / 2
+                return (
+                    <div key={`l-${edge.id}`} className="absolute pointer-events-auto z-[5]" style={{ left: mx, top: my, transform: 'translate(-50%, -50%)' }} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
+                        {s ? <input type="text" autoFocus={editingEdgeLabel === edge.id} placeholder="label..." defaultValue={edge.label || ''}
+                            onFocus={() => setEditingEdgeLabel(edge.id)}
+                            onBlur={ev => { const v = ev.target.value.trim(); setEdges(p => p.map(ed => ed.id === edge.id ? { ...ed, label: v || undefined } : ed)); setEditingEdgeLabel(null); setTimeout(() => { pushHistory(); emitNodesChange() }, 0) }}
+                            onKeyDown={ev => { if (ev.key === 'Enter') (ev.target as HTMLInputElement).blur(); if (ev.key === 'Escape') { (ev.target as HTMLInputElement).value = edge.label || ''; (ev.target as HTMLInputElement).blur() }; ev.stopPropagation() }}
+                            className="bg-zinc-800 border border-blue-500 text-zinc-200 text-[10px] px-1.5 py-0.5 outline-none text-center min-w-[60px] max-w-[120px]" />
+                            : <span className="text-[10px] text-zinc-500 bg-zinc-900/80 px-1 py-0.5">{edge.label}</span>}
+                    </div>
+                )
+            })}
+
+            {/* Nodes — in world space */}
+            {visibleNodes.map(node => {
+                const rect = renderRects.get(node.id); if (!rect) return null
+                let rz = node.zIndex
+                if (node.type !== 'column' && (node.data as any).parentId) {
+                    const parent = nodes.find(n => n.id === (node.data as any).parentId)
+                    if (parent) rz = parent.zIndex + 1
+                }
+                return (
+                    <NodeShell key={node.id} nodeId={node.id} x={rect.x} y={rect.y} width={rect.width} height={rect.height} zIndex={rz}
+                        isSelected={selectedNodeIds.has(node.id)}
+                        isDragging={interactionMode === 'dragging' && dragRef.current?.offsets.has(node.id) === true}
+                        interactionMode={interactionMode}
+                        viewportScale={viewport.scale}
+                        onSelect={handleSelect} onPotentialDragStart={handlePotentialDragStart}
+                        onMouseEnter={() => setHoveredNodeId(node.id)}
+                        onMouseLeave={() => setHoveredNodeId(prev => prev === node.id ? null : prev)}
+                        onDelete={(id) => { void handleDelete(id) }} onResizeStart={handleResizeStart} onConnectionStart={handleConnectionStart}
+                        isOutputVideo={node.type === 'video' && node.id === outputVideoNodeId}
+                        isFinalVisual={node.type === 'image' && node.id === currentFinalVisualNodeId}>
+                        {node.type === 'note' ? <NoteContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldFocus={handleFieldFocus} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
+                            : node.type === 'image' ? <ImageContent data={node.data} isSelected={selectedNodeIds.has(node.id)} isFinalVisual={node.id === currentFinalVisualNodeId} onInspect={() => setInspectImage({ src: node.data.src, naturalWidth: node.data.naturalWidth, naturalHeight: node.data.naturalHeight, storagePath: node.data.storage_path })} />
+                                : node.type === 'video' ? <VideoContent data={node.data} viewportScale={viewport.scale} />
+                                    : node.type === 'prompt' ? <PromptContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onStartEditing={f => handleStartEditing(node.id, f)} onFieldBlur={handleFieldBlur} onRequestHeight={h => handleRequestHeight(node.id, h)} onContentMeasured={h => handleContentMeasured(node.id, h)} />
+                                        : node.type === 'entity_ref' ? <EntityRefContent data={node.data as EntityRefData} />
+                                            : <ColumnContent data={node.data} isEditing={interactionMode === 'editing' && node.id === primarySelectedId} editingField={node.id === primarySelectedId ? editingField : null} onDataChange={d => handleDataChange(node.id, d)} onFieldBlur={handleFieldBlur} onStartEditing={f => handleStartEditing(node.id, f)} onToggleCollapse={() => handleToggleCollapse(node.id)} />}
+                        {/* Passive rating indicator — outside top-right */}
+                        {(node.type === 'image' || node.type === 'video') && (() => {
+                            const sp = (node.data as any)?.storage_path
+                            const r = sp ? (ratingMap?.[sp] ?? 0) : 0
+                            if (r === 0) return null
+                            return <div className="absolute right-0 pointer-events-none select-none" style={{ top: -18, transform: `scale(${1 / viewport.scale})`, transformOrigin: 'bottom right' }}><div className="px-1 py-0.5 rounded bg-zinc-900/90 border border-amber-500/40 text-amber-400 text-[9px] leading-none font-medium">{'★'.repeat(r)}</div></div>
+                        })()}
+                        {/* Passive FF/LF badge — top-left outside node */}
+                        {node.type === 'image' && (node.data as any).frame_role && (() => {
+                            const fr = (node.data as any).frame_role
+                            const label = fr === 'first' ? 'FF' : fr === 'last' ? 'LF' : null
+                            if (!label) return null
+                            return <div className="absolute left-0 pointer-events-none select-none" style={{ top: -18, transform: `scale(${1 / viewport.scale})`, transformOrigin: 'bottom left' }}><div className="px-1 py-0.5 rounded bg-zinc-900/90 border border-zinc-600/60 text-zinc-200 text-[9px] leading-none font-bold">{label}</div></div>
+                        })()}
+                    </NodeShell>
+                )
+            })}
+
+            {/* Column drop target overlay — during drag */}
+            {dropTargetColId && (() => {
+                const cr = renderRects.get(dropTargetColId)
+                if (!cr) return null
+                return (
+                    <div
+                        className="absolute pointer-events-none z-[9990]"
+                        style={{
+                            transform: `translate(${cr.x}px, ${cr.y + COLUMN_HEADER_HEIGHT}px)`,
+                            width: cr.width,
+                            height: cr.height - COLUMN_HEADER_HEIGHT,
+                            border: '2px solid rgba(52,211,153,0.5)',
+                            borderRadius: 6,
+                            background: 'radial-gradient(ellipse at center, rgba(52,211,153,0.06) 0%, transparent 70%)',
+                            boxShadow: '0 0 12px rgba(52,211,153,0.15)',
+                        }}
+                    />
+                )
+            })()}
+            {/* Selection box — in world space */}
+            {selectionBoxRect && selectionBoxRect.width > 2 && selectionBoxRect.height > 2 && (
+                <div data-selection-box className="absolute border border-blue-500 bg-blue-500/10 pointer-events-none z-[9998]" style={{ left: selectionBoxRect.left, top: selectionBoxRect.top, width: selectionBoxRect.width, height: selectionBoxRect.height }} />
+            )}
+
+            {/* FV pill — bottom center outside selected image node, toggle set/clear */}
+            {/* Combined row: [FF] [LF] + [FV] for image nodes */}
+            {activeNodeId && interactionMode === 'idle' && (() => {
+                const liveNode = nodesRef.current.find(n => n.id === activeNodeId)
+                if (!liveNode || liveNode.type !== 'image') return null
+                const rect = renderRects.get(activeNodeId)
+                if (!rect) return null
+                const s = 1 / viewport.scale
+                const isCurrentFV = liveNode.id === currentFinalVisualNodeId
+                const fr = primarySelectedId === activeNodeId ? ((liveNode.data as any).frame_role ?? null) : null
+                const showFfLf = primarySelectedId === activeNodeId
+                const showFv = !!onSetFinalVisual
+                if (!showFfLf && !showFv) return null
+                const setRole = (role: string | null) => {
+                    setNodes(p => p.map(n => n.id === liveNode.id ? { ...n, data: { ...n.data, frame_role: role } } : n))
+                    setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                }
+                return (
+                    <div
+                        className="absolute z-[9997] pointer-events-auto"
+                        style={{ left: rect.x + rect.width / 2, top: rect.y + rect.height + 8 * s, transform: `translateX(-50%) scale(${s})`, transformOrigin: 'top center' }}
+                    >
+                        <div className="flex items-center gap-1">
+                            {showFfLf && (
+                                <>
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); setRole(fr === 'first' ? null : 'first') }}
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        className={`px-1.5 py-0.5 text-[10px] font-bold border rounded whitespace-nowrap transition-colors ${fr === 'first'
+                                            ? 'bg-zinc-700/60 text-zinc-100 border-zinc-500/60'
+                                            : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300 hover:border-zinc-500'
+                                            }`}
+                                    >FF</button>
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); setRole(fr === 'last' ? null : 'last') }}
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        className={`px-1.5 py-0.5 text-[10px] font-bold border rounded whitespace-nowrap transition-colors ${fr === 'last'
+                                            ? 'bg-zinc-700/60 text-zinc-100 border-zinc-500/60'
+                                            : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300 hover:border-zinc-500'
+                                            }`}
+                                    >LF</button>
+                                </>
+                            )}
+                            {showFv && (
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        if (isCurrentFV) { void onClearFinalVisual?.() }
+                                        else { void onSetFinalVisual?.(liveNode.id) }
+                                    }}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    className={`px-2 py-0.5 text-[10px] font-medium border rounded whitespace-nowrap transition-colors ${isCurrentFV
+                                        ? 'bg-emerald-900/80 border-emerald-500 text-emerald-400 hover:bg-red-900/60 hover:border-red-500 hover:text-red-400'
+                                        : 'bg-zinc-800 border-zinc-600 text-zinc-400 hover:border-emerald-500 hover:text-emerald-400'
+                                        }`}
+                                >
+                                    {isCurrentFV ? 'Final Visual ✓' : 'Set Final Visual'}
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                )
+            })()}
+
+            {/* Output pill — bottom center outside video node, toggle set/clear */}
+            {onSetOutputVideo && activeNodeId && interactionMode === 'idle' && (() => {
+                const node = nodesRef.current.find(n => n.id === activeNodeId)
+                if (!node || node.type !== 'video') return null
+                const rect = renderRects.get(activeNodeId)
+                if (!rect) return null
+                const s = 1 / viewport.scale
+                const isOutput = node.id === outputVideoNodeId
+                return (
+                    <div
+                        className="absolute z-[9997] pointer-events-auto"
+                        style={{ left: rect.x + rect.width / 2, top: rect.y + rect.height + 8 * s, transform: `translateX(-50%) scale(${s})`, transformOrigin: 'top center' }}
+                    >
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                if (isOutput) { void onClearOutputVideo?.() }
+                                else { void onSetOutputVideo?.(node.id, (node.data as any)?.src ?? '') }
+                            }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            className={`px-2 py-0.5 text-[10px] font-medium border rounded whitespace-nowrap transition-colors ${isOutput
+                                ? 'bg-emerald-900/80 border-emerald-600 text-emerald-400 hover:bg-red-900/60 hover:border-red-500 hover:text-red-400'
+                                : 'bg-zinc-800 border-zinc-600 text-zinc-400 hover:border-emerald-500 hover:text-emerald-400'
+                                }`}
+                        >
+                            {isOutput ? 'Output ✓' : 'Set Output'}
+                        </button>
+                    </div>
+                )
+            })()}
+
+            {/* Rating pill — top-right outside node, cycles 0→1→2→3→0 (image/video with storage_path) */}
+            {onSetRating && activeNodeId && interactionMode === 'idle' && (() => {
+                const node = nodesRef.current.find(n => n.id === activeNodeId)
+                if (!node || (node.type !== 'image' && node.type !== 'video')) return null
+                const sp = (node.data as any)?.storage_path
+                if (!sp) return null
+                const rect = renderRects.get(activeNodeId)
+                if (!rect) return null
+                const s = 1 / viewport.scale
+                const rating = ratingMap?.[sp] ?? 0
+                return (
+                    <div
+                        className="absolute z-[9997] pointer-events-auto"
+                        style={{ left: rect.x + rect.width + 4 * s, top: rect.y, transform: `scale(${s})`, transformOrigin: 'top left' }}
+                    >
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                const next = (rating + 1) % 4
+                                onSetRating(sp, next)
+                            }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            className={`px-1.5 py-0.5 text-[11px] font-medium border rounded whitespace-nowrap transition-colors ${rating > 0
+                                ? 'bg-amber-900/60 border-amber-500/60 text-amber-400'
+                                : 'bg-zinc-800 border-zinc-600 text-zinc-500 hover:border-amber-500/60 hover:text-amber-400'
+                                }`}
+                        >
+                            {'★'.repeat(rating || 0)}{'☆'.repeat(3 - (rating || 0))}
+                        </button>
+                    </div>
+                )
+            })()}
+        </div>
+        {nodes.length === 0 && edges.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none"><p className="text-zinc-600 text-sm">Drag "Note" or "Image" from sidebar to canvas</p></div>
+        )}
+
+        {/* R4-005: Zoom indicator — outside viewport transform */}
+        {viewport.scale !== 1 && (
+            <div className="absolute bottom-3 right-3 text-zinc-500 text-xs bg-zinc-900/80 px-2 py-1 rounded pointer-events-none z-[9999]">
+                {Math.round(viewport.scale * 100)}%
+            </div>
+        )}
+
+        {/* R4.0a: Image Inspect Overlay */}
+        {inspectImage && (
+            <ImageInspectOverlay
+                src={inspectImage.src}
+                storagePath={inspectImage.storagePath}
+                naturalWidth={inspectImage.naturalWidth}
+                naturalHeight={inspectImage.naturalHeight}
+                onClose={() => setInspectImage(null)}
+            />
+        )}
+
+        {/* Confirm Modal — replaces window.confirm for delete guards */}
+        {confirmState && (
+            <ConfirmModal
+                title={confirmState.title}
+                body={confirmState.body}
+                confirmLabel={confirmState.confirmLabel}
+                danger={confirmState.danger}
+                onConfirm={confirmState.onConfirm}
+                onCancel={() => setConfirmState(null)}
+            />
+        )}
+    </div>
+)
+    })

@@ -417,3 +417,37 @@ export function VideoContent({ data, viewportScale = 1 }: VideoContentProps) {
         </div>
     )
 }
+
+export function EntityRefContent({ data }: { data: EntityRefData }) {
+    const typeEmoji = data.entity_type === 'character' ? '👤'
+        : data.entity_type === 'environment' ? '🌍'
+            : data.entity_type === 'prop' ? '🎭' : '🎬'
+
+    const typeColor = data.entity_type === 'character' ? 'border-amber-500/30 bg-amber-500/5'
+        : data.entity_type === 'environment' ? 'border-emerald-500/30 bg-emerald-500/5'
+            : data.entity_type === 'prop' ? 'border-blue-500/30 bg-blue-500/5'
+                : 'border-purple-500/30 bg-purple-500/5'
+
+    return (
+        <div className={`w-full h-full flex flex-col items-center justify-center gap-1.5 rounded border-2 border-dashed ${typeColor} p-3`}>
+            {data.thumbnail_path ? (
+                <img src={data.thumbnail_path} alt="" className="w-10 h-10 rounded object-cover" />
+            ) : (
+                <span className="text-2xl">{typeEmoji}</span>
+            )}
+            <span className="text-[10px] font-medium text-zinc-200 text-center truncate max-w-full">
+                {data.entity_name || 'Entity'}
+            </span>
+            <span className="text-[8px] text-zinc-500 uppercase tracking-wider">
+                {data.entity_type} ref
+            </span>
+        </div>
+    )
+}
+
+export interface EntityRefData {
+    entity_id: string
+    entity_name: string
+    entity_type: 'character' | 'environment' | 'prop' | 'cinematography'
+    thumbnail_path?: string
+}
