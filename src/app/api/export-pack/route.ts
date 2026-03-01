@@ -100,21 +100,13 @@ export async function POST(req: NextRequest) {
 
         const supabase = createClient(supabaseUrl, serviceKey)
 
-        // Guardrail: exclude output videos (too large for buffered mode)
+        // Guardrail: dedupe by nodeId (highest-priority role wins), total size capped
         const MAX_PACK_BYTES = 50 * 1024 * 1024 // 50 MB
-        const assetsFiltered = dedupeAssets(body.assets).filter(a => {
-            if (a.role === 'output') {
-                console.log(`[export-pack] excluding output video ${a.nodeId} (buffered mode)`)
-                return false
-            }
-            return true
-        })
+        const assets = dedupeAssets(body.assets)
 
-        if (assetsFiltered.length === 0) {
-            return NextResponse.json({ error: 'No exportable assets (output videos excluded in buffered mode)' }, { status: 400 })
+        if (assets.length === 0) {
+            return NextResponse.json({ error: 'No exportable assets after dedup' }, { status: 400 })
         }
-
-        const assets = assetsFiltered
 
         // ── 3. Use client-provided export names (human filenames, collision-resolved) ──
         interface ResolvedAsset {
