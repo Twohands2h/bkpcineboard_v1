@@ -1,13 +1,16 @@
 'use client'
 
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+
 import type { CanvasNode } from '@/components/canvas/TakeCanvas'
 import {
     IMAGE_GENERATED_WITH_OPTIONS,
     VIDEO_GENERATED_WITH_OPTIONS,
     normalizeProvenanceValue,
 } from '@/lib/provenance-options'
+import { getEntityAction, type Entity } from '@/app/actions/entities'
 
+const entityCache = new Map<string, Entity>()
 // ── Helpers ──
 
 function humanType(node: CanvasNode): string {
@@ -17,6 +20,7 @@ function humanType(node: CanvasNode): string {
         case 'note': return 'Note'
         case 'column': return 'Column'
         case 'prompt': return 'Prompt'
+        case 'entity_ref': return 'Entity Ref'
         default: return 'Node'
     }
 }
@@ -72,6 +76,7 @@ interface InspectorPanelProps {
     node: CanvasNode | null
     onClose: () => void
     onUpdateNodeData?: (nodeId: string, patch: Record<string, any>) => void
+    onOpenEntityEdit?: (entityId: string) => void
 }
 
 // ── Component ──
@@ -83,6 +88,22 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData }: InspectorPan
 
     const showGeneratedWith = node?.type === 'image' || node?.type === 'video'
     const showToolOrigin = node?.type === 'prompt'
+    const isEntityRef = node?.type === 'entity_ref'
+
+    const [fetchedEntity, setFetchedEntity] = useState<Entity | null>(null)
+    const [entityLoading, setEntityLoading] = useState(false)
+    const prevEntityIdRef = useRef<string | null>(null)
+
+    useEffect(() => {
+        if (!isEntityRef || !data.entity_id) { setFetchedEntity(null); prevEntityIdRef.current = null; return }
+        const eid = data.entity_id as string
+        if (eid === prevEntityIdRef.current) return
+        prevEntityIdRef.current = eid
+        const cached = entityCache.get(eid)
+        if (cached) { setFetchedEntity(cached); return }
+        setEntityLoading(true)
+        getEntityAction(eid).then(e => { if (e) { entityCache.set(eid, e); setFetchedEntity(e) }; setEntityLoading(false) }).catch(() => setEntityLoading(false))
+    }, [isEntityRef, data.entity_id])
 
     return (
         <div className="absolute top-0 right-0 bottom-0 w-72 z-30 pointer-events-none">
@@ -171,7 +192,71 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData }: InspectorPan
                                     </div>
                                 </Section>
                             )}
+                            {/* Entity Ref Pack */}
+                            {isEntityRef && (
+                                <>
+                                    <Section label="Entity Name"><Value>{data.entity_name ?? '—'}</Value></Section>
+                                    <Section label="Entity Type"><Value>{data.entity_type ?? '—'}</Value></Section>
 
+                                    {entityLoading && <p className="text-[10px] text-zinc-600 italic">Loading entity…</p>}
+
+                                    {fetchedEntity && (() => {
+                                        const c = fetchedEntity.content as any
+                                        return (<>
+                                            {c?.media?.length > 0 && (
+                                                <Section label={`Media (${c.media.length})`}>
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {c.media.map((m: any, i: number) => (
+                                                            <div key={i} className="w-12 h-12 bg-zinc-800 border border-zinc-700 rounded overflow-hidden flex items-center justify-center">
+                                                                <span className="text-zinc-600 text-[8px]">{m.asset_type === 'video' ? '▶' : 'IMG'}</span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </Section>
+                                            )}
+                                            {c?.prompts?.length > 0 && (
+                                                <CollapsibleSection label={`Prompts (${c.prompts.length})`}>
+                                                    {c.prompts.map((p: any, i: number) => (
+                                                        <div key={i} className="mb-2">
+                                                            {p.title && <div className="text-[10px] text-zinc-400 font-medium">{p.title}</div>}
+                                                            <div className="text-[10px] text-zinc-500 whitespace-pre-wrap break-words">{p.body}</div>
+                                                            <div className="flex items-center gap-1 mt-0.5">
+                                                                {p.origin && <span className="text-[8px] text-zinc-600">{p.origin}</span>}
+                                                                <CopyButton text={p.body} size={9} />
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </CollapsibleSection>
+                                            )}
+                                            {c?.notes?.length > 0 && (
+                                                <CollapsibleSection label={`Notes (${c.notes.length})`}>
+                                                    {c.notes.map((n: any, i: number) => (
+                                                        <div key={i} className="text-[10px] text-zinc-500 mb-1 whitespace-pre-wrap break-words">{n.body}</div>
+                                                    ))}
+                                                </CollapsibleSection>
+                                            )}
+                                            {c?.provenance && (c.provenance.generated_with || c.provenance.tool_origin) && (
+                                                <Section label="Provenance">
+                                                    {c.provenance.generated_with && <Value>Generated: {c.provenance.generated_with}</Value>}
+                                                    {c.provenance.tool_origin && <Value>Origin: {c.provenance.tool_origin}</Value>}
+                                                </Section>
+                                            )}
+                                        </>)
+                                    })()}
+
+                                    {data.entity_id && onOpenEntityEdit && (
+                                        <div className="pt-1">
+                                            <button onClick={() => onOpenEntityEdit(data.entity_id)} className="w-full px-2 py-1.5 text-[10px] rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 hover:bg-amber-500/20 transition-colors text-center">
+                                                Edit Entity
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {!entityLoading && !fetchedEntity && data.entity_id && (
+                                        <p className="text-[9px] text-zinc-600 italic">Entity data unavailable</p>
+                                    )}
+                                </>
+                            )}
                             {/* Canvas position */}
                             <Section label="Position">
                                 <Value>{Math.round(node.x)}, {Math.round(node.y)}</Value>
@@ -207,6 +292,17 @@ function Value({ children, sub, className }: { children: React.ReactNode; sub?: 
     return (
         <div className={`text-[11px] ${sub ? 'text-zinc-500 italic' : 'text-zinc-300'} ${className ?? ''}`}>
             {children}
+        </div>
+    )
+}
+function CollapsibleSection({ label, children }: { label: string; children: React.ReactNode }) {
+    const [open, setOpen] = useState(false)
+    return (
+        <div>
+            <button onClick={() => setOpen(p => !p)} className="text-[10px] text-zinc-600 uppercase tracking-wider mb-0.5 flex items-center gap-1 hover:text-zinc-400 transition-colors">
+                <span className="text-[8px]">{open ? '▼' : '▶'}</span>{label}
+            </button>
+            {open && <div className="pl-2 border-l border-zinc-800 mt-1">{children}</div>}
         </div>
     )
 }
