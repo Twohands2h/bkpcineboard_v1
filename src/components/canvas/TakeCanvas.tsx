@@ -95,6 +95,7 @@ export interface TakeCanvasHandle {
     getCanvasRect: () => DOMRect | null
     getViewportScale: () => number
     updateNodeData: (nodeId: string, patch: Record<string, any>) => void
+    updateNodeDataWithHistory: (nodeId: string, patch: Record<string, any>) => void
     beginBatch: () => void
     endBatch: () => void
 }
@@ -489,6 +490,12 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setTimeout(emitNodesChange, 0)
         }, [emitNodesChange])
 
+        // Variant with undo history — used by Inspector provenance edits only
+        const updateNodeDataWithHistory = useCallback((nodeId: string, patch: Record<string, any>) => {
+            setNodes(p => p.map(n => n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n))
+            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+        }, [pushHistory, emitNodesChange])
+
         const beginBatch = useCallback(() => { batchRef.current = true }, [])
         const endBatch = useCallback(() => {
             batchRef.current = false
@@ -504,8 +511,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen,
             getCanvasRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
             getViewportScale: () => viewportRef.current.scale,
-            updateNodeData, beginBatch, endBatch,
-        }), [nodes, edges, createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen, updateNodeData, beginBatch, endBatch])
+            updateNodeData, updateNodeDataWithHistory, beginBatch, endBatch,
+        }), [nodes, edges, createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen, updateNodeData, updateNodeDataWithHistory, beginBatch, endBatch])
 
         useEffect(() => {
             setSelectedNodeIds(new Set()); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('idle'); setEditingField(null)
@@ -1081,7 +1088,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => { setSelectedNodeIds(new Set([nodeId])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('editing'); setEditingField(field) }, [])
         const handleFieldFocus = useCallback((f: 'title' | 'body') => setEditingField(f), [])
         // Flush: on blur, commit any pending debounced history immediately.
-        // emitNodesChange already fired immediately in handleDataChange — only pushHistory needs flush.
+        // emitNodesChange deferred via setTimeout(0) in handleDataChange — only pushHistory needs flush.
         const handleFieldBlur = useCallback(() => {
             if (dataChangeTimerRef.current) { clearTimeout(dataChangeTimerRef.current); dataChangeTimerRef.current = null; pushHistory() }
             setInteractionMode('idle'); setEditingField(null)
@@ -1092,7 +1099,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const DATA_CHANGE_DEBOUNCE = 500
         const handleDataChange = useCallback((nodeId: string, data: NoteData | ColumnData | PromptData) => {
             setNodes(p => p.map(n => n.id === nodeId ? { ...n, data: data as any } : n))
-            emitNodesChange()
+            setTimeout(emitNodesChange, 0)
             if (dataChangeTimerRef.current) clearTimeout(dataChangeTimerRef.current)
             dataChangeTimerRef.current = setTimeout(() => { dataChangeTimerRef.current = null; pushHistory() }, DATA_CHANGE_DEBOUNCE)
         }, [pushHistory, emitNodesChange])
@@ -1571,25 +1578,12 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                     if (r === 0) return null
                                     return <div className="absolute right-0 pointer-events-none select-none" style={{ top: -18, transform: `scale(${1 / viewport.scale})`, transformOrigin: 'bottom right' }}><div className="px-1 py-0.5 rounded bg-zinc-900/90 border border-amber-500/40 text-amber-400 text-[9px] leading-none font-medium">{'★'.repeat(r)}</div></div>
                                 })()}
-                                {/* Passive FF/LF indicator — outside top-left */}
-                                {node.type === 'image' && (node.data as any)?.frame_role && (() => {
+                                {/* Passive FF/LF badge — top-left outside node */}
+                                {node.type === 'image' && (node.data as any).frame_role && (() => {
                                     const fr = (node.data as any).frame_role
                                     const label = fr === 'first' ? 'FF' : fr === 'last' ? 'LF' : null
                                     if (!label) return null
-                                    const color = fr === 'first' ? 'text-cyan-400 border-cyan-500/40' : 'text-violet-400 border-violet-500/40'
-                                    return <div className="absolute left-0 pointer-events-none select-none" style={{ top: -18, transform: `scale(${1 / viewport.scale})`, transformOrigin: 'bottom left' }}><div className={`px-1 py-0.5 rounded bg-zinc-900/90 border text-[9px] leading-none font-bold ${color}`}>{label}</div></div>
-                                })()}
-                                {/* Frame role toggle — selected image only */}
-                                {node.type === 'image' && primarySelectedId === node.id && interactionMode === 'idle' && (() => {
-                                    const fr = (node.data as any)?.frame_role ?? null
-                                    const setRole = (role: string | null) => {
-                                        setNodes(p => p.map(n => n.id === node.id ? { ...n, data: { ...n.data, frame_role: role } } : n))
-                                        setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
-                                    }
-                                    return <div className="absolute left-0 flex gap-0.5 select-none" style={{ bottom: -22, transform: `scale(${1 / viewport.scale})`, transformOrigin: 'top left' }}>
-                                        <button onClick={e => { e.stopPropagation(); setRole(fr === 'first' ? null : 'first') }} className={`px-1.5 py-0.5 rounded text-[9px] font-bold leading-none border transition-colors ${fr === 'first' ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300'}`}>FF</button>
-                                        <button onClick={e => { e.stopPropagation(); setRole(fr === 'last' ? null : 'last') }} className={`px-1.5 py-0.5 rounded text-[9px] font-bold leading-none border transition-colors ${fr === 'last' ? 'bg-violet-500/20 text-violet-300 border-violet-500/40' : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300'}`}>LF</button>
-                                    </div>
+                                    return <div className="absolute left-0 pointer-events-none select-none" style={{ top: -18, transform: `scale(${1 / viewport.scale})`, transformOrigin: 'bottom left' }}><div className="px-1 py-0.5 rounded bg-zinc-900/90 border border-zinc-600/60 text-zinc-200 text-[9px] leading-none font-bold">{label}</div></div>
                                 })()}
                             </NodeShell>
                         )
@@ -1620,32 +1614,65 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     )}
 
                     {/* FV pill — bottom center outside selected image node, toggle set/clear */}
-                    {onSetFinalVisual && activeNodeId && interactionMode === 'idle' && (() => {
+                    {/* Combined row: [FF] [LF] + [FV] for image nodes */}
+                    {activeNodeId && interactionMode === 'idle' && (() => {
                         const liveNode = nodesRef.current.find(n => n.id === activeNodeId)
                         if (!liveNode || liveNode.type !== 'image') return null
                         const rect = renderRects.get(activeNodeId)
                         if (!rect) return null
                         const s = 1 / viewport.scale
                         const isCurrentFV = liveNode.id === currentFinalVisualNodeId
+                        const fr = primarySelectedId === activeNodeId ? ((liveNode.data as any).frame_role ?? null) : null
+                        const showFfLf = primarySelectedId === activeNodeId
+                        const showFv = !!onSetFinalVisual
+                        if (!showFfLf && !showFv) return null
+                        const setRole = (role: string | null) => {
+                            setNodes(p => p.map(n => n.id === liveNode.id ? { ...n, data: { ...n.data, frame_role: role } } : n))
+                            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                        }
                         return (
                             <div
                                 className="absolute z-[9997] pointer-events-auto"
                                 style={{ left: rect.x + rect.width / 2, top: rect.y + rect.height + 8 * s, transform: `translateX(-50%) scale(${s})`, transformOrigin: 'top center' }}
                             >
-                                <button
-                                    onClick={(e) => {
-                                        e.stopPropagation()
-                                        if (isCurrentFV) { void onClearFinalVisual?.() }
-                                        else { void onSetFinalVisual?.(liveNode.id) }
-                                    }}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    className={`px-2 py-0.5 text-[10px] font-medium border rounded whitespace-nowrap transition-colors ${isCurrentFV
-                                        ? 'bg-emerald-900/80 border-emerald-500 text-emerald-400 hover:bg-red-900/60 hover:border-red-500 hover:text-red-400'
-                                        : 'bg-zinc-800 border-zinc-600 text-zinc-400 hover:border-emerald-500 hover:text-emerald-400'
-                                        }`}
-                                >
-                                    {isCurrentFV ? 'Final Visual ✓' : 'Set Final Visual'}
-                                </button>
+                                <div className="flex items-center gap-1">
+                                    {showFfLf && (
+                                        <>
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); setRole(fr === 'first' ? null : 'first') }}
+                                                onMouseDown={(e) => e.stopPropagation()}
+                                                className={`px-1.5 py-0.5 text-[10px] font-bold border rounded whitespace-nowrap transition-colors ${fr === 'first'
+                                                    ? 'bg-zinc-700/60 text-zinc-100 border-zinc-500/60'
+                                                    : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300 hover:border-zinc-500'
+                                                    }`}
+                                            >FF</button>
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); setRole(fr === 'last' ? null : 'last') }}
+                                                onMouseDown={(e) => e.stopPropagation()}
+                                                className={`px-1.5 py-0.5 text-[10px] font-bold border rounded whitespace-nowrap transition-colors ${fr === 'last'
+                                                    ? 'bg-zinc-700/60 text-zinc-100 border-zinc-500/60'
+                                                    : 'bg-zinc-800/90 text-zinc-500 border-zinc-700 hover:text-zinc-300 hover:border-zinc-500'
+                                                    }`}
+                                            >LF</button>
+                                        </>
+                                    )}
+                                    {showFv && (
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation()
+                                                if (isCurrentFV) { void onClearFinalVisual?.() }
+                                                else { void onSetFinalVisual?.(liveNode.id) }
+                                            }}
+                                            onMouseDown={(e) => e.stopPropagation()}
+                                            className={`px-2 py-0.5 text-[10px] font-medium border rounded whitespace-nowrap transition-colors ${isCurrentFV
+                                                ? 'bg-emerald-900/80 border-emerald-500 text-emerald-400 hover:bg-red-900/60 hover:border-red-500 hover:text-red-400'
+                                                : 'bg-zinc-800 border-zinc-600 text-zinc-400 hover:border-emerald-500 hover:text-emerald-400'
+                                                }`}
+                                        >
+                                            {isCurrentFV ? 'Final Visual ✓' : 'Set Final Visual'}
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                         )
                     })()}

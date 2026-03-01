@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { PROMPT_TOOL_ORIGIN_OPTIONS, normalizeProvenanceValue } from '@/lib/provenance-options'
 
 // ===================================================
 // PROMPT CONTENT — BLOCCO 4 (MEMORY NODE)
@@ -41,19 +42,10 @@ const PROMPT_TYPE_LABELS: Record<PromptType, string> = {
     'post-prompt': 'Post-Prompt',
 }
 
-// Known origins: dropdown shows these + "Altro..." sentinel.
-// Storage is always a plain string — the dropdown is just UX sugar.
-const KNOWN_ORIGINS: { value: string; label: string }[] = [
-    { value: 'manual', label: 'Manual' },
-    { value: 'claude', label: 'Claude' },
-    { value: 'chatgpt', label: 'ChatGPT' },
-    { value: 'gemini', label: 'Gemini' },
-    { value: 'midjourney', label: 'Midjourney' },
-    { value: 'runway', label: 'Runway' },
-    { value: 'veo', label: 'Veo' },
-    { value: 'comfyui', label: 'ComfyUI' },
-    { value: 'kling', label: 'Kling' },
-]
+// Known origins: derived from shared canonical list.
+// Storage is always canonical label (e.g. 'Manual', 'ChatGPT').
+// value === label === canonical string — single representation everywhere.
+const KNOWN_ORIGINS: string[] = [...PROMPT_TOOL_ORIGIN_OPTIONS]
 const ALTRO_SENTINEL = '__altro__'
 
 // Format ISO timestamp to compact readable date (e.g. "Feb 11, 2026")
@@ -143,7 +135,7 @@ export function PromptContent({
 
     // Fallback visuals for missing fields (NO mutation — just display defaults)
     const displayType = data.promptType ?? 'prompt'
-    const displayOrigin = data.origin ?? 'manual'
+    const displayOrigin = normalizeProvenanceValue(data.origin ?? '') || 'Manual'
 
     // ── DOM measurement (same as NoteContent) ──
     useLayoutEffect(() => {
@@ -234,7 +226,7 @@ export function PromptContent({
 
     // Origin: open string. Dropdown always visible.
     // Known origin → dropdown shows it. Custom origin → dropdown shows "Altro…" + input appears.
-    const isKnownOrigin = KNOWN_ORIGINS.some(o => o.value === displayOrigin)
+    const isKnownOrigin = KNOWN_ORIGINS.includes(displayOrigin)
     // Show custom input if: origin is custom string, OR user just clicked "Altro..."
     const showCustomInput = customOriginActive || (!isKnownOrigin && displayOrigin !== '')
     // Dropdown value: known origin → that value, custom → sentinel
@@ -256,17 +248,17 @@ export function PromptContent({
     const handleCustomOriginChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
         const val = e.target.value
         setCustomOriginDraft(val)
-        // Live update origin as user types (so it persists even without explicit commit)
+        // Live update origin — normalize to canonical if known
         if (val.trim()) {
-            onDataChange({ ...data, origin: val.trim() })
+            onDataChange({ ...data, origin: normalizeProvenanceValue(val.trim()) })
         }
     }, [data, onDataChange])
 
     const handleCustomOriginBlur = useCallback(() => {
         const trimmed = customOriginDraft.trim()
         if (!trimmed) {
-            // Empty custom → revert to manual
-            onDataChange({ ...data, origin: 'manual' })
+            // Empty custom → revert to Manual (canonical)
+            onDataChange({ ...data, origin: 'Manual' })
         }
         setCustomOriginActive(false)
         setCustomOriginDraft('')
@@ -312,7 +304,7 @@ export function PromptContent({
                         className="text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 rounded px-1 py-0.5 outline-none cursor-pointer appearance-auto"
                     >
                         {KNOWN_ORIGINS.map(o => (
-                            <option key={o.value} value={o.value}>{o.label}</option>
+                            <option key={o} value={o}>{o}</option>
                         ))}
                         <option value={ALTRO_SENTINEL}>Altro…</option>
                     </select>
