@@ -327,6 +327,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   const handleNodesChange = useCallback((nodes: CanvasNode[], edges: CanvasEdge[]) => {
     liveNodesRef.current = nodes
+    // Bump tick so inspector re-derives its node after data edits
+    if (inspectorOpenRef.current) setInspectorTick(t => t + 1)
     if (persistTimerRef.current) {
       clearTimeout(persistTimerRef.current)
     }
@@ -739,8 +741,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   // ── Inspector Overlay (read-only, no persistence) ──
   const [inspectorOpen, setInspectorOpen] = useState(false)
+  const inspectorOpenRef = useRef(false)
+  useEffect(() => { inspectorOpenRef.current = inspectorOpen }, [inspectorOpen])
   const inspectorSelectionRef = useRef<{ ids: Set<string>; primaryId: string | null }>({ ids: new Set(), primaryId: null })
   const [inspectorPrimaryId, setInspectorPrimaryId] = useState<string | null>(null)
+  const [inspectorTick, setInspectorTick] = useState(0) // increments to re-derive node after data change
 
   const handleSelectionChange = useCallback((ids: Set<string>, primaryId: string | null) => {
     inspectorSelectionRef.current = { ids, primaryId }
@@ -770,7 +775,14 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const inspectorNode = useMemo(() => {
     if (!inspectorOpen || !inspectorPrimaryId) return null
     return liveNodesRef.current.find(n => n.id === inspectorPrimaryId) ?? null
-  }, [inspectorOpen, inspectorPrimaryId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inspectorOpen, inspectorPrimaryId, inspectorTick])
+
+  // Inspector write callback: update node.data via canvas imperative handle
+  // Uses updateNodeDataWithHistory which does setNodes + pushHistory + emitNodesChange
+  const handleUpdateNodeData = useCallback((nodeId: string, patch: Record<string, any>) => {
+    canvasRef.current?.updateNodeDataWithHistory(nodeId, patch)
+  }, [])
 
   const handleOpenPLP = () => {
     if (!canvasRef.current) return
@@ -1340,6 +1352,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
             <InspectorPanel
               node={inspectorNode}
               onClose={() => setInspectorOpen(false)}
+              onUpdateNodeData={handleUpdateNodeData}
             />
           )}
 
