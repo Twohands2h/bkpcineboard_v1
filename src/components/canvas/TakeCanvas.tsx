@@ -433,7 +433,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         // Blocco 4 — Create Prompt Node (Memory Node)
         // Default promptType/origin assigned ONLY at creation time.
         const createPromptNodeAt = useCallback((x: number, y: number) => {
-            const n: PromptNode = { id: crypto.randomUUID(), type: 'prompt', x: Math.round(x - PROMPT_DEFAULT_WIDTH / 2), y: Math.round(y - PROMPT_DEFAULT_HEIGHT / 2), width: PROMPT_DEFAULT_WIDTH, height: PROMPT_DEFAULT_HEIGHT, zIndex: nodesRef.current.length + 1, data: { body: '', promptType: 'prompt', origin: 'Manual', createdAt: new Date().toISOString() } }
+            const n: PromptNode = { id: crypto.randomUUID(), type: 'prompt', x: Math.round(x - PROMPT_DEFAULT_WIDTH / 2), y: Math.round(y - PROMPT_DEFAULT_HEIGHT / 2), width: PROMPT_DEFAULT_WIDTH, height: PROMPT_DEFAULT_HEIGHT, zIndex: nodesRef.current.length + 1, data: { body: '', promptType: 'prompt', origin: 'manual', createdAt: new Date().toISOString() } }
             const rects = computeRenderRects(nodesRef.current, null, null)
             let targetColId: string | null = null
             for (const c of nodesRef.current) {
@@ -1088,7 +1088,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const handleStartEditing = useCallback((nodeId: string, field: 'title' | 'body') => { setSelectedNodeIds(new Set([nodeId])); setSelectedEdgeId(null); setEditingEdgeLabel(null); setInteractionMode('editing'); setEditingField(field) }, [])
         const handleFieldFocus = useCallback((f: 'title' | 'body') => setEditingField(f), [])
         // Flush: on blur, commit any pending debounced history immediately.
-        // emitNodesChange already fired immediately in handleDataChange — only pushHistory needs flush.
+        // emitNodesChange deferred via setTimeout(0) in handleDataChange — only pushHistory needs flush.
         const handleFieldBlur = useCallback(() => {
             if (dataChangeTimerRef.current) { clearTimeout(dataChangeTimerRef.current); dataChangeTimerRef.current = null; pushHistory() }
             setInteractionMode('idle'); setEditingField(null)
@@ -1099,7 +1099,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const DATA_CHANGE_DEBOUNCE = 500
         const handleDataChange = useCallback((nodeId: string, data: NoteData | ColumnData | PromptData) => {
             setNodes(p => p.map(n => n.id === nodeId ? { ...n, data: data as any } : n))
-            emitNodesChange()
+            setTimeout(emitNodesChange, 0)
             if (dataChangeTimerRef.current) clearTimeout(dataChangeTimerRef.current)
             dataChangeTimerRef.current = setTimeout(() => { dataChangeTimerRef.current = null; pushHistory() }, DATA_CHANGE_DEBOUNCE)
         }, [pushHistory, emitNodesChange])
