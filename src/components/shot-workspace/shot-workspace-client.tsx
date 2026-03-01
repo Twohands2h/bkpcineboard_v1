@@ -28,10 +28,12 @@ import { SceneShotStrip, setLastTakeForShot, type StripScene, type StripShot } f
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { InspectorPanel } from '@/components/inspector/inspector-panel'
 import { EntityLibrary } from '@/components/entities/entity-library-v3'
+import { CrystallizeModal } from '@/components/entities/crystallize-modal'
+import { EntityEditOverlay } from '@/components/entities/entity-edit-overlay'
 
-
-import { crystallizeEntityAction } from '@/app/actions/entities'
+import { crystallizeEntityAction, getEntityAction } from '@/app/actions/entities'
 import type { Entity } from '@/app/actions/entities'
+
 // ===================================================
 // SHOT WORKSPACE CLIENT — ORCHESTRATOR (R4-003)
 // ===================================================
@@ -743,6 +745,12 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [plpNodes, setPlpNodes] = useState<CanvasNode[]>([])
   const [plpEdges, setPlpEdges] = useState<CanvasEdge[]>([])
   const [showEntityLibrary, setShowEntityLibrary] = useState(false)
+  const [crystallizeState, setCrystallizeState] = useState<{
+    selectedIds: string[]
+    entityContent: any
+    nodeCount: number
+  } | null>(null)
+  const [editEntityId, setEditEntityId] = useState<string | null>(null)
   // ── Inspector Overlay (read-only, no persistence) ──
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const inspectorOpenRef = useRef(false)
@@ -818,58 +826,58 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     setShowEntityLibrary(false)
   }, [])
 
-  const handleCrystallize = useCallback(async () => {
+  const handleCrystallize = useCallback(() => {
     if (!canvasRef.current) return
     const snap = canvasRef.current.getSnapshot()
-    const selectedIds = canvasRef.current.getSelectedNodeIds()  // need to expose this
+    const selectedIds = canvasRef.current.getSelectedNodeIds()
     if (!selectedIds || selectedIds.length === 0) return
 
-    // Collect content from selected nodes for entity
     const selectedNodes = snap.nodes.filter(n => selectedIds.includes(n.id))
     const entityContent = {
       media: selectedNodes.filter(n => n.type === 'image' || n.type === 'video').map(n => ({
-        storage_path: n.data.storage_path ?? '',
+        storage_path: (n.data as any).storage_path ?? '',
         bucket: n.type === 'video' ? 'take-videos' : 'take-images',
-        display_name: n.data.display_name ?? n.data.filename ?? '',
+        display_name: (n.data as any).display_name ?? (n.data as any).filename ?? '',
         asset_type: (n.type === 'video' ? 'video' : 'image') as 'image' | 'video',
       })).filter(m => m.storage_path),
       prompts: selectedNodes.filter(n => n.type === 'prompt').map(n => ({
-        body: n.data.body ?? n.data.text ?? '',
-        promptType: n.data.promptType ?? 'prompt',
-        origin: n.data.origin ?? 'Manual',
-        title: n.data.title ?? '',
+        body: (n.data as any).body ?? (n.data as any).text ?? '',
+        promptType: (n.data as any).promptType ?? (n.data as any).prompt_type ?? 'prompt',
+        origin: (n.data as any).origin ?? 'Manual',
+        title: (n.data as any).title ?? '',
       })).filter(p => p.body),
       notes: selectedNodes.filter(n => n.type === 'note').map(n => ({
-        body: n.data.body ?? n.data.text ?? '',
+        body: (n.data as any).body ?? (n.data as any).text ?? '',
       })).filter(n => n.body),
     }
 
-    // Create the entity (prompt user for name — or use first prompt title)
-    const defaultName = entityContent.prompts[0]?.title
-      || selectedNodes[0]?.data?.title
-      || 'New Entity'
-    const entityName = prompt('Entity name:', defaultName)
-    if (!entityName) return
-    console.log('[crystallize] STEP 1 - about to create entity', projectId, entityName)  // ← AGGIUNGI
+    setCrystallizeState({ selectedIds, entityContent, nodeCount: selectedIds.length })
+  }, [])
+
+  const handleCrystallizeConfirm = useCallback(async (name: string, entityType: import('@/app/actions/entities').EntityType) => {
+    if (!canvasRef.current || !crystallizeState) return
 
     const entity = await crystallizeEntityAction({
       projectId,
-      name: entityName,
-      entityType: 'character',  // default, user can change in edit
-      content: entityContent,
+      name,
+      entityType,
+      content: crystallizeState.entityContent,
     })
-    console.log('[crystallize] STEP 2 - entity result:', entity)  // ← AGGIUNGI
-    if (!entity) return
 
+    if (!entity) {
+      console.error('[crystallize] entity creation failed')
+      setCrystallizeState(null)
+      return
+    }
 
-    // Replace selection with entity ref node
     canvasRef.current.crystallize({
       entity_id: entity.id,
       entity_name: entity.name,
       entity_type: entity.entity_type,
-      thumbnail_path: (entity.content as any)?.thumbnail_path,
     })
-  }, [projectId])
+
+    setCrystallizeState(null)
+  }, [projectId, crystallizeState])
 
 
   // ── Shot Final Visual ──
@@ -1431,6 +1439,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               node={inspectorNode}
               onClose={() => setInspectorOpen(false)}
               onUpdateNodeData={handleUpdateNodeData}
+              onOpenEntityEdit={(eid) => setEditEntityId(eid)}
             />
           )}
 
@@ -1461,6 +1470,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           onClose={() => setShowEntityLibrary(false)}
           onInsertRef={handleInsertEntityRef}
         />
+      )}
+      {crystallizeState && (
+        <CrystallizeModal
+          nodeCount={crystallizeState.nodeCount}
+          onConfirm={handleCrystallizeConfirm}
+          onCancel={() => setCrystallizeState(null)}
+        />
+      )}
+      {editEntityId && (
+        <EditEntityLoader entityId={editEntityId} projectId={projectId} onClose={() => setEditEntityId(null)} />
       )}
       {exportNodes && readyTakeId && (
         <ExportTakeModal
@@ -1515,4 +1534,17 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       )}
     </div>
   )
+}
+// ── Thin loader for Edit Entity from Inspector ──
+function EditEntityLoader({ entityId, projectId, onClose }: { entityId: string; projectId: string; onClose: () => void }) {
+  const [entity, setEntity] = useState<Entity | null>(null)
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    let cancelled = false
+    getEntityAction(entityId).then(e => { if (!cancelled) { setEntity(e); setLoading(false) } }).catch(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [entityId])
+  if (loading) return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70"><p className="text-xs text-zinc-500">Loading…</p></div>
+  if (!entity) return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70" onClick={onClose}><p className="text-xs text-red-400">Entity not found</p></div>
+  return <EntityEditOverlay entity={entity} projectId={projectId} onSave={() => onClose()} onClose={onClose} />
 }
