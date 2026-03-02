@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 
 // ── Normalizers: handle both EntityContent shape AND Crystallize v1 shape ──
 
-interface NormalizedMedia {
+export interface NormalizedMedia {
     storage_path: string
     src: string
     filename: string
@@ -13,18 +13,18 @@ interface NormalizedMedia {
     generated_with: string
 }
 
-interface NormalizedPrompt {
+export interface NormalizedPrompt {
     title: string
     body: string
     origin: string
     promptType: string
 }
 
-interface NormalizedNote {
+export interface NormalizedNote {
     body: string
 }
 
-function normalizeMedia(raw: any[]): NormalizedMedia[] {
+export function normalizeMedia(raw: any[]): NormalizedMedia[] {
     return (raw ?? []).map((m: any) => ({
         storage_path: m.storage_path ?? m.storagePath ?? '',
         src: m.src ?? '',
@@ -34,7 +34,7 @@ function normalizeMedia(raw: any[]): NormalizedMedia[] {
     })).filter(m => m.storage_path || m.src)
 }
 
-function normalizePrompts(raw: any[]): NormalizedPrompt[] {
+export function normalizePrompts(raw: any[]): NormalizedPrompt[] {
     return (raw ?? []).map((p: any) => ({
         title: p.title ?? '',
         body: p.body ?? p.text ?? '',
@@ -43,13 +43,13 @@ function normalizePrompts(raw: any[]): NormalizedPrompt[] {
     })).filter(p => (p.body ?? '').trim().length > 0)
 }
 
-function normalizeNotes(raw: any[]): NormalizedNote[] {
+export function normalizeNotes(raw: any[]): NormalizedNote[] {
     return (raw ?? []).map((n: any) => ({
         body: n.body ?? n.text ?? '',
     })).filter(n => (n.body ?? '').trim().length > 0)
 }
 
-function getMediaUrl(m: NormalizedMedia): string {
+export function getMediaUrl(m: NormalizedMedia): string {
     if (m.src) return m.src
     if (!m.storage_path) return ''
     const supabase = createClient()
@@ -59,16 +59,23 @@ function getMediaUrl(m: NormalizedMedia): string {
 
 // ── Copy helper ──
 function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text).catch(() => {})
+    navigator.clipboard.writeText(text).catch(() => { })
 }
 
 // ── Component ──
 
 interface EntityPackPreviewProps {
     content: any
+    /** 'compact' = small thumbs (default), 'full' = full-width media for inspector drawer */
+    variant?: 'compact' | 'full'
+    /** Called when user clicks a media thumbnail (for external lightbox) */
+    onImageClick?: (url: string) => void
 }
 
-export function EntityPackPreview({ content }: EntityPackPreviewProps) {
+export function EntityPackPreview({ content, variant = 'compact', onImageClick }: EntityPackPreviewProps) {
+    const [resolutions, setResolutions] = useState<Record<number, string>>({})
+    const [downloading, setDownloading] = useState<Record<number, boolean>>({})
+
     if (!content || typeof content !== 'object') {
         return <p className="text-[10px] text-zinc-600 italic">No content</p>
     }
@@ -82,28 +89,90 @@ export function EntityPackPreview({ content }: EntityPackPreviewProps) {
         return <p className="text-[10px] text-zinc-600 italic">Empty pack</p>
     }
 
+    const handleBlobDownload = async (m: NormalizedMedia, idx: number) => {
+        if (downloading[idx]) return
+        setDownloading(prev => ({ ...prev, [idx]: true }))
+        try {
+            const url = getMediaUrl(m)
+            const resp = await fetch(url)
+            const blob = await resp.blob()
+            const a = document.createElement('a')
+            a.href = URL.createObjectURL(blob)
+            a.download = m.filename || 'download'
+            a.style.display = 'none'
+            document.body.appendChild(a)
+            a.click()
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(a.href) }, 100)
+        } catch (err) {
+            console.error('[entity-pack] download error:', err)
+        }
+        setDownloading(prev => ({ ...prev, [idx]: false }))
+    }
+
     return (
         <div className="space-y-3">
             {/* Media */}
             {media.length > 0 && (
                 <div>
                     <div className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1">Media ({media.length})</div>
-                    <div className="flex flex-wrap gap-1">
-                        {media.map((m, i) => (
-                            <div key={i} className="w-14 h-14 bg-zinc-800 border border-zinc-700 rounded overflow-hidden flex-shrink-0">
-                                {m.kind === 'video' ? (
-                                    <div className="w-full h-full flex items-center justify-center text-zinc-500 text-sm">▶</div>
-                                ) : (
-                                    <img
-                                        src={getMediaUrl(m)}
-                                        alt={m.filename}
-                                        className="w-full h-full object-cover"
-                                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                                    />
-                                )}
-                            </div>
-                        ))}
-                    </div>
+                    {variant === 'full' ? (
+                        <div className="space-y-2">
+                            {media.map((m, i) => (
+                                <div key={i} className="bg-zinc-800 border border-zinc-700 rounded overflow-hidden">
+                                    {m.kind === 'video' ? (
+                                        <div className="w-full h-32 flex items-center justify-center text-zinc-500 text-lg">▶</div>
+                                    ) : (
+                                        <img
+                                            src={getMediaUrl(m)}
+                                            alt={m.filename}
+                                            className="w-full object-contain max-h-48 bg-zinc-900 cursor-pointer hover:opacity-90 transition-opacity"
+                                            onClick={() => onImageClick?.(getMediaUrl(m))}
+                                            onLoad={(e) => {
+                                                const img = e.target as HTMLImageElement
+                                                if (img.naturalWidth && !resolutions[i]) {
+                                                    setResolutions(prev => ({ ...prev, [i]: `${img.naturalWidth}×${img.naturalHeight}` }))
+                                                }
+                                            }}
+                                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                        />
+                                    )}
+                                    <div className="px-2 py-1 flex items-center justify-between">
+                                        <div className="flex items-center gap-1.5 truncate flex-1">
+                                            <span className="text-[9px] text-zinc-500 truncate">{m.filename || 'unnamed'}</span>
+                                            {resolutions[i] && <span className="text-[8px] text-zinc-600 shrink-0">{resolutions[i]}</span>}
+                                        </div>
+                                        {(m.storage_path || m.src) && (
+                                            <button
+                                                onClick={() => handleBlobDownload(m, i)}
+                                                disabled={downloading[i]}
+                                                className="text-[8px] text-zinc-600 hover:text-zinc-400 disabled:opacity-50 transition-colors ml-1 shrink-0"
+                                                title="Download"
+                                            >
+                                                {downloading[i] ? '…' : '⬇'}
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="flex flex-wrap gap-1">
+                            {media.map((m, i) => (
+                                <div key={i} className="w-14 h-14 bg-zinc-800 border border-zinc-700 rounded overflow-hidden flex-shrink-0">
+                                    {m.kind === 'video' ? (
+                                        <div className="w-full h-full flex items-center justify-center text-zinc-500 text-sm">▶</div>
+                                    ) : (
+                                        <img
+                                            src={getMediaUrl(m)}
+                                            alt={m.filename}
+                                            className="w-full h-full object-cover"
+                                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                        />
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -115,7 +184,10 @@ export function EntityPackPreview({ content }: EntityPackPreviewProps) {
                             {p.title && <div className="text-[10px] text-zinc-400 font-medium">{p.title}</div>}
                             <div className="text-[10px] text-zinc-500 whitespace-pre-wrap break-words leading-relaxed">{p.body}</div>
                             <div className="flex items-center gap-1.5 mt-0.5">
-                                {p.promptType && <span className="text-[8px] text-zinc-600 bg-zinc-800 px-1 rounded">{p.promptType}</span>}
+                                {p.promptType && <span className={`text-[8px] px-1 rounded ${p.promptType === 'master' ? 'text-amber-400 bg-amber-500/10' :
+                                        p.promptType === 'negative' ? 'text-red-400 bg-red-500/10' :
+                                            'text-zinc-500 bg-zinc-800'
+                                    }`}>{p.promptType}</span>}
                                 {p.origin && <span className="text-[8px] text-zinc-600">· {p.origin}</span>}
                                 <button
                                     onClick={() => copyToClipboard(p.body)}

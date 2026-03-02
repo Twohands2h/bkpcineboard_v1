@@ -9,6 +9,8 @@ import {
     type EntityType,
 } from '@/app/actions/entities'
 import { EntityEditOverlay } from './entity-edit-overlay'
+import { createClient } from '@/lib/supabase/client'
+import { invalidateEntityCache, bumpEntityVersion } from '@/lib/entities/entity-cache'
 
 // ── Constants ──
 
@@ -97,6 +99,8 @@ export function EntityLibrary({ projectId, onClose, onInsertRef }: EntityLibrary
 
     const handleEditSaved = (updated: Entity) => {
         setEntities(prev => prev.map(e => e.id === updated.id ? updated : e))
+        invalidateEntityCache(updated.id)
+        bumpEntityVersion()
         setEditingEntity(null)
     }
 
@@ -230,7 +234,14 @@ function EntityRow({ entity, onEdit, onDelete, onInsertRef }: {
     const mediaCount = (entity.content as any)?.media?.length ?? 0
     const promptCount = (entity.content as any)?.prompts?.length ?? 0
     const description = (entity.content as any)?.description ?? ''
-    const thumbnail = (entity.content as any)?.thumbnail_path
+    const thumbnail = (() => {
+        const tp = (entity.content as any)?.thumbnail_path
+        const firstMedia = (entity.content as any)?.media?.[0]
+        const sp = tp || firstMedia?.storage_path || firstMedia?.storagePath
+        if (!sp) return firstMedia?.src || null
+        const bucket = firstMedia?.kind === 'video' ? 'take-videos' : (firstMedia?.bucket || 'take-images')
+        return createClient().storage.from(bucket).getPublicUrl(sp).data.publicUrl
+    })()
 
     return (
         <div className="group flex items-start gap-3 p-3 bg-zinc-800/40 border border-zinc-700/50 rounded-lg hover:border-zinc-600/60 transition-colors">
