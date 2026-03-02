@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import {
     updateEntityAction,
@@ -41,6 +41,7 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
     const [provenance, setProvenance] = useState(content.provenance ?? {})
     const [saving, setSaving] = useState(false)
     const [uploading, setUploading] = useState(false)
+    const fileInputRef = useRef<HTMLInputElement>(null)
 
     // ── Save ──
 
@@ -57,6 +58,7 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
             thumbnail_path: media[0]?.storage_path ?? content.thumbnail_path,
         }
 
+        if (process.env.NODE_ENV === 'development') console.log('[entity-edit] SAVE content media:', newContent.media?.length ?? 0)
         const updated = await updateEntityAction({
             entityId: entity.id,
             name: name.trim() || 'Untitled Entity',
@@ -64,6 +66,7 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
             content: newContent,
         })
 
+        if (process.env.NODE_ENV === 'development') console.log('[entity-edit] SAVE result:', updated?.id, 'media in result:', (updated?.content as any)?.media?.length ?? 0)
         if (updated) onSave(updated)
         setSaving(false)
     }, [entity.id, name, entityType, description, media, prompts, notes, provenance, content.thumbnail_path, saving, onSave])
@@ -71,14 +74,17 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
     // ── Media upload ──
 
     const handleMediaUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (process.env.NODE_ENV === 'development') console.log('[entity-edit] handleMediaUpload ENTER, files:', e.target.files?.length ?? 0)
         const files = e.target.files
         if (!files || files.length === 0) return
+        const fileList = Array.from(files)
         e.target.value = ''
         setUploading(true)
 
         const supabase = createClient()
 
-        for (const file of Array.from(files)) {
+        for (const file of fileList) {
+
             const isVideo = file.type.startsWith('video/')
             const bucket = isVideo ? 'take-videos' : 'take-images'
             const ext = file.name.split('.').pop() || (isVideo ? 'mp4' : 'png')
@@ -92,6 +98,7 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                 console.error('[entity-edit] upload error:', error)
                 continue
             }
+            console.log('[entity-edit] upload OK, path:', storagePath)
 
             const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(storagePath)
 
@@ -187,10 +194,12 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                     <div>
                         <div className="flex items-center justify-between mb-1.5">
                             <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Media ({media.length})</label>
-                            <label className="px-2 py-0.5 text-[9px] rounded bg-zinc-800 border border-zinc-700 text-zinc-400 hover:text-zinc-200 cursor-pointer transition-colors">
+                            <button type="button" onClick={() => { if (fileInputRef.current) { fileInputRef.current.value = ''; fileInputRef.current.click() }; if (process.env.NODE_ENV === 'development') console.log('[entity-edit] upload click') }} className="px-2 py-0.5 text-[9px]
+ rounded bg-zinc-800 border border-zinc-700 text-zinc-400 hover:text-zinc-200 cursor-pointer transition-colors">
                                 {uploading ? '⏳ Uploading…' : '+ Upload'}
-                                <input type="file" multiple accept="image/*,video/*" onChange={handleMediaUpload} className="hidden" />
-                            </label>
+                            </button>
+                            <input ref={fileInputRef} type="file" multiple accept="image/*,video/*" onChange={(e) => { if (process.env.NODE_ENV === 'development') console.log('[entity-edit] input change files=', e.currentTarget.files?.length ?? 0); handleMediaUpload(e) }} style={{ display: 'none' }} />
+
                         </div>
                         {media.length > 0 && (
                             <div className="grid grid-cols-4 gap-2">
@@ -209,7 +218,10 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                                                 alt={m.display_name}
                                                 className="w-full h-full object-cover"
                                             />
+
                                         )}
+                                        {m.display_name && <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-1 py-0.5 text-[7px] text-zinc-400 truncate">{m.display_name}</div>}
+
                                         <button
                                             onClick={() => removeMedia(i)}
                                             className="absolute top-0.5 right-0.5 opacity-0 group-hover:opacity-100 w-4 h-4 bg-red-900/80 text-red-300 text-[8px] rounded flex items-center justify-center transition-opacity"
