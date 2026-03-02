@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 
 import type { CanvasNode } from '@/components/canvas/TakeCanvas'
 import {
@@ -13,6 +13,9 @@ import { getEntityAction, type Entity } from '@/app/actions/entities'
 import { EntityPackPreview } from '@/components/entities/entity-pack-preview'
 
 const entityCache = new Map<string, Entity>()
+export function invalidateEntityCache(entityId: string) {
+    entityCache.delete(entityId)
+}
 // ── Helpers ──
 
 function humanType(node: CanvasNode): string {
@@ -79,11 +82,13 @@ interface InspectorPanelProps {
     onClose: () => void
     onUpdateNodeData?: (nodeId: string, patch: Record<string, any>) => void
     onOpenEntityEdit?: (entityId: string) => void
+    /** Bump to force entity_ref refetch (e.g. after edit save) */
+    entityVersion?: number
 }
 
 // ── Component ──
 
-export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEdit }: InspectorPanelProps) {
+export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEdit, entityVersion }: InspectorPanelProps) {
 
     const filename = useMemo(() => node ? humanFilename(node.data as any) : null, [node])
     const dimensions = useMemo(() => node ? formatDimensions(node) : null, [node])
@@ -95,18 +100,24 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
 
     const [fetchedEntity, setFetchedEntity] = useState<Entity | null>(null)
     const [entityLoading, setEntityLoading] = useState(false)
-    const prevEntityIdRef = useRef<string | null>(null)
+
+    // entityVersion bumps when parent signals cache invalidation
+    const entityIdForFetch = isEntityRef ? (data.entity_id as string | undefined) : undefined
 
     useEffect(() => {
-        if (!isEntityRef || !data.entity_id) { setFetchedEntity(null); prevEntityIdRef.current = null; return }
-        const eid = data.entity_id as string
-        if (eid === prevEntityIdRef.current) return
-        prevEntityIdRef.current = eid
-        const cached = entityCache.get(eid)
-        if (cached) { setFetchedEntity(cached); return }
+        if (!entityIdForFetch) { setFetchedEntity(null); return }
+        const cached = entityCache.get(entityIdForFetch)
+        if (cached) { setFetchedEntity(cached); setEntityLoading(false); return }
         setEntityLoading(true)
-        getEntityAction(eid).then(e => { if (e) { entityCache.set(eid, e); setFetchedEntity(e) }; setEntityLoading(false) }).catch(() => setEntityLoading(false))
-    }, [isEntityRef, data.entity_id])
+        setFetchedEntity(null)
+        let cancelled = false
+        getEntityAction(entityIdForFetch).then(e => {
+            if (cancelled) return
+            if (e) { entityCache.set(entityIdForFetch, e); setFetchedEntity(e) }
+            setEntityLoading(false)
+        }).catch(() => { if (!cancelled) setEntityLoading(false) })
+        return () => { cancelled = true }
+    }, [entityIdForFetch, entityVersion])
 
     return (
         <div className="absolute top-0 right-0 bottom-0 w-72 z-30 pointer-events-none">
