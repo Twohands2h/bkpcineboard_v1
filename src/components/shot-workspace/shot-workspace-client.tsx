@@ -26,7 +26,8 @@ import { ProductionLaunchPanel } from '@/components/production/production-launch
 import { createClient } from '@/lib/supabase/client'
 import { SceneShotStrip, setLastTakeForShot, type StripScene, type StripShot } from './scene-shot-strip'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
-import { InspectorPanel } from '@/components/inspector/inspector-panel'
+import { InspectorPanel, invalidateEntityCache } from '@/components/inspector/inspector-panel'
+
 import { EntityLibrary } from '@/components/entities/entity-library-v3'
 import { CrystallizeModal } from '@/components/entities/crystallize-modal'
 import { EntityEditOverlay } from '@/components/entities/entity-edit-overlay'
@@ -758,6 +759,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const inspectorSelectionRef = useRef<{ ids: Set<string>; primaryId: string | null }>({ ids: new Set(), primaryId: null })
   const [inspectorPrimaryId, setInspectorPrimaryId] = useState<string | null>(null)
   const [inspectorTick, setInspectorTick] = useState(0) // increments to re-derive node after data change
+  const [entityVersion, setEntityVersion] = useState(0) // bumps to force inspector entity refetch
 
   const handleSelectionChange = useCallback((ids: Set<string>, primaryId: string | null) => {
     inspectorSelectionRef.current = { ids, primaryId }
@@ -1440,6 +1442,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               onClose={() => setInspectorOpen(false)}
               onUpdateNodeData={handleUpdateNodeData}
               onOpenEntityEdit={(eid) => setEditEntityId(eid)}
+              entityVersion={entityVersion}
             />
           )}
 
@@ -1479,7 +1482,14 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         />
       )}
       {editEntityId && (
-        <EditEntityLoader entityId={editEntityId} projectId={projectId} onClose={() => setEditEntityId(null)} />
+        <EditEntityLoader entityId={editEntityId} projectId={projectId} onClose={(saved) => {
+          if (saved) {
+            invalidateEntityCache(editEntityId)
+            setInspectorTick(t => t + 1)
+            setEntityVersion(v => v + 1)
+          }
+          setEditEntityId(null)
+        }} />
       )}
       {exportNodes && readyTakeId && (
         <ExportTakeModal
@@ -1536,7 +1546,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   )
 }
 // ── Thin loader for Edit Entity from Inspector ──
-function EditEntityLoader({ entityId, projectId, onClose }: { entityId: string; projectId: string; onClose: () => void }) {
+function EditEntityLoader({ entityId, projectId, onClose }: { entityId: string; projectId: string; onClose: (saved?: boolean) => void }) {
+
   const [entity, setEntity] = useState<Entity | null>(null)
   const [loading, setLoading] = useState(true)
   useEffect(() => {
@@ -1545,6 +1556,9 @@ function EditEntityLoader({ entityId, projectId, onClose }: { entityId: string; 
     return () => { cancelled = true }
   }, [entityId])
   if (loading) return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70"><p className="text-xs text-zinc-500">Loading…</p></div>
-  if (!entity) return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70" onClick={onClose}><p className="text-xs text-red-400">Entity not found</p></div>
-  return <EntityEditOverlay entity={entity} projectId={projectId} onSave={() => onClose()} onClose={onClose} />
+  if (!entity) return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70" onClick={() => onClose()}>
+
+    <p className="text-xs text-red-400">Entity not found</p></div>
+  return <EntityEditOverlay entity={entity} projectId={projectId} onSave={() => onClose(true)} onClose={() => onClose()} />
+
 }
