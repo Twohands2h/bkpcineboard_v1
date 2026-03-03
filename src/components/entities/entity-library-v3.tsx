@@ -4,11 +4,17 @@ import { useState, useEffect, useCallback } from 'react'
 import {
     listEntitiesAction,
     createEntityAction,
-    deleteEntityAction,
     type Entity,
     type EntityType,
 } from '@/app/actions/entities'
+import {
+    countEntityRefsInProjectAction,
+    deleteEntityCascadeAction,
+    replaceEntityRefsAction,
+    type EntityRefUsage,
+} from '@/app/actions/entity-ref-ops'
 import { EntityEditOverlay } from './entity-edit-overlay'
+import { invalidateEntityCache, bumpEntityVersion } from '@/lib/entities/entity-cache'
 
 // ── Constants ──
 
@@ -33,11 +39,13 @@ interface EntityLibraryProps {
     onClose: () => void
     /** Called when user wants to insert entity ref into canvas */
     onInsertRef?: (entity: Entity) => void
+    /** Canvas ref for in-memory patching after project-wide ops */
+    canvasRef?: React.RefObject<{ patchEntityRefsForReplace: (from: string, to: string) => number; removeEntityRefs: (id: string) => number } | null>
 }
 
 // ── Component ──
 
-export function EntityLibrary({ projectId, onClose, onInsertRef }: EntityLibraryProps) {
+export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef }: EntityLibraryProps) {
     const [entities, setEntities] = useState<Entity[]>([])
     const [loading, setLoading] = useState(true)
     const [filterType, setFilterType] = useState<EntityType | 'all'>('all')
@@ -79,19 +87,88 @@ export function EntityLibrary({ projectId, onClose, onInsertRef }: EntityLibrary
         setCreating(false)
     }
 
-    // ── Delete ──
+    // ── Delete (cascade: entity row + all refs) ──
 
-    const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
+    const [deleteTarget, setDeleteTarget] = useState<Entity | null>(null)
+    const [deleteUsage, setDeleteUsage] = useState<EntityRefUsage | null>(null)
+    const [deleteScanning, setDeleteScanning] = useState(false)
+    const [deleteBusy, setDeleteBusy] = useState(false)
+    const [toast, setToast] = useState<string | null>(null)
 
-    const handleDelete = async (entityId: string) => {
-        setDeleteConfirmId(entityId)
+    const showToast = (msg: string) => {
+        setToast(msg)
+        setTimeout(() => setToast(null), 5000)
     }
 
-    const confirmDelete = async () => {
-        if (!deleteConfirmId) return
-        const ok = await deleteEntityAction(deleteConfirmId)
-        if (ok) setEntities(prev => prev.filter(e => e.id !== deleteConfirmId))
-        setDeleteConfirmId(null)
+    const handleDelete = async (entityId: string) => {
+        const entity = entities.find(e => e.id === entityId)
+        if (!entity) return
+        setDeleteTarget(entity)
+        setDeleteUsage(null)
+        setDeleteScanning(true)
+        const usage = await countEntityRefsInProjectAction(projectId, entityId)
+        setDeleteUsage(usage)
+        setDeleteScanning(false)
+    }
+
+    const confirmDeleteCascade = async () => {
+        if (!deleteTarget || !deleteUsage || deleteBusy) return
+        setDeleteBusy(true)
+        const result = await deleteEntityCascadeAction(deleteTarget.id, deleteUsage.affectedTakeIds)
+        if (result.success) {
+            setEntities(prev => prev.filter(e => e.id !== deleteTarget.id))
+            invalidateEntityCache(deleteTarget.id)
+            bumpEntityVersion()
+            // Patch current take in-memory so user sees change immediately
+            canvasRef?.current?.removeEntityRefs(deleteTarget.id)
+            showToast(`Deleted "${deleteTarget.name}" — removed ${result.removedRefs} ref${result.removedRefs !== 1 ? 's' : ''} across ${deleteUsage.affectedTakes} take${deleteUsage.affectedTakes !== 1 ? 's' : ''}.`)
+        }
+        setDeleteBusy(false)
+        setDeleteTarget(null)
+    }
+
+    // ── Replace (standalone from Library row, or from delete modal) ──
+
+    const [replaceSource, setReplaceSource] = useState<Entity | null>(null)
+    const [replaceUsage, setReplaceUsage] = useState<EntityRefUsage | null>(null)
+    const [replaceScanning, setReplaceScanning] = useState(false)
+    const [replaceBusy, setReplaceBusy] = useState(false)
+
+    const handleOpenReplace = async (entity: Entity) => {
+        setReplaceSource(entity)
+        setReplaceUsage(null)
+        setReplaceScanning(true)
+        const usage = await countEntityRefsInProjectAction(projectId, entity.id)
+        setReplaceUsage(usage)
+        setReplaceScanning(false)
+    }
+
+    /** Transition from delete modal → replace modal */
+    const handleReplaceFromDelete = () => {
+        if (!deleteTarget) return
+        const entity = deleteTarget
+        setDeleteTarget(null)
+        handleOpenReplace(entity)
+    }
+
+    const confirmReplace = async (toEntity: Entity) => {
+        if (!replaceSource || !replaceUsage || replaceBusy) return
+        setReplaceBusy(true)
+        const result = await replaceEntityRefsAction(
+            replaceSource.id,
+            toEntity.id,
+            replaceUsage.affectedTakeIds
+        )
+        if (result.success) {
+            invalidateEntityCache(replaceSource.id)
+            invalidateEntityCache(toEntity.id)
+            bumpEntityVersion()
+            // Patch current take in-memory so user sees change immediately
+            canvasRef?.current?.patchEntityRefsForReplace(replaceSource.id, toEntity.id)
+            showToast(`Replaced ${result.replacedRefs} ref${result.replacedRefs !== 1 ? 's' : ''} of "${replaceSource.name}" → "${toEntity.name}".`)
+        }
+        setReplaceBusy(false)
+        setReplaceSource(null)
     }
 
     // ── Filter ──
@@ -203,6 +280,7 @@ export function EntityLibrary({ projectId, onClose, onInsertRef }: EntityLibrary
                                         entity={entity}
                                         onEdit={() => setEditingEntity(entity)}
                                         onDelete={() => handleDelete(entity.id)}
+                                        onReplace={() => handleOpenReplace(entity)}
                                         onInsertRef={onInsertRef ? () => onInsertRef(entity) : undefined}
                                     />
                                 ))}
@@ -222,27 +300,114 @@ export function EntityLibrary({ projectId, onClose, onInsertRef }: EntityLibrary
                 />
             )}
 
-            {/* Delete entity confirm */}
-            {deleteConfirmId && (
-                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => setDeleteConfirmId(null)}>
-                    <div className="bg-zinc-900 border border-zinc-600 rounded-lg px-6 py-5 w-80 shadow-2xl" onClick={e => e.stopPropagation()}>
-                        <h3 className="text-sm font-semibold text-zinc-100 mb-2">Delete entity?</h3>
-                        <p className="text-[11px] text-zinc-500 mb-4">This entity and all its content will be permanently deleted. This cannot be undone.</p>
-                        <div className="flex items-center gap-2 justify-end">
+            {/* ═══ Delete Entity Modal (cascade) ═══ */}
+            {deleteTarget && (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => { if (!deleteBusy) setDeleteTarget(null) }}>
+                    <div className="bg-zinc-900 border border-zinc-600 rounded-lg px-6 py-5 w-96 shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-sm font-semibold text-zinc-100 mb-1">Delete "{deleteTarget.name}"?</h3>
+
+                        {deleteScanning ? (
+                            <p className="text-[11px] text-zinc-500 mb-4">Scanning project…</p>
+                        ) : deleteUsage && deleteUsage.totalRefs > 0 ? (
+                            <p className="text-[11px] text-zinc-500 mb-4">
+                                This will remove the entity and <span className="text-zinc-300 font-medium">{deleteUsage.totalRefs} reference{deleteUsage.totalRefs !== 1 ? 's' : ''}</span> across <span className="text-zinc-300 font-medium">{deleteUsage.affectedTakes} take{deleteUsage.affectedTakes !== 1 ? 's' : ''}</span>. This cannot be undone.
+                            </p>
+                        ) : (
+                            <p className="text-[11px] text-zinc-500 mb-4">No references found. The entity will be deleted.</p>
+                        )}
+
+                        <div className="flex items-center gap-2 justify-between">
+                            <div className="flex items-center gap-2">
+                                {deleteUsage && deleteUsage.totalRefs > 0 && (
+                                    <button
+                                        onClick={handleReplaceFromDelete}
+                                        disabled={deleteBusy || deleteScanning}
+                                        className="px-3 py-1.5 text-[10px] rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                                    >
+                                        Replace instead…
+                                    </button>
+                                )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setDeleteTarget(null)}
+                                    disabled={deleteBusy}
+                                    className="px-3 py-1.5 text-[10px] rounded bg-zinc-800 border border-zinc-700 text-zinc-300 hover:bg-zinc-700 transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={confirmDeleteCascade}
+                                    disabled={deleteBusy || deleteScanning}
+                                    className="px-3 py-1.5 text-[10px] rounded bg-red-600/80 text-white hover:bg-red-600 transition-colors disabled:opacity-50"
+                                >
+                                    {deleteBusy ? 'Deleting…' : 'Delete'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ═══ Replace Entity Modal ═══ */}
+            {replaceSource && (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => { if (!replaceBusy) setReplaceSource(null) }}>
+                    <div className="bg-zinc-900 border border-zinc-600 rounded-lg px-6 py-5 w-96 max-h-[70vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-sm font-semibold text-zinc-100 mb-1">Replace "{replaceSource.name}"</h3>
+
+                        {replaceScanning ? (
+                            <p className="text-[11px] text-zinc-500 mb-3">Scanning project…</p>
+                        ) : replaceUsage && replaceUsage.totalRefs > 0 ? (
+                            <p className="text-[11px] text-zinc-500 mb-3">
+                                This affects <span className="text-zinc-300 font-medium">{replaceUsage.totalRefs} reference{replaceUsage.totalRefs !== 1 ? 's' : ''}</span> across <span className="text-zinc-300 font-medium">{replaceUsage.affectedTakes} take{replaceUsage.affectedTakes !== 1 ? 's' : ''}</span>. "{replaceSource.name}" stays in library.
+                            </p>
+                        ) : (
+                            <p className="text-[11px] text-zinc-500 mb-3">No references found in project.</p>
+                        )}
+
+                        <p className="text-[10px] text-zinc-600 mb-2">Select replacement:</p>
+
+                        <div className="flex-1 overflow-y-auto space-y-1 min-h-0 max-h-60">
+                            {entities
+                                .filter(e => e.id !== replaceSource.id)
+                                .map(e => (
+                                    <button
+                                        key={e.id}
+                                        onClick={() => confirmReplace(e)}
+                                        disabled={replaceBusy || replaceScanning || !replaceUsage || replaceUsage.totalRefs === 0}
+                                        className="w-full flex items-center gap-2 px-3 py-2 rounded bg-zinc-800/50 border border-zinc-700/50 hover:border-zinc-500 transition-colors text-left disabled:opacity-50"
+                                    >
+                                        <span className={`text-[8px] font-medium px-1.5 py-0.5 rounded border shrink-0 ${ENTITY_TYPE_COLORS[e.entity_type] ?? 'text-zinc-400 bg-zinc-800 border-zinc-700'}`}>
+                                            {ENTITY_TYPE_LABELS[e.entity_type]}
+                                        </span>
+                                        <span className="text-[11px] text-zinc-200 truncate">{e.name}</span>
+                                    </button>
+                                ))
+                            }
+                            {entities.filter(e => e.id !== replaceSource.id).length === 0 && (
+                                <p className="text-[10px] text-zinc-600 italic py-4 text-center">No other entities available</p>
+                            )}
+                        </div>
+
+                        <div className="flex justify-end mt-4 pt-3 border-t border-zinc-800">
                             <button
-                                onClick={() => setDeleteConfirmId(null)}
+                                onClick={() => setReplaceSource(null)}
+                                disabled={replaceBusy}
                                 className="px-3 py-1.5 text-[10px] rounded bg-zinc-800 border border-zinc-700 text-zinc-300 hover:bg-zinc-700 transition-colors"
                             >
                                 Cancel
                             </button>
-                            <button
-                                onClick={confirmDelete}
-                                className="px-3 py-1.5 text-[10px] rounded bg-red-600/80 text-white hover:bg-red-600 transition-colors"
-                            >
-                                Delete
-                            </button>
                         </div>
+
+                        {replaceBusy && <p className="text-[9px] text-zinc-600 italic mt-2 text-center">Replacing…</p>}
                     </div>
+                </div>
+            )}
+
+            {/* ═══ Toast ═══ */}
+            {toast && (
+                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] px-4 py-2 bg-zinc-800 border border-zinc-600 rounded-lg shadow-2xl text-[11px] text-zinc-200 pointer-events-none animate-fade-in">
+                    {toast}
                 </div>
             )}
         </>
@@ -251,10 +416,11 @@ export function EntityLibrary({ projectId, onClose, onInsertRef }: EntityLibrary
 
 // ── Entity Row ──
 
-function EntityRow({ entity, onEdit, onDelete, onInsertRef }: {
+function EntityRow({ entity, onEdit, onDelete, onReplace, onInsertRef }: {
     entity: Entity
     onEdit: () => void
     onDelete: () => void
+    onReplace: () => void
     onInsertRef?: () => void
 }) {
     const typeColor = ENTITY_TYPE_COLORS[entity.entity_type] ?? 'text-zinc-400 bg-zinc-800 border-zinc-700'
@@ -311,6 +477,13 @@ function EntityRow({ entity, onEdit, onDelete, onInsertRef }: {
                     className="px-2 py-1 text-[9px] rounded bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors"
                 >
                     Edit
+                </button>
+                <button
+                    onClick={onReplace}
+                    className="px-2 py-1 text-[9px] rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 hover:bg-amber-500/20 transition-colors"
+                    title="Replace references across project"
+                >
+                    ⇄
                 </button>
                 <button
                     onClick={onDelete}
