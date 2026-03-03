@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 
 import type { CanvasNode } from '@/components/canvas/TakeCanvas'
 import {
@@ -96,7 +96,6 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
 
     const [fetchedEntity, setFetchedEntity] = useState<Entity | null>(null)
     const [entityLoading, setEntityLoading] = useState(false)
-    const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
 
     // entityVersion bumps when parent signals cache invalidation
     const entityIdForFetch = isEntityRef ? (data.entity_id as string | undefined) : undefined
@@ -117,154 +116,186 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
     }, [entityIdForFetch, entityVersion])
 
     return (
-        <>
-            {/* Lightbox — rendered outside drawer to avoid transform/overflow clipping */}
-            {lightboxUrl && (
-                <LightboxOverlay url={lightboxUrl} onClose={() => setLightboxUrl(null)} />
-            )}
-            <div className="absolute top-0 right-0 bottom-0 w-72 z-30 pointer-events-none">
-                <div className="h-full pointer-events-auto bg-zinc-900/95 border-l border-zinc-700/60 backdrop-blur-sm flex flex-col shadow-2xl">
-                    {/* Header */}
-                    <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-700/60">
-                        <span className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">Inspector</span>
-                        <button
-                            onClick={onClose}
-                            className="w-6 h-6 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700/60 transition-colors"
-                            title="Close (I)"
-                        >
-                            ×
-                        </button>
-                    </div>
+        <div className="absolute top-0 right-0 bottom-0 w-72 z-30 pointer-events-none">
+            <div className="h-full pointer-events-auto bg-zinc-900/95 border-l border-zinc-700/60 backdrop-blur-sm flex flex-col shadow-2xl">
+                {/* Header */}
+                <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-700/60">
+                    <span className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">Inspector</span>
+                    <button
+                        onClick={onClose}
+                        className="w-6 h-6 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700/60 transition-colors"
+                        title="Close (I)"
+                    >
+                        ×
+                    </button>
+                </div>
 
-                    {/* Body */}
-                    <div className="flex-1 overflow-y-auto px-3 py-3">
-                        {!node ? (
-                            <p className="text-xs text-zinc-600 italic">Select a node to inspect</p>
-                        ) : (
-                            <div className="space-y-4">
-                                {/* Type — hidden for entity_ref (has its own badge header) */}
-                                {!isEntityRef && (
-                                    <Section label="Type">
-                                        <Value>{humanType(node)}</Value>
-                                        {node.type === 'prompt' && data.prompt_type && (
-                                            <Value sub>{data.prompt_type}</Value>
-                                        )}
-                                    </Section>
-                                )}
+                {/* Body */}
+                <div className="flex-1 overflow-y-auto px-3 py-3">
+                    {!node ? (
+                        <p className="text-xs text-zinc-600 italic">Select a node to inspect</p>
 
-                                {/* Filename */}
-                                {(node.type === 'image' || node.type === 'video') && (
-                                    <Section label="File">
-                                        <div className="flex items-center gap-1.5">
-                                            <Value className="truncate flex-1">{filename ?? '—'}</Value>
+                    ) : isEntityRef ? (
+                        /* ═══ Entity Ref layout ═══ */
+                        <div className="space-y-3">
+                            {/* Actions: top, always visible */}
+                            {data.entity_id && onOpenEntityEdit && (
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        onClick={() => onOpenEntityEdit(data.entity_id)}
+                                        className="flex-1 px-2 py-1.5 text-[10px] rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 hover:bg-amber-500/20 transition-colors text-center"
+                                    >
+                                        Edit Entity
+                                    </button>
+                                    {fetchedEntity && (
+                                        <div className="flex-1">
+                                            <DownloadEntityPackButton entity={fetchedEntity} />
                                         </div>
-                                    </Section>
-                                )}
+                                    )}
+                                </div>
+                            )}
 
-                                {/* Dimensions / AR */}
-                                {(node.type === 'image' || node.type === 'video') && (
-                                    <Section label="Dimensions">
-                                        <Value>{dimensions ?? '—'}</Value>
-                                    </Section>
-                                )}
+                            {/* Separator */}
+                            <div className="border-t border-zinc-800" />
 
-                                {/* Frame Role */}
-                                {node.type === 'image' && (
-                                    <Section label="Frame Role">
-                                        <Value>{frameRoleLabel(data)}</Value>
-                                    </Section>
-                                )}
+                            {/* Badge + name: live from fetchedEntity, fallback to node data */}
+                            {(() => {
+                                const liveType = fetchedEntity?.entity_type ?? data.entity_type
+                                const liveName = fetchedEntity?.name ?? data.entity_name ?? 'Unnamed'
+                                return (
+                                    <div>
+                                        <span className={`text-[8px] font-medium px-1.5 py-0.5 rounded border inline-block mb-1.5 uppercase tracking-wider ${liveType === 'character' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
+                                                liveType === 'environment' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
+                                                    liveType === 'prop' ? 'text-blue-400 bg-blue-500/10 border-blue-500/20' :
+                                                        liveType === 'cinematography' ? 'text-purple-400 bg-purple-500/10 border-purple-500/20' :
+                                                            'text-zinc-400 bg-zinc-800 border-zinc-700'
+                                            }`}>{liveType ?? '—'}</span>
+                                        <div className="text-[13px] text-zinc-100 font-semibold leading-tight truncate">{liveName}</div>
+                                    </div>
+                                )
+                            })()}
 
-                                {/* Provenance: Generated With (Image/Video) */}
-                                {showGeneratedWith && (
-                                    <Section label="Generated With">
-                                        <ProvenanceSelect
-                                            value={data.generated_with ?? ''}
-                                            options={node!.type === 'video' ? VIDEO_GENERATED_WITH_OPTIONS as unknown as string[] : IMAGE_GENERATED_WITH_OPTIONS as unknown as string[]}
-                                            placeholder="Unknown"
-                                            nodeId={node!.id}
-                                            field="generated_with"
-                                            onUpdate={onUpdateNodeData}
-                                        />
-                                    </Section>
-                                )}
+                            {/* Loading */}
+                            {entityLoading && <p className="text-[10px] text-zinc-600 italic">Loading…</p>}
 
-                                {/* Provenance: Tool Origin (Prompt) — read-only, edit surface is on the node itself */}
-                                {showToolOrigin && (
-                                    <Section label="Tool Origin">
+                            {/* Entity content: media, prompts (open), notes (closed) */}
+                            {fetchedEntity && (
+                                <EntityPackPreview
+                                    content={fetchedEntity.content}
+                                    variant="full"
+                                    onImageClick={undefined}
+                                    promptsDefaultOpen={true}
+                                    notesDefaultOpen={false}
+                                />
+                            )}
+
+                            {!entityLoading && !fetchedEntity && data.entity_id && (
+                                <p className="text-[9px] text-zinc-600 italic">Entity data unavailable</p>
+                            )}
+
+                            {/* Details (collapsed by default) */}
+                            <DrawerCollapsible label="Details" defaultOpen={false}>
+                                <div className="space-y-2">
+                                    <Section label="Position">
+                                        <Value>{Math.round(node.x)}, {Math.round(node.y)}</Value>
+                                    </Section>
+                                    <Section label="Node ID">
                                         <div className="flex items-center gap-1">
-                                            <Value className="flex-1">{normalizeProvenanceValue(data.origin ?? '') || '—'}</Value>
-                                            {data.origin && <CopyButton text={normalizeProvenanceValue(data.origin)} size={10} />}
+                                            <span className="text-[10px] text-zinc-600 font-mono truncate flex-1 select-text">{node.id}</span>
+                                            <CopyButton text={node.id} size={10} />
                                         </div>
                                     </Section>
+                                </div>
+                            </DrawerCollapsible>
+                        </div>
+
+                    ) : (
+                        /* ═══ Standard node layout (unchanged) ═══ */
+                        <div className="space-y-4">
+                            {/* Type */}
+                            <Section label="Type">
+                                <Value>{humanType(node)}</Value>
+                                {node.type === 'prompt' && data.prompt_type && (
+                                    <Value sub>{data.prompt_type}</Value>
                                 )}
+                            </Section>
 
-                                {/* Source */}
-                                {(data.storage_path || data.src) && (
-                                    <Section label="Source">
-                                        <div className="flex items-start gap-1">
-                                            <span className="text-[11px] text-zinc-400 break-all flex-1 select-text">
-                                                {data.storage_path || data.src}
-                                            </span>
-                                            <CopyButton text={data.storage_path || data.src} />
-                                        </div>
-                                    </Section>
-                                )}
-                                {/* Entity Ref Pack */}
-                                {isEntityRef && (() => {
-                                    const liveType = fetchedEntity?.entity_type ?? data.entity_type
-                                    const liveName = fetchedEntity?.name ?? data.entity_name ?? 'Unnamed'
-                                    return (
-                                        <>
-                                            <div className="mb-2">
-                                                <span className={`text-[8px] font-medium px-1.5 py-0.5 rounded border inline-block mb-1 ${liveType === 'character' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
-                                                        liveType === 'environment' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
-                                                            liveType === 'prop' ? 'text-blue-400 bg-blue-500/10 border-blue-500/20' :
-                                                                liveType === 'cinematography' ? 'text-purple-400 bg-purple-500/10 border-purple-500/20' :
-                                                                    'text-zinc-400 bg-zinc-800 border-zinc-700'
-                                                    }`}>{liveType ?? '—'}</span>
-                                                <div className="text-[12px] text-zinc-200 font-semibold truncate">{liveName}</div>
-                                            </div>
-
-                                            {entityLoading && <p className="text-[10px] text-zinc-600 italic">Loading…</p>}
-
-                                            {fetchedEntity && <EntityPackPreview content={fetchedEntity.content} variant="full" onImageClick={setLightboxUrl} />}
-
-                                            {!entityLoading && !fetchedEntity && data.entity_id && (
-                                                <p className="text-[9px] text-zinc-600 italic">Entity data unavailable</p>
-                                            )}
-
-                                            {data.entity_id && onOpenEntityEdit && (
-                                                <div className="pt-2 space-y-1.5">
-                                                    <button onClick={() => onOpenEntityEdit(data.entity_id)} className="w-full px-2 py-1.5 text-[10px] rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 hover:bg-amber-500/20 transition-colors text-center">
-                                                        Edit Entity
-                                                    </button>
-                                                    {fetchedEntity && (
-                                                        <DownloadEntityPackButton entity={fetchedEntity} />
-                                                    )}
-                                                </div>
-                                            )}
-                                        </>
-                                    )
-                                })()}
-                                {/* Canvas position */}
-                                <Section label="Position">
-                                    <Value>{Math.round(node.x)}, {Math.round(node.y)}</Value>
-                                </Section>
-
-                                {/* Node ID */}
-                                <Section label="Node ID">
-                                    <div className="flex items-center gap-1">
-                                        <span className="text-[10px] text-zinc-600 font-mono truncate flex-1 select-text">{node.id}</span>
-                                        <CopyButton text={node.id} size={10} />
+                            {/* Filename */}
+                            {(node.type === 'image' || node.type === 'video') && (
+                                <Section label="File">
+                                    <div className="flex items-center gap-1.5">
+                                        <Value className="truncate flex-1">{filename ?? '—'}</Value>
                                     </div>
                                 </Section>
-                            </div>
-                        )}
-                    </div>
+                            )}
+
+                            {/* Dimensions / AR */}
+                            {(node.type === 'image' || node.type === 'video') && (
+                                <Section label="Dimensions">
+                                    <Value>{dimensions ?? '—'}</Value>
+                                </Section>
+                            )}
+
+                            {/* Frame Role */}
+                            {node.type === 'image' && (
+                                <Section label="Frame Role">
+                                    <Value>{frameRoleLabel(data)}</Value>
+                                </Section>
+                            )}
+
+                            {/* Provenance: Generated With (Image/Video) */}
+                            {showGeneratedWith && (
+                                <Section label="Generated With">
+                                    <ProvenanceSelect
+                                        value={data.generated_with ?? ''}
+                                        options={node!.type === 'video' ? VIDEO_GENERATED_WITH_OPTIONS as unknown as string[] : IMAGE_GENERATED_WITH_OPTIONS as unknown as string[]}
+                                        placeholder="Unknown"
+                                        nodeId={node!.id}
+                                        field="generated_with"
+                                        onUpdate={onUpdateNodeData}
+                                    />
+                                </Section>
+                            )}
+
+                            {/* Provenance: Tool Origin (Prompt) */}
+                            {showToolOrigin && (
+                                <Section label="Tool Origin">
+                                    <div className="flex items-center gap-1">
+                                        <Value className="flex-1">{normalizeProvenanceValue(data.origin ?? '') || '—'}</Value>
+                                        {data.origin && <CopyButton text={normalizeProvenanceValue(data.origin)} size={10} />}
+                                    </div>
+                                </Section>
+                            )}
+
+                            {/* Source */}
+                            {(data.storage_path || data.src) && (
+                                <Section label="Source">
+                                    <div className="flex items-start gap-1">
+                                        <span className="text-[11px] text-zinc-400 break-all flex-1 select-text">
+                                            {data.storage_path || data.src}
+                                        </span>
+                                        <CopyButton text={data.storage_path || data.src} />
+                                    </div>
+                                </Section>
+                            )}
+
+                            {/* Canvas position */}
+                            <Section label="Position">
+                                <Value>{Math.round(node.x)}, {Math.round(node.y)}</Value>
+                            </Section>
+
+                            {/* Node ID */}
+                            <Section label="Node ID">
+                                <div className="flex items-center gap-1">
+                                    <span className="text-[10px] text-zinc-600 font-mono truncate flex-1 select-text">{node.id}</span>
+                                    <CopyButton text={node.id} size={10} />
+                                </div>
+                            </Section>
+                        </div>
+                    )}
                 </div>
             </div>
-        </>
+        </div>
     )
 }
 
@@ -294,6 +325,23 @@ function CollapsibleSection({ label, children }: { label: string; children: Reac
                 <span className="text-[8px]">{open ? '▼' : '▶'}</span>{label}
             </button>
             {open && <div className="pl-2 border-l border-zinc-800 mt-1">{children}</div>}
+        </div>
+    )
+}
+
+/** Collapsible with configurable default state — used for entity drawer sections */
+function DrawerCollapsible({ label, defaultOpen = false, children }: { label: string; defaultOpen?: boolean; children: React.ReactNode }) {
+    const [open, setOpen] = useState(defaultOpen)
+    return (
+        <div>
+            <button
+                onClick={() => setOpen(p => !p)}
+                className="w-full text-[9px] text-zinc-600 uppercase tracking-wider py-1.5 flex items-center gap-1 hover:text-zinc-400 transition-colors border-t border-zinc-800/60"
+            >
+                <span className="text-[7px]">{open ? '▼' : '▶'}</span>
+                {label}
+            </button>
+            {open && <div className="pb-1">{children}</div>}
         </div>
     )
 }
@@ -517,109 +565,7 @@ function DownloadEntityPackButton({ entity }: { entity: Entity }) {
             disabled={busy}
             className="w-full px-2 py-1.5 text-[10px] rounded bg-zinc-700/60 border border-zinc-600/40 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 disabled:opacity-50 transition-colors text-center"
         >
-            {busy ? '⏳ Packing…' : '📦 Download Entity Pack'}
+            {busy ? '⏳ Packing…' : '📦 Download Pack'}
         </button>
-    )
-}
-
-// ── Lightbox with zoom/pan ──
-
-function LightboxOverlay({ url, onClose }: { url: string; onClose: () => void }) {
-    const [scale, setScale] = useState(1)
-    const [tx, setTx] = useState(0)
-    const [ty, setTy] = useState(0)
-    const [panning, setPanning] = useState(false)
-    const panStart = useRef({ x: 0, y: 0, tx: 0, ty: 0 })
-    const containerRef = useRef<HTMLDivElement>(null)
-    const backdropRef = useRef<HTMLDivElement>(null)
-
-    // Focus for ESC
-    useEffect(() => { backdropRef.current?.focus() }, [])
-
-    // Wheel handler (passive: false for preventDefault)
-    useEffect(() => {
-        const el = containerRef.current
-        if (!el) return
-        const handler = (e: WheelEvent) => {
-            if (!e.ctrlKey && !e.metaKey) return
-            e.preventDefault()
-            const delta = -e.deltaY * 0.01
-            setScale(prev => Math.min(4, Math.max(1, prev + delta)))
-        }
-        el.addEventListener('wheel', handler, { passive: false })
-        return () => el.removeEventListener('wheel', handler)
-    }, [])
-
-    // Reset pan when scale returns to 1
-    useEffect(() => {
-        if (scale <= 1) { setTx(0); setTy(0) }
-    }, [scale])
-
-    const handleMouseDown = useCallback((e: React.MouseEvent) => {
-        if (scale <= 1) return
-        e.preventDefault()
-        setPanning(true)
-        panStart.current = { x: e.clientX, y: e.clientY, tx, ty }
-    }, [scale, tx, ty])
-
-    const handleMouseMove = useCallback((e: React.MouseEvent) => {
-        if (!panning) return
-        const dx = e.clientX - panStart.current.x
-        const dy = e.clientY - panStart.current.y
-        const maxPan = (scale - 1) * 300
-        setTx(Math.min(maxPan, Math.max(-maxPan, panStart.current.tx + dx)))
-        setTy(Math.min(maxPan, Math.max(-maxPan, panStart.current.ty + dy)))
-    }, [scale, panning])
-
-    const handleMouseUp = useCallback(() => {
-        setPanning(false)
-    }, [])
-
-    const handleDoubleClick = useCallback((e: React.MouseEvent) => {
-        e.stopPropagation()
-        if (scale > 1) {
-            setScale(1); setTx(0); setTy(0)
-        } else {
-            setScale(2)
-        }
-    }, [scale])
-
-    return (
-        <div
-            ref={backdropRef}
-            className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex items-center justify-center"
-            style={{ pointerEvents: 'auto' }}
-            onClick={onClose}
-            onKeyDown={e => { if (e.key === 'Escape') onClose() }}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            tabIndex={-1}
-        >
-            <div
-                ref={containerRef}
-                className="relative"
-                onClick={e => e.stopPropagation()}
-                onMouseDown={handleMouseDown}
-                onDoubleClick={handleDoubleClick}
-                style={{
-                    cursor: scale > 1 ? (panning ? 'grabbing' : 'grab') : 'default',
-                    transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
-                    transformOrigin: 'center',
-                    transition: panning ? 'none' : 'transform 0.15s ease-out',
-                }}
-            >
-                <img
-                    src={url}
-                    alt=""
-                    className="max-w-[92vw] max-h-[92vh] object-contain rounded shadow-2xl select-none"
-                    draggable={false}
-                />
-            </div>
-            <button
-                onClick={onClose}
-                className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full bg-black/60 text-zinc-400 hover:text-white text-lg transition-colors"
-            >✕</button>
-        </div>
     )
 }
