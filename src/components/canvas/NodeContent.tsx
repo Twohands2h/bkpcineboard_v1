@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
+import { entityCache, useEntityVersion } from '@/lib/entities/entity-cache'
+import { getEntityAction } from '@/app/actions/entities'
 
 // ===================================================
 // NODE CONTENT — SEMANTIC LAYER (R4-004b v7)
@@ -419,13 +421,33 @@ export function VideoContent({ data, viewportScale = 1 }: VideoContentProps) {
 }
 
 export function EntityRefContent({ data }: { data: EntityRefData }) {
-    const typeEmoji = data.entity_type === 'character' ? '👤'
-        : data.entity_type === 'environment' ? '🌍'
-            : data.entity_type === 'prop' ? '🎭' : '🎬'
+    const entityVersion = useEntityVersion()
+    const [liveEntity, setLiveEntity] = useState<{ entity_type: string; name: string } | null>(null)
 
-    const typeColor = data.entity_type === 'character' ? 'border-amber-500/30 bg-amber-500/5'
-        : data.entity_type === 'environment' ? 'border-emerald-500/30 bg-emerald-500/5'
-            : data.entity_type === 'prop' ? 'border-blue-500/30 bg-blue-500/5'
+    useEffect(() => {
+        if (!data.entity_id) return
+        const cached = entityCache.get(data.entity_id)
+        if (cached) { setLiveEntity({ entity_type: cached.entity_type, name: cached.name }); return }
+        let cancelled = false
+        getEntityAction(data.entity_id).then(e => {
+            if (cancelled || !e) return
+            entityCache.set(data.entity_id, e)
+            setLiveEntity({ entity_type: e.entity_type, name: e.name })
+        }).catch(() => { })
+        return () => { cancelled = true }
+    }, [data.entity_id, entityVersion])
+
+    // Derive from live data with fallback to stale node data
+    const displayType = liveEntity?.entity_type ?? data.entity_type
+    const displayName = liveEntity?.name ?? data.entity_name
+
+    const typeEmoji = displayType === 'character' ? '👤'
+        : displayType === 'environment' ? '🌍'
+            : displayType === 'prop' ? '🎭' : '🎬'
+
+    const typeColor = displayType === 'character' ? 'border-amber-500/30 bg-amber-500/5'
+        : displayType === 'environment' ? 'border-emerald-500/30 bg-emerald-500/5'
+            : displayType === 'prop' ? 'border-blue-500/30 bg-blue-500/5'
                 : 'border-purple-500/30 bg-purple-500/5'
 
     return (
@@ -436,10 +458,10 @@ export function EntityRefContent({ data }: { data: EntityRefData }) {
                 <span className="text-2xl">{typeEmoji}</span>
             )}
             <span className="text-[10px] font-medium text-zinc-200 text-center truncate max-w-full">
-                {data.entity_name || 'Entity'}
+                {displayName || 'Entity'}
             </span>
             <span className="text-[8px] text-zinc-500 uppercase tracking-wider">
-                {data.entity_type} ref
+                {displayType} ref
             </span>
         </div>
     )

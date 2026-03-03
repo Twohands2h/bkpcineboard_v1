@@ -27,6 +27,7 @@ const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
 
 const PROMPT_TYPES = ['master', 'prompt', 'negative', 'pre-prompt', 'post-prompt'] as const
 const ORIGIN_OPTIONS = ['Manual', 'ChatGPT', 'Claude', 'Gemini', 'Midjourney', 'Runway', 'Kling', 'Veo', 'ComfyUI'] as const
+const TOOL_ORIGIN_CHIPS = ['Production Live', 'Take', 'Library import', 'External', 'Scan', 'Client'] as const
 
 // ── Component ──
 
@@ -362,14 +363,29 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                             </div>
                             <div>
                                 <span className="text-[9px] text-zinc-600 block mb-0.5">Tool Origin</span>
-                                <select
+                                <input
+                                    type="text"
                                     value={provenance.tool_origin ?? ''}
                                     onChange={e => setProvenance(prev => ({ ...prev, tool_origin: e.target.value || undefined }))}
-                                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[10px] text-zinc-300 focus:outline-none"
-                                >
-                                    <option value="">—</option>
-                                    {ORIGIN_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
-                                </select>
+                                    onKeyDown={e => e.stopPropagation()}
+                                    placeholder="e.g. Production Live"
+                                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[10px] text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+                                />
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                    {TOOL_ORIGIN_CHIPS.map(chip => (
+                                        <button
+                                            key={chip}
+                                            type="button"
+                                            onClick={() => setProvenance(prev => ({ ...prev, tool_origin: chip }))}
+                                            className={`px-1.5 py-0.5 text-[8px] rounded border transition-colors ${provenance.tool_origin === chip
+                                                    ? 'border-zinc-500 text-zinc-200 bg-zinc-700'
+                                                    : 'border-zinc-700 text-zinc-500 bg-zinc-800/50 hover:text-zinc-300 hover:border-zinc-600'
+                                                }`}
+                                        >
+                                            {chip}
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
                         </div>
                     </div>
