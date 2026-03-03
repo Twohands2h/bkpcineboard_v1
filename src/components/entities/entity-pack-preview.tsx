@@ -70,11 +70,14 @@ interface EntityPackPreviewProps {
     variant?: 'compact' | 'full'
     /** Called when user clicks a media thumbnail (for external lightbox) */
     onImageClick?: (url: string) => void
+    /** Override default open state for Prompts section */
+    promptsDefaultOpen?: boolean
+    /** Override default open state for Notes section */
+    notesDefaultOpen?: boolean
 }
 
-export function EntityPackPreview({ content, variant = 'compact', onImageClick }: EntityPackPreviewProps) {
+export function EntityPackPreview({ content, variant = 'compact', onImageClick, promptsDefaultOpen, notesDefaultOpen }: EntityPackPreviewProps) {
     const [resolutions, setResolutions] = useState<Record<number, string>>({})
-    const [downloading, setDownloading] = useState<Record<number, boolean>>({})
 
     if (!content || typeof content !== 'object') {
         return <p className="text-[10px] text-zinc-600 italic">No content</p>
@@ -87,26 +90,6 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick }
     const hasAnything = media.length > 0 || prompts.length > 0 || notes.length > 0
     if (!hasAnything) {
         return <p className="text-[10px] text-zinc-600 italic">Empty pack</p>
-    }
-
-    const handleBlobDownload = async (m: NormalizedMedia, idx: number) => {
-        if (downloading[idx]) return
-        setDownloading(prev => ({ ...prev, [idx]: true }))
-        try {
-            const url = getMediaUrl(m)
-            const resp = await fetch(url)
-            const blob = await resp.blob()
-            const a = document.createElement('a')
-            a.href = URL.createObjectURL(blob)
-            a.download = m.filename || 'download'
-            a.style.display = 'none'
-            document.body.appendChild(a)
-            a.click()
-            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(a.href) }, 100)
-        } catch (err) {
-            console.error('[entity-pack] download error:', err)
-        }
-        setDownloading(prev => ({ ...prev, [idx]: false }))
     }
 
     return (
@@ -125,8 +108,8 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick }
                                         <img
                                             src={getMediaUrl(m)}
                                             alt={m.filename}
-                                            className="w-full object-contain max-h-48 bg-zinc-900 cursor-pointer hover:opacity-90 transition-opacity"
-                                            onClick={() => onImageClick?.(getMediaUrl(m))}
+                                            className={`w-full object-contain max-h-48 bg-zinc-900${onImageClick ? ' cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
+                                            onClick={onImageClick ? () => onImageClick(getMediaUrl(m)) : undefined}
                                             onLoad={(e) => {
                                                 const img = e.target as HTMLImageElement
                                                 if (img.naturalWidth && !resolutions[i]) {
@@ -142,14 +125,16 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick }
                                             {resolutions[i] && <span className="text-[8px] text-zinc-600 shrink-0">{resolutions[i]}</span>}
                                         </div>
                                         {(m.storage_path || m.src) && (
-                                            <button
-                                                onClick={() => handleBlobDownload(m, i)}
-                                                disabled={downloading[i]}
-                                                className="text-[8px] text-zinc-600 hover:text-zinc-400 disabled:opacity-50 transition-colors ml-1 shrink-0"
+                                            <a
+                                                href={getMediaUrl(m)}
+                                                download={m.filename || 'download'}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="text-[8px] text-zinc-600 hover:text-zinc-400 transition-colors ml-1 shrink-0"
                                                 title="Download"
                                             >
-                                                {downloading[i] ? '…' : '⬇'}
-                                            </button>
+                                                ⬇
+                                            </a>
                                         )}
                                     </div>
                                 </div>
@@ -178,16 +163,16 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick }
 
             {/* Prompts */}
             {prompts.length > 0 && (
-                <CollapsibleSection label={`Prompts (${prompts.length})`} defaultOpen={prompts.length <= 2}>
+                <CollapsibleSection label={`Prompts (${prompts.length})`} defaultOpen={promptsDefaultOpen ?? prompts.length <= 2}>
                     {prompts.map((p, i) => (
-                        <div key={i} className="mb-2 last:mb-0">
-                            {p.title && <div className="text-[10px] text-zinc-400 font-medium">{p.title}</div>}
-                            <div className="text-[10px] text-zinc-500 whitespace-pre-wrap break-words leading-relaxed">{p.body}</div>
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                                {p.promptType && <span className={`text-[8px] px-1 rounded ${p.promptType === 'master' ? 'text-amber-400 bg-amber-500/10' :
-                                        p.promptType === 'negative' ? 'text-red-400 bg-red-500/10' :
-                                            'text-zinc-500 bg-zinc-800'
-                                    }`}>{p.promptType}</span>}
+                        <div key={i} className="mb-2.5 last:mb-0">
+                            <div className="flex items-center gap-1.5 mb-1">
+                                {p.promptType && (
+                                    <span className={`text-[8px] px-1.5 py-px rounded font-medium ${p.promptType.toLowerCase() === 'master' ? 'text-amber-400 bg-amber-500/10' :
+                                            p.promptType.toLowerCase() === 'negative' ? 'text-red-400 bg-red-500/10' :
+                                                'text-zinc-500 bg-zinc-800'
+                                        }`}>{p.promptType}</span>
+                                )}
                                 {p.origin && <span className="text-[8px] text-zinc-600">· {p.origin}</span>}
                                 <button
                                     onClick={() => copyToClipboard(p.body)}
@@ -197,6 +182,8 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick }
                                     📋
                                 </button>
                             </div>
+                            {p.title && <div className="text-[10px] text-zinc-400 font-medium mb-0.5">{p.title}</div>}
+                            <div className="text-[10px] text-zinc-500 whitespace-pre-wrap break-words leading-relaxed">{p.body}</div>
                         </div>
                     ))}
                 </CollapsibleSection>
@@ -204,7 +191,7 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick }
 
             {/* Notes */}
             {notes.length > 0 && (
-                <CollapsibleSection label={`Notes (${notes.length})`} defaultOpen={notes.length <= 2}>
+                <CollapsibleSection label={`Notes (${notes.length})`} defaultOpen={notesDefaultOpen ?? false}>
                     {notes.map((n, i) => (
                         <div key={i} className="text-[10px] text-zinc-500 mb-1 last:mb-0 whitespace-pre-wrap break-words leading-relaxed">{n.body}</div>
                     ))}
