@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useMemo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import {
     updateEntityAction,
@@ -41,7 +41,30 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
     const [provenance, setProvenance] = useState(content.provenance ?? {})
     const [saving, setSaving] = useState(false)
     const [uploading, setUploading] = useState(false)
+    const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
     const fileInputRef = useRef<HTMLInputElement>(null)
+
+    // ── Dirty detection ──
+
+    const isDirty = useMemo(() => {
+        const origContent = (entity.content ?? {}) as EntityContent
+        if (name !== entity.name) return true
+        if (entityType !== entity.entity_type) return true
+        if (description !== (origContent.description ?? '')) return true
+        if (JSON.stringify(provenance) !== JSON.stringify(origContent.provenance ?? {})) return true
+        if (JSON.stringify(media) !== JSON.stringify(origContent.media ?? [])) return true
+        if (JSON.stringify(prompts) !== JSON.stringify(origContent.prompts ?? [])) return true
+        if (JSON.stringify(notes) !== JSON.stringify(origContent.notes ?? [])) return true
+        return false
+    }, [name, entityType, description, provenance, media, prompts, notes, entity])
+
+    const handleClose = useCallback(() => {
+        if (isDirty) {
+            setShowDiscardConfirm(true)
+        } else {
+            onClose()
+        }
+    }, [isDirty, onClose])
 
     // ── Save ──
 
@@ -114,7 +137,16 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
         setUploading(false)
     }, [projectId, entity.id])
 
-    const removeMedia = (idx: number) => setMedia(prev => prev.filter((_, i) => i !== idx))
+    const removeMedia = (idx: number) => {
+        setMediaDeleteConfirmIdx(idx)
+    }
+    const [mediaDeleteConfirmIdx, setMediaDeleteConfirmIdx] = useState<number | null>(null)
+    const confirmRemoveMedia = () => {
+        if (mediaDeleteConfirmIdx !== null) {
+            setMedia(prev => prev.filter((_, i) => i !== mediaDeleteConfirmIdx))
+            setMediaDeleteConfirmIdx(null)
+        }
+    }
 
     // ── Prompts ──
 
@@ -133,7 +165,7 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
     // ── Render ──
 
     return (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70" onClick={onClose}>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70" onClick={handleClose}>
             <div
                 className="bg-zinc-900 border border-zinc-600 rounded-lg w-[800px] max-w-[95vw] max-h-[85vh] flex flex-col shadow-2xl"
                 onClick={e => e.stopPropagation()}
@@ -151,7 +183,7 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                         >
                             {saving ? 'Saving…' : 'Save'}
                         </button>
-                        <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300 text-sm transition-colors">✕</button>
+                        <button onClick={handleClose} className="text-zinc-500 hover:text-zinc-300 text-sm transition-colors">✕</button>
                     </div>
                 </div>
 
@@ -330,33 +362,67 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                             </div>
                             <div>
                                 <span className="text-[9px] text-zinc-600 block mb-0.5">Tool Origin</span>
-                                <input
-                                    type="text"
+                                <select
                                     value={provenance.tool_origin ?? ''}
                                     onChange={e => setProvenance(prev => ({ ...prev, tool_origin: e.target.value || undefined }))}
-                                    placeholder="e.g. Production Live, Library import…"
-                                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[10px] text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
-                                />
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                    {['Production Live', 'Take', 'Library import', 'External', 'Scan', 'Client'].map(chip => (
-                                        <button
-                                            key={chip}
-                                            type="button"
-                                            onClick={() => setProvenance(prev => ({ ...prev, tool_origin: chip }))}
-                                            className={`text-[8px] px-1.5 py-0.5 rounded border transition-colors ${provenance.tool_origin === chip
-                                                    ? 'text-zinc-200 bg-zinc-700 border-zinc-600'
-                                                    : 'text-zinc-600 bg-zinc-800/50 border-zinc-700/50 hover:text-zinc-400 hover:border-zinc-600'
-                                                }`}
-                                        >
-                                            {chip}
-                                        </button>
-                                    ))}
-                                </div>
+                                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[10px] text-zinc-300 focus:outline-none"
+                                >
+                                    <option value="">—</option>
+                                    {ORIGIN_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                                </select>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
+
+            {/* Discard changes confirm */}
+            {showDiscardConfirm && (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => setShowDiscardConfirm(false)}>
+                    <div className="bg-zinc-900 border border-zinc-600 rounded-lg px-6 py-5 w-80 shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-sm font-semibold text-zinc-100 mb-2">Discard changes?</h3>
+                        <p className="text-[11px] text-zinc-500 mb-4">You have unsaved changes. Closing will discard them.</p>
+                        <div className="flex items-center gap-2 justify-end">
+                            <button
+                                onClick={() => setShowDiscardConfirm(false)}
+                                className="px-3 py-1.5 text-[10px] rounded bg-zinc-800 border border-zinc-700 text-zinc-300 hover:bg-zinc-700 transition-colors"
+                            >
+                                Continue editing
+                            </button>
+                            <button
+                                onClick={() => { setShowDiscardConfirm(false); onClose() }}
+                                className="px-3 py-1.5 text-[10px] rounded bg-red-600/80 text-white hover:bg-red-600 transition-colors"
+                            >
+                                Discard
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Delete media confirm */}
+            {mediaDeleteConfirmIdx !== null && (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => setMediaDeleteConfirmIdx(null)}>
+                    <div className="bg-zinc-900 border border-zinc-600 rounded-lg px-6 py-5 w-80 shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-sm font-semibold text-zinc-100 mb-2">Remove media?</h3>
+                        <p className="text-[11px] text-zinc-500 mb-4">This media will be removed from the entity. You can re-upload it later, but the original file may be hard to recover.</p>
+                        <div className="flex items-center gap-2 justify-end">
+                            <button
+                                onClick={() => setMediaDeleteConfirmIdx(null)}
+                                className="px-3 py-1.5 text-[10px] rounded bg-zinc-800 border border-zinc-700 text-zinc-300 hover:bg-zinc-700 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={confirmRemoveMedia}
+                                className="px-3 py-1.5 text-[10px] rounded bg-red-600/80 text-white hover:bg-red-600 transition-colors"
+                            >
+                                Remove
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }

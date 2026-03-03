@@ -9,8 +9,6 @@ import {
     type EntityType,
 } from '@/app/actions/entities'
 import { EntityEditOverlay } from './entity-edit-overlay'
-import { createClient } from '@/lib/supabase/client'
-import { invalidateEntityCache, bumpEntityVersion } from '@/lib/entities/entity-cache'
 
 // ── Constants ──
 
@@ -83,10 +81,17 @@ export function EntityLibrary({ projectId, onClose, onInsertRef }: EntityLibrary
 
     // ── Delete ──
 
+    const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
+
     const handleDelete = async (entityId: string) => {
-        if (!confirm('Delete this entity? This cannot be undone.')) return
-        const ok = await deleteEntityAction(entityId)
-        if (ok) setEntities(prev => prev.filter(e => e.id !== entityId))
+        setDeleteConfirmId(entityId)
+    }
+
+    const confirmDelete = async () => {
+        if (!deleteConfirmId) return
+        const ok = await deleteEntityAction(deleteConfirmId)
+        if (ok) setEntities(prev => prev.filter(e => e.id !== deleteConfirmId))
+        setDeleteConfirmId(null)
     }
 
     // ── Filter ──
@@ -99,8 +104,6 @@ export function EntityLibrary({ projectId, onClose, onInsertRef }: EntityLibrary
 
     const handleEditSaved = (updated: Entity) => {
         setEntities(prev => prev.map(e => e.id === updated.id ? updated : e))
-        invalidateEntityCache(updated.id)
-        bumpEntityVersion()
         setEditingEntity(null)
     }
 
@@ -218,6 +221,30 @@ export function EntityLibrary({ projectId, onClose, onInsertRef }: EntityLibrary
                     onClose={() => setEditingEntity(null)}
                 />
             )}
+
+            {/* Delete entity confirm */}
+            {deleteConfirmId && (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => setDeleteConfirmId(null)}>
+                    <div className="bg-zinc-900 border border-zinc-600 rounded-lg px-6 py-5 w-80 shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-sm font-semibold text-zinc-100 mb-2">Delete entity?</h3>
+                        <p className="text-[11px] text-zinc-500 mb-4">This entity and all its content will be permanently deleted. This cannot be undone.</p>
+                        <div className="flex items-center gap-2 justify-end">
+                            <button
+                                onClick={() => setDeleteConfirmId(null)}
+                                className="px-3 py-1.5 text-[10px] rounded bg-zinc-800 border border-zinc-700 text-zinc-300 hover:bg-zinc-700 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={confirmDelete}
+                                className="px-3 py-1.5 text-[10px] rounded bg-red-600/80 text-white hover:bg-red-600 transition-colors"
+                            >
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </>
     )
 }
@@ -234,14 +261,7 @@ function EntityRow({ entity, onEdit, onDelete, onInsertRef }: {
     const mediaCount = (entity.content as any)?.media?.length ?? 0
     const promptCount = (entity.content as any)?.prompts?.length ?? 0
     const description = (entity.content as any)?.description ?? ''
-    const thumbnail = (() => {
-        const tp = (entity.content as any)?.thumbnail_path
-        const firstMedia = (entity.content as any)?.media?.[0]
-        const sp = tp || firstMedia?.storage_path || firstMedia?.storagePath
-        if (!sp) return firstMedia?.src || null
-        const bucket = firstMedia?.kind === 'video' ? 'take-videos' : (firstMedia?.bucket || 'take-images')
-        return createClient().storage.from(bucket).getPublicUrl(sp).data.publicUrl
-    })()
+    const thumbnail = (entity.content as any)?.thumbnail_path
 
     return (
         <div className="group flex items-start gap-3 p-3 bg-zinc-800/40 border border-zinc-700/50 rounded-lg hover:border-zinc-600/60 transition-colors">
@@ -252,8 +272,8 @@ function EntityRow({ entity, onEdit, onDelete, onInsertRef }: {
                 ) : (
                     <span className="text-zinc-600 text-lg">
                         {entity.entity_type === 'character' ? '👤' :
-                         entity.entity_type === 'environment' ? '🌍' :
-                         entity.entity_type === 'prop' ? '🎭' : '🎬'}
+                            entity.entity_type === 'environment' ? '🌍' :
+                                entity.entity_type === 'prop' ? '🎭' : '🎬'}
                     </span>
                 )}
             </div>
