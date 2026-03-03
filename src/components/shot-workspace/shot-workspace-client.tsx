@@ -1470,6 +1470,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           projectId={projectId}
           onClose={() => setShowEntityLibrary(false)}
           onInsertRef={handleInsertEntityRef}
+          canvasRef={canvasRef}
         />
       )}
       {crystallizeState && (

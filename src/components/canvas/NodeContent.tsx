@@ -423,23 +423,60 @@ export function VideoContent({ data, viewportScale = 1 }: VideoContentProps) {
 export function EntityRefContent({ data }: { data: EntityRefData }) {
     const entityVersion = useEntityVersion()
     const [liveEntity, setLiveEntity] = useState<{ entity_type: string; name: string } | null>(null)
+    const [resolved, setResolved] = useState(false)
 
     useEffect(() => {
-        if (!data.entity_id) return
+        if (!data.entity_id) { setResolved(true); return }
         const cached = entityCache.get(data.entity_id)
-        if (cached) { setLiveEntity({ entity_type: cached.entity_type, name: cached.name }); return }
+        if (cached) {
+            setLiveEntity({ entity_type: cached.entity_type, name: cached.name })
+            setResolved(true)
+            return
+        }
+        // Reset on new fetch (e.g. entity_id changed via replace)
+        setLiveEntity(null)
+        setResolved(false)
         let cancelled = false
         getEntityAction(data.entity_id).then(e => {
-            if (cancelled || !e) return
-            entityCache.set(data.entity_id, e)
-            setLiveEntity({ entity_type: e.entity_type, name: e.name })
-        }).catch(() => { })
+            if (cancelled) return
+            if (e) {
+                entityCache.set(data.entity_id, e)
+                setLiveEntity({ entity_type: e.entity_type, name: e.name })
+            }
+            setResolved(true)
+        }).catch(() => { if (!cancelled) setResolved(true) })
         return () => { cancelled = true }
     }, [data.entity_id, entityVersion])
 
-    // Derive from live data with fallback to stale node data
-    const displayType = liveEntity?.entity_type ?? data.entity_type
-    const displayName = liveEntity?.name ?? data.entity_name
+    // ── Loading: neutral placeholder (no stale flash) ──
+    if (!resolved) {
+        return (
+            <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 rounded border-2 border-dashed border-zinc-700/40 bg-zinc-800/20 p-3">
+                <span className="w-6 h-6 rounded-full bg-zinc-700/50 animate-pulse" />
+                <span className="text-[10px] font-medium text-zinc-500 text-center truncate max-w-full">
+                    {data.entity_name || 'Loading…'}
+                </span>
+                <span className="text-[8px] text-zinc-600 uppercase tracking-wider">ref</span>
+            </div>
+        )
+    }
+
+    // ── Missing: entity not found after fetch ──
+    if (!liveEntity) {
+        return (
+            <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 rounded border-2 border-dashed border-red-500/20 bg-red-500/5 p-3">
+                <span className="text-2xl">⚠️</span>
+                <span className="text-[10px] font-medium text-zinc-400 text-center truncate max-w-full">
+                    {data.entity_name || 'Missing Entity'}
+                </span>
+                <span className="text-[8px] text-red-400/60 uppercase tracking-wider">missing ref</span>
+            </div>
+        )
+    }
+
+    // ── Resolved: render live data ──
+    const displayType = liveEntity.entity_type
+    const displayName = liveEntity.name
 
     const typeEmoji = displayType === 'character' ? '👤'
         : displayType === 'environment' ? '🌍'

@@ -158,10 +158,26 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
                             {/* Separator */}
                             <div className="border-t border-zinc-800" />
 
-                            {/* Badge + name: live from fetchedEntity, fallback to node data */}
+                            {/* Badge + name: live from fetchedEntity, neutral while loading */}
                             {(() => {
-                                const liveType = fetchedEntity?.entity_type ?? data.entity_type
-                                const liveName = fetchedEntity?.name ?? data.entity_name ?? 'Unnamed'
+                                if (entityLoading || (!fetchedEntity && data.entity_id)) {
+                                    return (
+                                        <div>
+                                            <span className="text-[8px] font-medium px-1.5 py-0.5 rounded border inline-block mb-1.5 uppercase tracking-wider text-zinc-500 bg-zinc-800 border-zinc-700">…</span>
+                                            <div className="text-[13px] text-zinc-500 font-semibold leading-tight truncate">Loading…</div>
+                                        </div>
+                                    )
+                                }
+                                if (!fetchedEntity) {
+                                    return (
+                                        <div>
+                                            <span className="text-[8px] font-medium px-1.5 py-0.5 rounded border inline-block mb-1.5 uppercase tracking-wider text-red-400/60 bg-red-500/5 border-red-500/20">missing</span>
+                                            <div className="text-[13px] text-zinc-400 font-semibold leading-tight truncate">{data.entity_name ?? 'Unknown'}</div>
+                                        </div>
+                                    )
+                                }
+                                const liveType = fetchedEntity.entity_type
+                                const liveName = fetchedEntity.name
                                 return (
                                     <div>
                                         <span className={`text-[8px] font-medium px-1.5 py-0.5 rounded border inline-block mb-1.5 uppercase tracking-wider ${liveType === 'character' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
@@ -169,14 +185,11 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
                                                     liveType === 'prop' ? 'text-blue-400 bg-blue-500/10 border-blue-500/20' :
                                                         liveType === 'cinematography' ? 'text-purple-400 bg-purple-500/10 border-purple-500/20' :
                                                             'text-zinc-400 bg-zinc-800 border-zinc-700'
-                                            }`}>{liveType ?? '—'}</span>
+                                            }`}>{liveType}</span>
                                         <div className="text-[13px] text-zinc-100 font-semibold leading-tight truncate">{liveName}</div>
                                     </div>
                                 )
                             })()}
-
-                            {/* Loading */}
-                            {entityLoading && <p className="text-[10px] text-zinc-600 italic">Loading…</p>}
 
                             {/* Entity content: media, prompts (open), notes (closed) */}
                             {fetchedEntity && (
