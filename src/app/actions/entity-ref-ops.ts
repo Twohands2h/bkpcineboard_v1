@@ -166,6 +166,110 @@ export async function replaceEntityRefsAction(
     return { success: true, replacedRefs }
 }
 
+// ── Usage: scan project, return per-shot usage list for "Where used" UI ──
+
+export interface EntityUsageItem {
+    shot_id: string
+    shot_label: string       // e.g. "Shot 3" or shot.title if available
+    scene_label: string      // e.g. "Scene 1" (index-based, 1-indexed)
+    take_id: string
+    take_label: string       // e.g. "Take 2"
+    ref_count: number        // refs in this specific take
+}
+
+export interface EntityUsageResult {
+    count: number            // total entity_ref nodes across project
+    usages: EntityUsageItem[]
+}
+
+export async function getEntityUsageAction(
+    entityId: string,
+    projectId: string
+): Promise<EntityUsageResult> {
+    const supabase = await createClient()
+
+    // Step 1: shots for project — minimal select (certified safe)
+    const { data: shots, error: shotsErr } = await supabase
+        .from('shots')
+        .select('id')
+        .eq('project_id', projectId)
+
+    if (shotsErr || !shots || shots.length === 0) {
+        return { count: 0, usages: [] }
+    }
+
+    const shotIds = shots.map((s: any) => s.id)
+
+    // Step 2: takes — minimal certified select
+    const { data: takes, error: takesErr } = await supabase
+        .from('takes')
+        .select('id, shot_id')
+        .in('shot_id', shotIds)
+
+    if (takesErr || !takes) return { count: 0, usages: [] }
+
+    // Step 3: scan snapshots — identical predicate to certified scanner
+    const usages: EntityUsageItem[] = []
+
+    for (const take of takes) {
+        const snapshot = await getLatestSnapshot(supabase, take.id)
+        if (!snapshot?.payload?.nodes) continue
+
+        const refs = snapshot.payload.nodes.filter(
+            (n: any) => n.type === 'entity_ref' && n.data?.entity_id === entityId
+        )
+        if (refs.length === 0) continue
+
+        usages.push({
+            shot_id: take.shot_id ?? '',
+            shot_label: take.shot_id ? `Shot …${take.shot_id.slice(-6)}` : 'Shot ?',
+            scene_label: '',
+            take_id: take.id,
+            take_label: `Take …${take.id.slice(-6)}`,
+            ref_count: refs.length,
+        })
+    }
+
+    // Canon: N = distinct takes containing the entity_ref
+    const count = usages.length
+
+    // Step 4: enrich labels — best-effort, never blocks count/usages
+    if (usages.length > 0) {
+        const distinctShotIds = [...new Set(usages.map(u => u.shot_id))]
+
+        const { data: shotMeta } = await supabase
+            .from('shots')
+            .select('id, visual_description, order_index')
+            .in('id', distinctShotIds)
+
+        const { data: takeMeta } = await supabase
+            .from('takes')
+            .select('id, take_number')
+            .in('id', usages.map(u => u.take_id))
+
+        const shotMetaMap = new Map((shotMeta ?? []).map((s: any) => [s.id, s]))
+        const takeMetaMap = new Map((takeMeta ?? []).map((t: any) => [t.id, t]))
+
+        for (let i = 0; i < usages.length; i++) {
+            const sm = shotMetaMap.get(usages[i].shot_id)
+            const tm = takeMetaMap.get(usages[i].take_id)
+            if (sm) {
+                // Shot #{order_index+1} as primary (matches UI "Shot #2000" convention)
+                const shotNum = sm.order_index != null ? sm.order_index + 1 : null
+                const desc = sm.visual_description as string | null
+                usages[i].shot_label = shotNum != null
+                    ? `Shot #${shotNum}`
+                    : (desc ? (desc.length > 30 ? desc.slice(0, 30) + '…' : desc) : usages[i].shot_label)
+            }
+            if (tm?.take_number != null) {
+                usages[i].take_label = `Take ${tm.take_number}`
+            }
+        }
+    }
+
+    return { count, usages }
+}
+
 // ── Internal helpers ──
 
 async function getLatestSnapshot(supabase: any, takeId: string): Promise<SnapshotRow | null> {
