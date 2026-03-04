@@ -1441,6 +1441,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               onClose={() => setInspectorOpen(false)}
               onUpdateNodeData={handleUpdateNodeData}
               onOpenEntityEdit={(eid) => setEditEntityId(eid)}
+              projectId={projectId}
             />
           )}
 

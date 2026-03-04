@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useMemo, useCallback, useEffect } from 'react'
+import Link from 'next/link'
 
 import type { CanvasNode } from '@/components/canvas/TakeCanvas'
 import {
@@ -10,6 +11,7 @@ import {
 } from '@/lib/provenance-options'
 
 import { getEntityAction, type Entity } from '@/app/actions/entities'
+import { getEntityUsageAction, type EntityUsageResult } from '@/app/actions/entity-ref-ops'
 import { EntityPackPreview, normalizeMedia, normalizePrompts, normalizeNotes, getMediaUrl } from '@/components/entities/entity-pack-preview'
 import { entityCache, invalidateEntityCache, useEntityVersion } from '@/lib/entities/entity-cache'
 import { getEntityTypeUI } from '@/lib/entities/entity-type-ui'
@@ -79,11 +81,12 @@ interface InspectorPanelProps {
     onClose: () => void
     onUpdateNodeData?: (nodeId: string, patch: Record<string, any>) => void
     onOpenEntityEdit?: (entityId: string) => void
+    projectId?: string
 }
 
 // ── Component ──
 
-export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEdit }: InspectorPanelProps) {
+export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEdit, projectId }: InspectorPanelProps) {
 
     const entityVersion = useEntityVersion()
 
@@ -97,6 +100,11 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
 
     const [fetchedEntity, setFetchedEntity] = useState<Entity | null>(null)
     const [entityLoading, setEntityLoading] = useState(false)
+
+    // ── Where Used ──
+    const [whereUsed, setWhereUsed] = useState<EntityUsageResult | null>(null)
+    const [whereUsedLoading, setWhereUsedLoading] = useState(false)
+    const [whereUsedOpen, setWhereUsedOpen] = useState(false)
 
     // entityVersion bumps when parent signals cache invalidation
     const entityIdForFetch = isEntityRef ? (data.entity_id as string | undefined) : undefined
@@ -115,6 +123,17 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
         }).catch(() => { if (!cancelled) setEntityLoading(false) })
         return () => { cancelled = true }
     }, [entityIdForFetch, entityVersion])
+
+    // ── Where Used fetch: triggered on entity change or cache invalidation ──
+    useEffect(() => {
+        if (!entityIdForFetch || !projectId) { setWhereUsed(null); return }
+        setWhereUsedLoading(true)
+        let cancelled = false
+        getEntityUsageAction(entityIdForFetch, projectId).then(result => {
+            if (!cancelled) { setWhereUsed(result); setWhereUsedLoading(false) }
+        }).catch(() => { if (!cancelled) setWhereUsedLoading(false) })
+        return () => { cancelled = true }
+    }, [entityIdForFetch, projectId, entityVersion])
 
     return (
         <div className="absolute top-0 right-0 bottom-0 w-72 z-30 pointer-events-none">
@@ -201,6 +220,65 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
 
                             {!entityLoading && !fetchedEntity && data.entity_id && (
                                 <p className="text-[9px] text-zinc-600 italic">Entity data unavailable</p>
+                            )}
+
+                            {/* ── Where Used ── */}
+                            {projectId && entityIdForFetch && (
+                                <div className="border-t border-zinc-800/60 pt-2">
+                                    <button
+                                        onClick={() => setWhereUsedOpen(p => !p)}
+                                        className="w-full flex items-center justify-between text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors py-1"
+                                    >
+                                        <span className="flex items-center gap-1.5">
+                                            <span className="text-[7px]">{whereUsedOpen ? '▼' : '▶'}</span>
+                                            {whereUsedLoading
+                                                ? <span className="text-zinc-600">Used in …</span>
+                                                : whereUsed
+                                                    ? <span>Used in <span className="text-zinc-200 font-medium">{whereUsed.count}</span></span>
+                                                    : <span className="text-zinc-600">Used in —</span>
+                                            }
+                                        </span>
+                                    </button>
+
+                                    {whereUsedOpen && whereUsed && (
+                                        <div
+                                            onPointerDownCapture={(e) => e.stopPropagation()}
+                                            onPointerUpCapture={(e) => e.stopPropagation()}
+                                            onClickCapture={(e) => e.stopPropagation()}
+                                            className="mt-1 space-y-0.5"
+                                        >
+                                            {whereUsed.usages.length === 0 ? (
+                                                <p className="text-[9px] text-zinc-600 italic pl-3">Not used anywhere</p>
+                                            ) : whereUsed.usages.map(u => {
+                                                const href = u.shot_id
+                                                    ? `/projects/${projectId}/shots/${u.shot_id}?take=${u.take_id}`
+                                                    : null
+                                                if (!href) return (
+                                                    <div key={u.take_id} className="px-2.5 py-1.5 rounded text-[10px] bg-zinc-800/20 border border-zinc-800 text-zinc-600 cursor-not-allowed">
+                                                        <div className="leading-tight truncate">{u.shot_label}</div>
+                                                        <div className="text-[9px] mt-0.5">{u.take_label} · no shot_id</div>
+                                                    </div>
+                                                )
+                                                return (
+                                                    <Link
+                                                        key={u.take_id}
+                                                        href={href}
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        className="block w-full text-left px-2.5 py-1.5 rounded text-[10px] bg-zinc-800/40 hover:bg-zinc-700/50 border border-zinc-700/30 hover:border-zinc-600/40 transition-colors group cursor-pointer"
+                                                    >
+                                                        <div className="text-zinc-200 group-hover:text-white leading-tight truncate">
+                                                            {u.scene_label && <span className="text-zinc-500">{u.scene_label} / </span>}
+                                                            {u.shot_label}
+                                                        </div>
+                                                        <div className="text-[9px] text-zinc-600 leading-tight mt-0.5">
+                                                            {u.take_label}{u.ref_count > 1 ? ` · ${u.ref_count} refs` : ''}
+                                                        </div>
+                                                    </Link>
+                                                )
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
                             )}
 
                             {/* Details (collapsed by default) */}
