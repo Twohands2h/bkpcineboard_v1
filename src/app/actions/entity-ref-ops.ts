@@ -170,11 +170,13 @@ export async function replaceEntityRefsAction(
 
 export interface EntityUsageItem {
     shot_id: string
-    shot_label: string       // e.g. "Shot 3" or shot.title if available
-    scene_label: string      // e.g. "Scene 1" (index-based, 1-indexed)
     take_id: string
-    take_label: string       // e.g. "Take 2"
-    ref_count: number        // refs in this specific take
+    ref_count: number
+    film_label: string       // canonical: "S02 · Sh12 — Take 03", built server-side
+    // kept for backwards compat (inspector still uses these)
+    shot_label: string
+    scene_label: string
+    take_label: string
 }
 
 export interface EntityUsageResult {
@@ -188,19 +190,48 @@ export async function getEntityUsageAction(
 ): Promise<EntityUsageResult> {
     const supabase = await createClient()
 
-    // Step 1: shots for project — minimal select (certified safe)
+    // Step 1: shots for project (certified minimal select)
     const { data: shots, error: shotsErr } = await supabase
         .from('shots')
-        .select('id')
+        .select('id, scene_id, order_index')
         .eq('project_id', projectId)
 
-    if (shotsErr || !shots || shots.length === 0) {
-        return { count: 0, usages: [] }
-    }
+    if (shotsErr || !shots || shots.length === 0) return { count: 0, usages: [] }
 
     const shotIds = shots.map((s: any) => s.id)
+    const shotMap = new Map(shots.map((s: any) => [s.id, s]))
 
-    // Step 2: takes — minimal certified select
+    // Step 2: scenes — order_index preferred; fallback to array position if column missing
+    const sceneIds = [...new Set(shots.map((s: any) => s.scene_id).filter(Boolean))]
+    // Build sceneOrderMap: sceneId → 1-based order number
+    const sceneOrderMap = new Map<string, number>()
+    {
+        const { data: scenesWithOrder, error: sceneOrderErr } = await supabase
+            .from('scenes')
+            .select('id, order_index')
+            .in('id', sceneIds)
+        if (!sceneOrderErr && scenesWithOrder) {
+            // Check if order_index is actually populated (not null on all rows)
+            const hasOrderIndex = scenesWithOrder.some((sc: any) => sc.order_index != null)
+            if (hasOrderIndex) {
+                // Sort by order_index for correct numbering
+                const sorted = [...scenesWithOrder].sort((a: any, b: any) => (a.order_index ?? 0) - (b.order_index ?? 0))
+                sorted.forEach((sc: any, i) => sceneOrderMap.set(sc.id, i + 1))
+            } else {
+                // order_index missing/null: use array position as returned by DB (stable insertion order)
+                scenesWithOrder.forEach((sc: any, i) => sceneOrderMap.set(sc.id, i + 1))
+            }
+        } else {
+            // Column may not exist — fallback: fetch id only, use array position
+            const { data: scenesIdOnly } = await supabase
+                .from('scenes')
+                .select('id')
+                .in('id', sceneIds)
+            ;(scenesIdOnly ?? []).forEach((sc: any, i) => sceneOrderMap.set(sc.id, i + 1))
+        }
+    }
+
+    // Step 3: takes — minimal certified select
     const { data: takes, error: takesErr } = await supabase
         .from('takes')
         .select('id, shot_id')
@@ -208,7 +239,7 @@ export async function getEntityUsageAction(
 
     if (takesErr || !takes) return { count: 0, usages: [] }
 
-    // Step 3: scan snapshots — identical predicate to certified scanner
+    // Step 4: scan snapshots
     const usages: EntityUsageItem[] = []
 
     for (const take of takes) {
@@ -222,48 +253,44 @@ export async function getEntityUsageAction(
 
         usages.push({
             shot_id: take.shot_id ?? '',
-            shot_label: take.shot_id ? `Shot …${take.shot_id.slice(-6)}` : 'Shot ?',
-            scene_label: '',
             take_id: take.id,
-            take_label: `Take …${take.id.slice(-6)}`,
             ref_count: refs.length,
+            film_label: '',
+            shot_label: '',
+            scene_label: '',
+            take_label: '',
         })
     }
 
-    // Canon: N = distinct takes containing the entity_ref
     const count = usages.length
 
-    // Step 4: enrich labels — best-effort, never blocks count/usages
+    // Step 5: enrich film_label — best-effort, never blocks count/navigation
     if (usages.length > 0) {
-        const distinctShotIds = [...new Set(usages.map(u => u.shot_id))]
-
-        const { data: shotMeta } = await supabase
-            .from('shots')
-            .select('id, visual_description, order_index')
-            .in('id', distinctShotIds)
-
+        // take_number: certified real column (confirmed via select *)
         const { data: takeMeta } = await supabase
             .from('takes')
             .select('id, take_number')
             .in('id', usages.map(u => u.take_id))
-
-        const shotMetaMap = new Map((shotMeta ?? []).map((s: any) => [s.id, s]))
         const takeMetaMap = new Map((takeMeta ?? []).map((t: any) => [t.id, t]))
 
+        const pad = (n: number) => String(n).padStart(2, '0')
+
         for (let i = 0; i < usages.length; i++) {
-            const sm = shotMetaMap.get(usages[i].shot_id)
-            const tm = takeMetaMap.get(usages[i].take_id)
-            if (sm) {
-                // Shot #{order_index+1} as primary (matches UI "Shot #2000" convention)
-                const shotNum = sm.order_index != null ? sm.order_index + 1 : null
-                const desc = sm.visual_description as string | null
-                usages[i].shot_label = shotNum != null
-                    ? `Shot #${shotNum}`
-                    : (desc ? (desc.length > 30 ? desc.slice(0, 30) + '…' : desc) : usages[i].shot_label)
-            }
-            if (tm?.take_number != null) {
-                usages[i].take_label = `Take ${tm.take_number}`
-            }
+            const shot = shotMap.get(usages[i].shot_id)
+            // shot.order_index: certified (Shot interface + used in strip prefix)
+            const shotN = shot?.order_index != null ? shot.order_index + 1 : null
+            const sceneN = shot?.scene_id ? (sceneOrderMap.get(shot.scene_id) ?? null) : null
+            // take_number: certified real DB column
+            const takeN = takeMetaMap.get(usages[i].take_id)?.take_number ?? null
+
+            const sPart  = sceneN != null ? `S${pad(sceneN)}`         : 'S??'
+            const shPart = shotN  != null ? `Sh${pad(shotN)}`         : 'Sh??'
+            const tPart  = takeN  != null ? `Take ${pad(takeN)}`      : 'Take ?'
+
+            usages[i].film_label  = `${sPart} · ${shPart} — ${tPart}`
+            usages[i].shot_label  = shotN  != null ? `Shot #${shotN}` : usages[i].shot_id.slice(-6)
+            usages[i].scene_label = sceneN != null ? `Scene ${sceneN}` : ''
+            usages[i].take_label  = takeN  != null ? `Take ${takeN}`   : usages[i].take_id.slice(-6)
         }
     }
 
