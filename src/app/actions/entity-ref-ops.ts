@@ -270,6 +270,56 @@ export async function getEntityUsageAction(
     return { count, usages }
 }
 
+// ── Usage counts: single project scan → { [entityId]: distinctTakeCount } ──
+// Called once by Entity Library to show "Used N" on all rows without N round trips.
+
+export async function getEntityUsageCountsAction(
+    projectId: string
+): Promise<Record<string, number>> {
+    const supabase = await createClient()
+
+    // Step 1: shot IDs for project
+    const { data: shots, error: shotsErr } = await supabase
+        .from('shots')
+        .select('id')
+        .eq('project_id', projectId)
+
+    if (shotsErr || !shots || shots.length === 0) return {}
+
+    const shotIds = shots.map((s: any) => s.id)
+
+    // Step 2: take IDs for those shots
+    const { data: takes, error: takesErr } = await supabase
+        .from('takes')
+        .select('id')
+        .in('shot_id', shotIds)
+
+    if (takesErr || !takes || takes.length === 0) return {}
+
+    // Step 3: single pass over all snapshots — accumulate per-entity distinct take sets
+    const takeSets: Record<string, Set<string>> = {}
+
+    for (const take of takes) {
+        const snapshot = await getLatestSnapshot(supabase, take.id)
+        if (!snapshot?.payload?.nodes) continue
+
+        for (const node of snapshot.payload.nodes) {
+            if (node.type !== 'entity_ref') continue
+            const eid = node.data?.entity_id
+            if (!eid) continue
+            if (!takeSets[eid]) takeSets[eid] = new Set()
+            takeSets[eid].add(take.id)
+        }
+    }
+
+    // Convert sets to counts
+    const counts: Record<string, number> = {}
+    for (const [eid, set] of Object.entries(takeSets)) {
+        counts[eid] = set.size
+    }
+    return counts
+}
+
 // ── Internal helpers ──
 
 async function getLatestSnapshot(supabase: any, takeId: string): Promise<SnapshotRow | null> {

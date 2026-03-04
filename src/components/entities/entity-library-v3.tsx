@@ -11,6 +11,7 @@ import {
     countEntityRefsInProjectAction,
     deleteEntityCascadeAction,
     replaceEntityRefsAction,
+    getEntityUsageCountsAction,
     type EntityRefUsage,
 } from '@/app/actions/entity-ref-ops'
 import { EntityEditOverlay } from './entity-edit-overlay'
@@ -37,6 +38,9 @@ export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef }: En
     const [editingEntity, setEditingEntity] = useState<Entity | null>(null)
     const [showCreate, setShowCreate] = useState(false)
 
+    // ── Usage counts: single scan on mount ──
+    const [usageCounts, setUsageCounts] = useState<Record<string, number>>({})
+
     // ── Load ──
 
     const loadEntities = useCallback(async () => {
@@ -47,6 +51,10 @@ export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef }: En
     }, [projectId])
 
     useEffect(() => { loadEntities() }, [loadEntities])
+
+    useEffect(() => {
+        getEntityUsageCountsAction(projectId).then(setUsageCounts).catch(() => { })
+    }, [projectId])
 
     // ── Create ──
 
@@ -263,6 +271,7 @@ export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef }: En
                                     <EntityRow
                                         key={entity.id}
                                         entity={entity}
+                                        usageCount={usageCounts[entity.id] ?? 0}
                                         onEdit={() => setEditingEntity(entity)}
                                         onDelete={() => handleDelete(entity.id)}
                                         onReplace={() => handleOpenReplace(entity)}
@@ -401,8 +410,9 @@ export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef }: En
 
 // ── Entity Row ──
 
-function EntityRow({ entity, onEdit, onDelete, onReplace, onInsertRef }: {
+function EntityRow({ entity, usageCount, onEdit, onDelete, onReplace, onInsertRef }: {
     entity: Entity
+    usageCount: number
     onEdit: () => void
     onDelete: () => void
     onReplace: () => void
@@ -440,6 +450,11 @@ function EntityRow({ entity, onEdit, onDelete, onReplace, onInsertRef }: {
                 <div className="flex items-center gap-2 mt-1">
                     {mediaCount > 0 && <span className="text-[9px] text-zinc-600">{mediaCount} media</span>}
                     {promptCount > 0 && <span className="text-[9px] text-zinc-600">{promptCount} prompts</span>}
+                    {usageCount > 0 && (
+                        <span className="text-[9px] font-medium text-zinc-500 bg-zinc-700/50 px-1.5 py-0.5 rounded">
+                            Used {usageCount}
+                        </span>
+                    )}
                 </div>
             </div>
 
