@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { EntityImageLightbox } from './entity-image-lightbox'
 
 // ── Normalizers: handle both EntityContent shape AND Crystallize v1 shape ──
 
@@ -59,7 +60,7 @@ export function getMediaUrl(m: NormalizedMedia): string {
 
 // ── Copy helper ──
 function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text).catch(() => { })
+    navigator.clipboard.writeText(text).catch(() => {})
 }
 
 // ── Component ──
@@ -78,6 +79,34 @@ interface EntityPackPreviewProps {
 
 export function EntityPackPreview({ content, variant = 'compact', onImageClick, promptsDefaultOpen, notesDefaultOpen }: EntityPackPreviewProps) {
     const [resolutions, setResolutions] = useState<Record<number, string>>({})
+    const [lightbox, setLightbox] = useState<{ src: string; filename: string } | null>(null)
+
+    // Image click: use provided handler, otherwise open portal lightbox
+    const handleImageClick = (url: string, filename: string) => {
+        if (onImageClick) { onImageClick(url) }
+        else { setLightbox({ src: url, filename }) }
+    }
+
+    // Programmatic blob download — no <a href>, no new tab
+    const handleDownload = async (e: React.MouseEvent, m: NormalizedMedia) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const url = getMediaUrl(m)
+        if (!url) return
+        try {
+            const resp = await fetch(url)
+            const blob = await resp.blob()
+            const a = document.createElement('a')
+            a.href = URL.createObjectURL(blob)
+            a.download = m.filename || 'download'
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(a.href)
+        } catch {
+            window.open(url, '_blank')
+        }
+    }
 
     if (!content || typeof content !== 'object') {
         return <p className="text-[10px] text-zinc-600 italic">No content</p>
@@ -108,8 +137,8 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick, 
                                         <img
                                             src={getMediaUrl(m)}
                                             alt={m.filename}
-                                            className={`w-full object-contain max-h-48 bg-zinc-900${onImageClick ? ' cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
-                                            onClick={onImageClick ? () => onImageClick(getMediaUrl(m)) : undefined}
+                                            className="w-full object-contain max-h-48 bg-zinc-900 cursor-pointer hover:opacity-90 transition-opacity"
+                                            onClick={() => handleImageClick(getMediaUrl(m), m.filename)}
                                             onLoad={(e) => {
                                                 const img = e.target as HTMLImageElement
                                                 if (img.naturalWidth && !resolutions[i]) {
@@ -125,16 +154,13 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick, 
                                             {resolutions[i] && <span className="text-[8px] text-zinc-600 shrink-0">{resolutions[i]}</span>}
                                         </div>
                                         {(m.storage_path || m.src) && (
-                                            <a
-                                                href={getMediaUrl(m)}
-                                                download={m.filename || 'download'}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
+                                            <button
+                                                onClick={(e) => handleDownload(e, m)}
                                                 className="text-[8px] text-zinc-600 hover:text-zinc-400 transition-colors ml-1 shrink-0"
                                                 title="Download"
                                             >
                                                 ⬇
-                                            </a>
+                                            </button>
                                         )}
                                     </div>
                                 </div>
@@ -168,10 +194,11 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick, 
                         <div key={i} className="mb-2.5 last:mb-0">
                             <div className="flex items-center gap-1.5 mb-1">
                                 {p.promptType && (
-                                    <span className={`text-[8px] px-1.5 py-px rounded font-medium ${p.promptType.toLowerCase() === 'master' ? 'text-amber-400 bg-amber-500/10' :
-                                            p.promptType.toLowerCase() === 'negative' ? 'text-red-400 bg-red-500/10' :
-                                                'text-zinc-500 bg-zinc-800'
-                                        }`}>{p.promptType}</span>
+                                    <span className={`text-[8px] px-1.5 py-px rounded font-medium ${
+                                        p.promptType.toLowerCase() === 'master' ? 'text-amber-400 bg-amber-500/10' :
+                                        p.promptType.toLowerCase() === 'negative' ? 'text-red-400 bg-red-500/10' :
+                                        'text-zinc-500 bg-zinc-800'
+                                    }`}>{p.promptType}</span>
                                 )}
                                 {p.origin && <span className="text-[8px] text-zinc-600">· {p.origin}</span>}
                                 <button
@@ -205,6 +232,15 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick, 
                     {content.provenance.generated_with && <div className="text-[10px] text-zinc-500">Generated: {content.provenance.generated_with}</div>}
                     {content.provenance.tool_origin && <div className="text-[10px] text-zinc-500">Origin: {content.provenance.tool_origin}</div>}
                 </div>
+            )}
+
+            {/* Portal lightbox — fullscreen, outside any drawer/overflow container */}
+            {lightbox && (
+                <EntityImageLightbox
+                    src={lightbox.src}
+                    filename={lightbox.filename}
+                    onClose={() => setLightbox(null)}
+                />
             )}
         </div>
     )
