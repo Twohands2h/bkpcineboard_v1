@@ -468,12 +468,14 @@ function EntityRow({ entity, usageCount, projectId, onEdit, onDelete, onReplace,
 
     return (
         <div className="group flex items-start gap-3 p-3 bg-zinc-800/40 border border-zinc-700/50 rounded-lg hover:border-zinc-600/60 transition-colors">
-            {/* Thumbnail */}
+            {/* Thumbnail — fixed 48×48, never shifts regardless of content */}
             <div className="w-12 h-12 shrink-0 rounded bg-zinc-800 border border-zinc-700 flex items-center justify-center overflow-hidden">
                 {thumbnail ? (
-                    <img src={thumbnail} alt="" className="w-full h-full object-cover" />
+                    <img src={thumbnail} alt="" width={48} height={48} className="w-full h-full object-cover" />
                 ) : (
-                    <TypeIcon size={20} className={typeCfg.textClass} />
+                    <div className="w-5 h-5 flex items-center justify-center shrink-0">
+                        <TypeIcon size={20} className={typeCfg.textClass} />
+                    </div>
                 )}
             </div>
 
