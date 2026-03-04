@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
+import Link from 'next/link'
 
 import type { CanvasNode } from '@/components/canvas/TakeCanvas'
 import {
@@ -10,9 +11,10 @@ import {
 } from '@/lib/provenance-options'
 
 import { getEntityAction, type Entity } from '@/app/actions/entities'
-import { EntityPackPreview } from '@/components/entities/entity-pack-preview'
-
-const entityCache = new Map<string, Entity>()
+import { getEntityUsageAction, type EntityUsageResult } from '@/app/actions/entity-ref-ops'
+import { EntityPackPreview, normalizeMedia, normalizePrompts, normalizeNotes, getMediaUrl } from '@/components/entities/entity-pack-preview'
+import { entityCache, invalidateEntityCache, useEntityVersion } from '@/lib/entities/entity-cache'
+import { getEntityTypeUI } from '@/lib/entities/entity-type-ui'
 // ── Helpers ──
 
 function humanType(node: CanvasNode): string {
@@ -79,11 +81,14 @@ interface InspectorPanelProps {
     onClose: () => void
     onUpdateNodeData?: (nodeId: string, patch: Record<string, any>) => void
     onOpenEntityEdit?: (entityId: string) => void
+    projectId?: string
 }
 
 // ── Component ──
 
-export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEdit }: InspectorPanelProps) {
+export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEdit, projectId }: InspectorPanelProps) {
+
+    const entityVersion = useEntityVersion()
 
     const filename = useMemo(() => node ? humanFilename(node.data as any) : null, [node])
     const dimensions = useMemo(() => node ? formatDimensions(node) : null, [node])
@@ -95,18 +100,40 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
 
     const [fetchedEntity, setFetchedEntity] = useState<Entity | null>(null)
     const [entityLoading, setEntityLoading] = useState(false)
-    const prevEntityIdRef = useRef<string | null>(null)
+
+    // ── Where Used ──
+    const [whereUsed, setWhereUsed] = useState<EntityUsageResult | null>(null)
+    const [whereUsedLoading, setWhereUsedLoading] = useState(false)
+    const [whereUsedOpen, setWhereUsedOpen] = useState(false)
+
+    // entityVersion bumps when parent signals cache invalidation
+    const entityIdForFetch = isEntityRef ? (data.entity_id as string | undefined) : undefined
 
     useEffect(() => {
-        if (!isEntityRef || !data.entity_id) { setFetchedEntity(null); prevEntityIdRef.current = null; return }
-        const eid = data.entity_id as string
-        if (eid === prevEntityIdRef.current) return
-        prevEntityIdRef.current = eid
-        const cached = entityCache.get(eid)
-        if (cached) { setFetchedEntity(cached); return }
+        if (!entityIdForFetch) { setFetchedEntity(null); return }
+        const cached = entityCache.get(entityIdForFetch)
+        if (cached) { setFetchedEntity(cached); setEntityLoading(false); return }
         setEntityLoading(true)
-        getEntityAction(eid).then(e => { if (e) { entityCache.set(eid, e); setFetchedEntity(e) }; setEntityLoading(false) }).catch(() => setEntityLoading(false))
-    }, [isEntityRef, data.entity_id])
+        setFetchedEntity(null)
+        let cancelled = false
+        getEntityAction(entityIdForFetch).then(e => {
+            if (cancelled) return
+            if (e) { entityCache.set(entityIdForFetch, e); setFetchedEntity(e) }
+            setEntityLoading(false)
+        }).catch(() => { if (!cancelled) setEntityLoading(false) })
+        return () => { cancelled = true }
+    }, [entityIdForFetch, entityVersion])
+
+    // ── Where Used fetch: triggered on entity change or cache invalidation ──
+    useEffect(() => {
+        if (!entityIdForFetch || !projectId) { setWhereUsed(null); return }
+        setWhereUsedLoading(true)
+        let cancelled = false
+        getEntityUsageAction(entityIdForFetch, projectId).then(result => {
+            if (!cancelled) { setWhereUsed(result); setWhereUsedLoading(false) }
+        }).catch(() => { if (!cancelled) setWhereUsedLoading(false) })
+        return () => { cancelled = true }
+    }, [entityIdForFetch, projectId, entityVersion])
 
     return (
         <div className="absolute top-0 right-0 bottom-0 w-72 z-30 pointer-events-none">
@@ -127,7 +154,149 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
                 <div className="flex-1 overflow-y-auto px-3 py-3">
                     {!node ? (
                         <p className="text-xs text-zinc-600 italic">Select a node to inspect</p>
+
+                    ) : isEntityRef ? (
+                        /* ═══ Entity Ref layout ═══ */
+                        <div className="space-y-3">
+                            {/* Actions: top, always visible */}
+                            {data.entity_id && onOpenEntityEdit && (
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        onClick={() => onOpenEntityEdit(data.entity_id)}
+                                        className="flex-1 px-2 py-1.5 text-[10px] rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 hover:bg-amber-500/20 transition-colors text-center"
+                                    >
+                                        Edit Entity
+                                    </button>
+                                    {fetchedEntity && (
+                                        <div className="flex-1">
+                                            <DownloadEntityPackButton entity={fetchedEntity} />
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Separator */}
+                            <div className="border-t border-zinc-800" />
+
+                            {/* Badge + name: live from fetchedEntity, neutral while loading */}
+                            {(() => {
+                                if (entityLoading || (!fetchedEntity && data.entity_id)) {
+                                    return (
+                                        <div>
+                                            <span className="text-[8px] font-medium px-1.5 py-0.5 rounded border inline-block mb-1.5 uppercase tracking-wider text-zinc-500 bg-zinc-800 border-zinc-700">…</span>
+                                            <div className="text-[13px] text-zinc-500 font-semibold leading-tight truncate">Loading…</div>
+                                        </div>
+                                    )
+                                }
+                                if (!fetchedEntity) {
+                                    return (
+                                        <div>
+                                            <span className="text-[8px] font-medium px-1.5 py-0.5 rounded border inline-block mb-1.5 uppercase tracking-wider text-red-400/60 bg-red-500/5 border-red-500/20">missing</span>
+                                            <div className="text-[13px] text-zinc-400 font-semibold leading-tight truncate">{data.entity_name ?? 'Unknown'}</div>
+                                        </div>
+                                    )
+                                }
+                                const liveType = fetchedEntity.entity_type
+                                const liveName = fetchedEntity.name
+                                const typeCfg = getEntityTypeUI(liveType)
+                                return (
+                                    <div>
+                                        <span className={`text-[8px] font-medium px-1.5 py-0.5 rounded border inline-block mb-1.5 uppercase tracking-wider ${typeCfg.badgeClass}`}>{liveType}</span>
+                                        <div className="text-[13px] text-zinc-100 font-semibold leading-tight truncate">{liveName}</div>
+                                    </div>
+                                )
+                            })()}
+
+                            {/* Entity content: media, prompts (open), notes (closed) */}
+                            {fetchedEntity && (
+                                <EntityPackPreview
+                                    content={fetchedEntity.content}
+                                    variant="full"
+                                    onImageClick={undefined}
+                                    promptsDefaultOpen={true}
+                                    notesDefaultOpen={false}
+                                />
+                            )}
+
+                            {!entityLoading && !fetchedEntity && data.entity_id && (
+                                <p className="text-[9px] text-zinc-600 italic">Entity data unavailable</p>
+                            )}
+
+                            {/* ── Where Used ── */}
+                            {projectId && entityIdForFetch && (
+                                <div className="border-t border-zinc-800/60 pt-2">
+                                    <button
+                                        onClick={() => setWhereUsedOpen(p => !p)}
+                                        className="w-full flex items-center justify-between text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors py-1"
+                                    >
+                                        <span className="flex items-center gap-1.5">
+                                            <span className="text-[7px]">{whereUsedOpen ? '▼' : '▶'}</span>
+                                            {whereUsedLoading
+                                                ? <span className="text-zinc-600">Used in …</span>
+                                                : whereUsed
+                                                    ? <span>Used in <span className="text-zinc-200 font-medium">{whereUsed.count}</span></span>
+                                                    : <span className="text-zinc-600">Used in —</span>
+                                            }
+                                        </span>
+                                    </button>
+
+                                    {whereUsedOpen && whereUsed && (
+                                        <div
+                                            onPointerDownCapture={(e) => e.stopPropagation()}
+                                            onPointerUpCapture={(e) => e.stopPropagation()}
+                                            onClickCapture={(e) => e.stopPropagation()}
+                                            className="mt-1 space-y-0.5"
+                                        >
+                                            {whereUsed.usages.length === 0 ? (
+                                                <p className="text-[9px] text-zinc-600 italic pl-3">Not used anywhere</p>
+                                            ) : whereUsed.usages.map(u => {
+                                                const href = u.shot_id
+                                                    ? `/projects/${projectId}/shots/${u.shot_id}?take=${u.take_id}`
+                                                    : null
+                                                if (!href) return (
+                                                    <div key={u.take_id} className="px-2.5 py-1.5 rounded text-[10px] bg-zinc-800/20 border border-zinc-800 text-zinc-600 cursor-not-allowed">
+                                                        <div className="leading-tight truncate">{u.film_label || u.shot_label}</div>
+                                                    </div>
+                                                )
+                                                return (
+                                                    <Link
+                                                        key={u.take_id}
+                                                        href={href}
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        className="block w-full text-left px-2.5 py-1.5 rounded text-[10px] bg-zinc-800/40 hover:bg-zinc-700/50 border border-zinc-700/30 hover:border-zinc-600/40 transition-colors group cursor-pointer"
+                                                    >
+                                                        <div className="text-zinc-200 group-hover:text-white leading-tight truncate font-mono">
+                                                            {u.film_label || u.shot_label}
+                                                        </div>
+                                                        {u.ref_count > 1 && (
+                                                            <div className="text-[9px] text-zinc-600 leading-tight mt-0.5">{u.ref_count} refs</div>
+                                                        )}
+                                                    </Link>
+                                                )
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Details (collapsed by default) */}
+                            <DrawerCollapsible label="Details" defaultOpen={false}>
+                                <div className="space-y-2">
+                                    <Section label="Position">
+                                        <Value>{Math.round(node.x)}, {Math.round(node.y)}</Value>
+                                    </Section>
+                                    <Section label="Node ID">
+                                        <div className="flex items-center gap-1">
+                                            <span className="text-[10px] text-zinc-600 font-mono truncate flex-1 select-text">{node.id}</span>
+                                            <CopyButton text={node.id} size={10} />
+                                        </div>
+                                    </Section>
+                                </div>
+                            </DrawerCollapsible>
+                        </div>
+
                     ) : (
+                        /* ═══ Standard node layout (unchanged) ═══ */
                         <div className="space-y-4">
                             {/* Type */}
                             <Section label="Type">
@@ -174,7 +343,7 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
                                 </Section>
                             )}
 
-                            {/* Provenance: Tool Origin (Prompt) — read-only, edit surface is on the node itself */}
+                            {/* Provenance: Tool Origin (Prompt) */}
                             {showToolOrigin && (
                                 <Section label="Tool Origin">
                                     <div className="flex items-center gap-1">
@@ -195,71 +364,7 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
                                     </div>
                                 </Section>
                             )}
-                            {/* Entity Ref Pack */}
-                            {isEntityRef && (
-                                <>
-                                    <Section label="Entity Name"><Value>{data.entity_name ?? '—'}</Value></Section>
-                                    <Section label="Entity Type"><Value>{data.entity_type ?? '—'}</Value></Section>
 
-                                    {entityLoading && <p className="text-[10px] text-zinc-600 italic">Loading entity…</p>}
-
-                                    {fetchedEntity && (() => {
-                                        const c = fetchedEntity.content as any
-                                        return (<>
-                                            {c?.media?.length > 0 && (
-                                                <Section label={`Media (${c.media.length})`}>
-                                                    <div className="flex flex-wrap gap-1">
-                                                        {c.media.map((m: any, i: number) => (
-                                                            <div key={i} className="w-12 h-12 bg-zinc-800 border border-zinc-700 rounded overflow-hidden flex items-center justify-center">
-                                                                <span className="text-zinc-600 text-[8px]">{m.asset_type === 'video' ? '▶' : 'IMG'}</span>
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                </Section>
-                                            )}
-                                            {c?.prompts?.length > 0 && (
-                                                <CollapsibleSection label={`Prompts (${c.prompts.length})`}>
-                                                    {c.prompts.map((p: any, i: number) => (
-                                                        <div key={i} className="mb-2">
-                                                            {p.title && <div className="text-[10px] text-zinc-400 font-medium">{p.title}</div>}
-                                                            <div className="text-[10px] text-zinc-500 whitespace-pre-wrap break-words">{p.body}</div>
-                                                            <div className="flex items-center gap-1 mt-0.5">
-                                                                {p.origin && <span className="text-[8px] text-zinc-600">{p.origin}</span>}
-                                                                <CopyButton text={p.body} size={9} />
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                </CollapsibleSection>
-                                            )}
-                                            {c?.notes?.length > 0 && (
-                                                <CollapsibleSection label={`Notes (${c.notes.length})`}>
-                                                    {c.notes.map((n: any, i: number) => (
-                                                        <div key={i} className="text-[10px] text-zinc-500 mb-1 whitespace-pre-wrap break-words">{n.body}</div>
-                                                    ))}
-                                                </CollapsibleSection>
-                                            )}
-                                            {c?.provenance && (c.provenance.generated_with || c.provenance.tool_origin) && (
-                                                <Section label="Provenance">
-                                                    {c.provenance.generated_with && <Value>Generated: {c.provenance.generated_with}</Value>}
-                                                    {c.provenance.tool_origin && <Value>Origin: {c.provenance.tool_origin}</Value>}
-                                                </Section>
-                                            )}
-                                        </>)
-                                    })()}
-
-                                    {data.entity_id && onOpenEntityEdit && (
-                                        <div className="pt-1">
-                                            <button onClick={() => onOpenEntityEdit(data.entity_id)} className="w-full px-2 py-1.5 text-[10px] rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 hover:bg-amber-500/20 transition-colors text-center">
-                                                Edit Entity
-                                            </button>
-                                        </div>
-                                    )}
-
-                                    {!entityLoading && !fetchedEntity && data.entity_id && (
-                                        <p className="text-[9px] text-zinc-600 italic">Entity data unavailable</p>
-                                    )}
-                                </>
-                            )}
                             {/* Canvas position */}
                             <Section label="Position">
                                 <Value>{Math.round(node.x)}, {Math.round(node.y)}</Value>
@@ -306,6 +411,23 @@ function CollapsibleSection({ label, children }: { label: string; children: Reac
                 <span className="text-[8px]">{open ? '▼' : '▶'}</span>{label}
             </button>
             {open && <div className="pl-2 border-l border-zinc-800 mt-1">{children}</div>}
+        </div>
+    )
+}
+
+/** Collapsible with configurable default state — used for entity drawer sections */
+function DrawerCollapsible({ label, defaultOpen = false, children }: { label: string; defaultOpen?: boolean; children: React.ReactNode }) {
+    const [open, setOpen] = useState(defaultOpen)
+    return (
+        <div>
+            <button
+                onClick={() => setOpen(p => !p)}
+                className="w-full text-[9px] text-zinc-600 uppercase tracking-wider py-1.5 flex items-center gap-1 hover:text-zinc-400 transition-colors border-t border-zinc-800/60"
+            >
+                <span className="text-[7px]">{open ? '▼' : '▶'}</span>
+                {label}
+            </button>
+            {open && <div className="pb-1">{children}</div>}
         </div>
     )
 }
@@ -438,5 +560,98 @@ function ProvenanceSelect({ value, options, placeholder, nodeId, field, onUpdate
                 />
             )}
         </div>
+    )
+}
+
+// ── Download Entity Pack ZIP ──
+
+function formatEntityPackText(entity: Entity): string {
+    const c = entity.content as any
+    const lines: string[] = []
+
+    lines.push(`ENTITY: ${entity.name}`)
+    lines.push(`TYPE: ${entity.entity_type}`)
+    if (c?.description) lines.push(`DESCRIPTION: ${c.description}`)
+    lines.push('─'.repeat(40))
+
+    const prompts = normalizePrompts(c?.prompts ?? [])
+    if (prompts.length > 0) {
+        lines.push('', 'PROMPTS', '─'.repeat(40))
+        prompts.forEach((p, i) => {
+            lines.push(``, `#${i + 1}  |  ${p.promptType}  |  Origin: ${p.origin}`)
+            if (p.title) lines.push(`Title: ${p.title}`)
+            lines.push(p.body, '─'.repeat(40))
+        })
+    }
+
+    const notes = normalizeNotes(c?.notes ?? [])
+    if (notes.length > 0) {
+        lines.push('', 'NOTES', '─'.repeat(40))
+        notes.forEach((n, i) => { lines.push(`#${i + 1}: ${n.body}`) })
+    }
+
+    return lines.join('\n')
+}
+
+function DownloadEntityPackButton({ entity }: { entity: Entity }) {
+    const [busy, setBusy] = useState(false)
+
+    const handleDownload = useCallback(async () => {
+        if (busy) return
+        setBusy(true)
+
+        const c = entity.content as any
+        const media = normalizeMedia(c?.media ?? [])
+
+        const assets = media.map((m, i) => ({
+            nodeId: `entity-media-${i}`,
+            type: m.kind,
+            bucket: m.kind === 'video' ? 'take-videos' : 'take-images',
+            storagePath: m.storage_path,
+            originalFilename: m.filename || `media-${i}`,
+            exportName: m.filename || `media-${i}`,
+            role: 'ref' as const,
+        }))
+
+        const promptFileText = formatEntityPackText(entity)
+        const zipName = `entity-${entity.name.replace(/[^a-zA-Z0-9]/g, '_')}-pack`
+
+        try {
+            const resp = await fetch('/api/export-pack', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: 'pack', assets, promptFileText, zipName }),
+            })
+            if (!resp.ok) {
+                console.error('[entity-pack] export failed:', resp.status)
+                setBusy(false)
+                return
+            }
+            const blob = await resp.blob()
+            if (blob.size === 0) { setBusy(false); return }
+
+            const cd = resp.headers.get('content-disposition') ?? ''
+            const fnMatch = cd.match(/filename="?([^";\s]+)"?/)
+            const filename = fnMatch?.[1] ?? `${zipName}.zip`
+
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url; a.download = filename; a.style.display = 'none'
+            document.body.appendChild(a); a.click()
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url) }, 100)
+        } catch (err) {
+            console.error('[entity-pack] download error:', err)
+        }
+        setBusy(false)
+    }, [entity, busy])
+
+    return (
+        <button
+            onClick={handleDownload}
+            disabled={busy}
+            className="w-full px-2 py-1.5 text-[10px] rounded bg-zinc-700/60 border border-zinc-600/40 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 disabled:opacity-50 transition-colors text-center"
+        >
+            {busy ? '⏳ Packing…' : '📦 Download Pack'}
+        </button>
     )
 }

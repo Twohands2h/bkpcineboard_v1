@@ -1,6 +1,10 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
+import { AlertTriangle } from 'lucide-react'
+import { getEntityTypeUI } from '@/lib/entities/entity-type-ui'
+import { entityCache, useEntityVersion } from '@/lib/entities/entity-cache'
+import { getEntityAction } from '@/app/actions/entities'
 
 // ===================================================
 // NODE CONTENT — SEMANTIC LAYER (R4-004b v7)
@@ -419,28 +423,96 @@ export function VideoContent({ data, viewportScale = 1 }: VideoContentProps) {
 }
 
 export function EntityRefContent({ data }: { data: EntityRefData }) {
-    const typeEmoji = data.entity_type === 'character' ? '👤'
-        : data.entity_type === 'environment' ? '🌍'
-            : data.entity_type === 'prop' ? '🎭' : '🎬'
+    const entityVersion = useEntityVersion()
+    const [liveEntity, setLiveEntity] = useState<{ entity_type: string; name: string } | null>(null)
+    const [resolved, setResolved] = useState(false)
 
-    const typeColor = data.entity_type === 'character' ? 'border-amber-500/30 bg-amber-500/5'
-        : data.entity_type === 'environment' ? 'border-emerald-500/30 bg-emerald-500/5'
-            : data.entity_type === 'prop' ? 'border-blue-500/30 bg-blue-500/5'
-                : 'border-purple-500/30 bg-purple-500/5'
+    useEffect(() => {
+        if (!data.entity_id) { setResolved(true); return }
+        const cached = entityCache.get(data.entity_id)
+        if (cached) {
+            setLiveEntity({ entity_type: cached.entity_type, name: cached.name })
+            setResolved(true)
+            return
+        }
+        // Reset on new fetch (e.g. entity_id changed via replace)
+        setLiveEntity(null)
+        setResolved(false)
+        let cancelled = false
+        getEntityAction(data.entity_id).then(e => {
+            if (cancelled) return
+            if (e) {
+                entityCache.set(data.entity_id, e)
+                setLiveEntity({ entity_type: e.entity_type, name: e.name })
+            }
+            setResolved(true)
+        }).catch(() => { if (!cancelled) setResolved(true) })
+        return () => { cancelled = true }
+    }, [data.entity_id, entityVersion])
+
+    // ── Loading: neutral placeholder (no stale flash) ──
+    if (!resolved) {
+        return (
+            <div className="flex items-stretch w-full h-full min-h-[52px] rounded overflow-hidden bg-zinc-800/40 border border-zinc-700/40">
+                <div className="w-1 flex-shrink-0 bg-zinc-600 animate-pulse" />
+                <div className="flex items-center gap-2.5 px-3 flex-1 min-w-0">
+                    <div className="w-4 h-4 rounded bg-zinc-600 animate-pulse flex-shrink-0" />
+                    <div className="flex flex-col gap-1.5 flex-1 min-w-0">
+                        <div className="h-2.5 w-20 rounded bg-zinc-600 animate-pulse" />
+                        <div className="h-2 w-12 rounded bg-zinc-700 animate-pulse" />
+                    </div>
+                </div>
+            </div>
+        )
+    }
+
+    // ── Missing: entity not found after fetch ──
+    if (!liveEntity) {
+        return (
+            <div className="flex items-stretch w-full h-full min-h-[52px] rounded overflow-hidden bg-zinc-800/40 border border-red-500/30">
+                <div className="w-1 flex-shrink-0 bg-red-500" />
+                <div className="flex items-center gap-2.5 px-3 flex-1 min-w-0">
+                    <AlertTriangle size={14} className="text-red-400 flex-shrink-0" />
+                    <div className="flex flex-col min-w-0">
+                        <span className="text-[10px] font-medium text-red-300 truncate leading-tight">Missing entity</span>
+                        <span className="text-[8px] text-red-500/70 uppercase tracking-wider leading-tight">not found</span>
+                    </div>
+                </div>
+            </div>
+        )
+    }
+
+    // ── Resolved: render live data only ──
+    // Static class maps — dynamic strings are purged by Tailwind at build time
+    const stripeClass = liveEntity.entity_type === 'character' ? 'bg-amber-500'
+        : liveEntity.entity_type === 'environment' ? 'bg-emerald-500'
+            : liveEntity.entity_type === 'prop' ? 'bg-blue-500'
+                : liveEntity.entity_type === 'cinematography' ? 'bg-purple-500'
+                    : 'bg-zinc-500'
+    const textClass = liveEntity.entity_type === 'character' ? 'text-amber-400'
+        : liveEntity.entity_type === 'environment' ? 'text-emerald-400'
+            : liveEntity.entity_type === 'prop' ? 'text-blue-400'
+                : liveEntity.entity_type === 'cinematography' ? 'text-purple-400'
+                    : 'text-zinc-400'
+    const cfg = getEntityTypeUI(liveEntity.entity_type)
+    const { Icon } = cfg
 
     return (
-        <div className={`w-full h-full flex flex-col items-center justify-center gap-1.5 rounded border-2 border-dashed ${typeColor} p-3`}>
-            {data.thumbnail_path ? (
-                <img src={data.thumbnail_path} alt="" className="w-10 h-10 rounded object-cover" />
-            ) : (
-                <span className="text-2xl">{typeEmoji}</span>
-            )}
-            <span className="text-[10px] font-medium text-zinc-200 text-center truncate max-w-full">
-                {data.entity_name || 'Entity'}
-            </span>
-            <span className="text-[8px] text-zinc-500 uppercase tracking-wider">
-                {data.entity_type} ref
-            </span>
+        <div className="flex items-stretch w-full h-full min-h-[52px] rounded overflow-hidden bg-zinc-800/50 border border-zinc-700/30">
+            {/* Left type stripe */}
+            <div className={`w-1 flex-shrink-0 ${stripeClass}`} />
+            {/* Content */}
+            <div className="flex items-center gap-2.5 px-3 flex-1 min-w-0">
+                <Icon size={14} className={`${textClass} flex-shrink-0`} />
+                <div className="flex flex-col min-w-0 flex-1">
+                    <span className="text-[11px] font-medium text-zinc-100 truncate leading-tight" title={liveEntity.name}>
+                        {liveEntity.name}
+                    </span>
+                    <span className={`text-[8px] uppercase tracking-wider leading-tight ${textClass} opacity-80`}>
+                        {cfg.label}
+                    </span>
+                </div>
+            </div>
         </div>
     )
 }

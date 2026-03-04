@@ -1,12 +1,16 @@
 'use client'
 
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { NodeShell } from './NodeShell'
 import { NoteContent, ImageContent, ColumnContent, VideoContent, type NoteData, type ImageData, type ColumnData, type VideoData } from './NodeContent'
 import { PromptContent, type PromptData, type PromptType } from './PromptContent'
 import { EntityRefContent, type EntityRefData } from './NodeContent'
 import { ImageInspectOverlay } from './ImageInspectOverlay'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
+import { normalizeMedia, getMediaUrl } from '@/components/entities/entity-pack-preview'
+import { entityCache } from '@/lib/entities/entity-cache'
+import { getEntityAction } from '@/app/actions/entities'
 import {
     screenToWorld,
     screenDeltaToWorld,
@@ -69,6 +73,7 @@ interface TakeCanvasProps {
     outputVideoNodeId?: string | null
     onSetOutputVideo?: (nodeId: string, videoSrc: string) => void
     onClearOutputVideo?: () => void
+    onBeforeDeleteNode?: (nodeId: string) => void
     onSelectionChange?: (selectedIds: Set<string>, primaryId: string | null) => void
     onToggleInspector?: () => void
 }
@@ -109,6 +114,10 @@ export interface TakeCanvasHandle {
     beginBatch: () => void
     endBatch: () => void
     crystallize: (entityRefData: EntityRefData) => string | null
+    /** In-memory only: patch entity_id on entity_ref nodes. No history, no persist. */
+    patchEntityRefsForReplace: (fromEntityId: string, toEntityId: string) => number
+    /** In-memory only: remove entity_ref nodes + connected edges. No history, no persist. */
+    removeEntityRefs: (entityId: string) => number
 }
 
 type InteractionMode = 'idle' | 'dragging' | 'editing' | 'resizing' | 'selecting' | 'connecting' | 'panning'
@@ -189,7 +198,7 @@ interface SelectionBoxRect { left: number; top: number; width: number; height: n
 interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onSetFinalVisual, onClearFinalVisual, currentFinalVisualNodeId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, ratingMap, onSetRating, onSelectionChange, onToggleInspector }, ref) {
+    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onSetFinalVisual, onClearFinalVisual, currentFinalVisualNodeId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, onBeforeDeleteNode, ratingMap, onSetRating, onSelectionChange, onToggleInspector }, ref) {
         const [nodes, _setNodesRaw] = useState<CanvasNode[]>(() => initialNodes ?? [])
         const [edges, _setEdgesRaw] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
@@ -200,6 +209,88 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const [selectionBoxRect, setSelectionBoxRect] = useState<SelectionBoxRect | null>(null)
         const [connectionGhost, setConnectionGhost] = useState<{ fromX: number; fromY: number; toX: number; toY: number } | null>(null)
         const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
+        const hoveredNodeIdRef = useRef<string | null>(null)
+        hoveredNodeIdRef.current = hoveredNodeId
+
+        // ── Peek Ghost Preview (entity_ref only) ──
+        const [peekNodeId, setPeekNodeId] = useState<string | null>(null)
+        const [peekImages, setPeekImages] = useState<string[]>([])
+        const peekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+        const peekCooldownRef = useRef<Map<string, number>>(new Map())
+        const PEEK_DWELL_MS = 700
+        const PEEK_COOLDOWN_MS = 2000
+        const PEEK_MAX_IMAGES = 4
+
+        useEffect(() => {
+            return () => { if (peekTimerRef.current) clearTimeout(peekTimerRef.current) }
+        }, [])
+
+        useEffect(() => {
+            // Cancel any pending peek
+            if (peekTimerRef.current) { clearTimeout(peekTimerRef.current); peekTimerRef.current = null }
+
+            // Gate: only show peek during idle, only for entity_ref nodes
+            if (!hoveredNodeId || interactionMode !== 'idle') {
+                setPeekNodeId(null)
+                setPeekImages([])
+                return
+            }
+
+            const node = nodesRef.current.find(n => n.id === hoveredNodeId)
+            if (!node || node.type !== 'entity_ref') {
+                // Not entity_ref — don't clear existing peek (might hover from entity to adjacent)
+                return
+            }
+
+            const entityId = (node.data as any)?.entity_id
+            if (!entityId) return
+
+            // Cooldown check
+            const lastShown = peekCooldownRef.current.get(hoveredNodeId)
+            if (lastShown && Date.now() - lastShown < PEEK_COOLDOWN_MS) return
+
+            const capturedNodeId = hoveredNodeId
+
+            peekTimerRef.current = setTimeout(async () => {
+                peekTimerRef.current = null
+                // Re-check gating via refs (not stale closure)
+                if (interactionModeRef.current !== 'idle') return
+                if (hoveredNodeIdRef.current !== capturedNodeId) return
+
+                try {
+                    let entity = entityCache.get(entityId)
+                    if (!entity) {
+                        entity = await getEntityAction(entityId) ?? undefined
+                        if (entity) entityCache.set(entityId, entity)
+                    }
+                    if (!entity?.content) {
+                        console.log('[peek] no content for entity', entityId)
+                        return
+                    }
+
+                    const rawMedia = (entity.content as any).media ?? []
+                    const media = normalizeMedia(rawMedia)
+                    const images = media.filter(m => m.kind === 'image').slice(0, PEEK_MAX_IMAGES)
+                    if (images.length === 0) {
+                        console.log('[peek] no images in entity', entityId, 'rawMedia:', rawMedia.length, 'normalized:', media.length)
+                        return
+                    }
+
+                    const urls = images.map(m => getMediaUrl(m)).filter(Boolean)
+                    if (urls.length === 0) return
+
+                    // Final re-check: still hovering same node?
+                    if (hoveredNodeIdRef.current !== capturedNodeId) return
+
+                    setPeekNodeId(capturedNodeId)
+                    setPeekImages(urls)
+                    peekCooldownRef.current.set(capturedNodeId, Date.now())
+                    console.log('[peek] showing', urls.length, 'images for', capturedNodeId)
+                } catch (err) {
+                    console.error('[peek] error:', err)
+                }
+            }, PEEK_DWELL_MS)
+        }, [hoveredNodeId, interactionMode])
 
         // Viewport state — persisted per-take in sessionStorage
         const [viewport, setViewport] = useState<ViewportState>(() => {
@@ -250,6 +341,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
         const nodesRef = useRef<CanvasNode[]>(nodes)
         const edgesRef = useRef<CanvasEdge[]>(edges)
+        const interactionModeRef = useRef<InteractionMode>(interactionMode)
+        interactionModeRef.current = interactionMode
         // Eager ref sync: wrappers keep refs in sync inside the updater,
         // before React renders, so setTimeout(emitNodesChange, 0) always reads fresh state.
         const setNodes = useCallback((updater: CanvasNode[] | ((prev: CanvasNode[]) => CanvasNode[])) => {
@@ -588,6 +681,42 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
 
                 return refNode.id
+            },
+            patchEntityRefsForReplace: (fromEntityId: string, toEntityId: string): number => {
+                let count = 0
+                setNodes(prev => prev.map(n => {
+                    if (n.type === 'entity_ref' && (n.data as any)?.entity_id === fromEntityId) {
+                        count++
+                        return { ...n, data: { ...n.data, entity_id: toEntityId } }
+                    }
+                    return n
+                }))
+                // No pushHistory, no emitNodesChange — server already wrote the snapshot
+                return count
+            },
+            removeEntityRefs: (entityId: string): number => {
+                const removedIds = new Set<string>()
+                setNodes(prev => {
+                    const kept = prev.filter(n => {
+                        if (n.type === 'entity_ref' && (n.data as any)?.entity_id === entityId) {
+                            removedIds.add(n.id)
+                            return false
+                        }
+                        return true
+                    })
+                    return kept
+                })
+                if (removedIds.size > 0) {
+                    setEdges(prev => prev.filter(e => !removedIds.has(e.from) && !removedIds.has(e.to)))
+                    // Clear selection if removed node was selected
+                    setSelectedNodeIds(prev => {
+                        const next = new Set(prev)
+                        for (const id of removedIds) next.delete(id)
+                        return next
+                    })
+                }
+                // No pushHistory, no emitNodesChange — server already wrote the snapshot
+                return removedIds.size
             }
         }), [nodes, edges, createNodeAt, createImageNodeAt, createVideoNodeAt, createColumnNodeAt, createPromptNodeAt, createEntityRefNodeAt, createEntityRefNodeAtScreen, createNodeAtScreen, createImageNodeAtScreen, createVideoNodeAtScreen, createColumnNodeAtScreen, createPromptNodeAtScreen, updateNodeData, updateNodeDataWithHistory, beginBatch, endBatch])
 
@@ -1095,6 +1224,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         }, [handleWindowMouseMove, handleWindowMouseUp])
 
         const handleDelete = useCallback((nodeId: string) => {
+            onBeforeDeleteNode?.(nodeId)
             // Guard: if deleting the image node that is the current FV, only clear FV (keep node)
             const targetNode = nodesRef.current.find(n => n.id === nodeId)
             if (targetNode?.type === 'image' && nodeId === currentFinalVisualNodeId) {
@@ -1121,7 +1251,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             }
 
             executeNodeDelete(nodeId)
-        }, [currentFinalVisualNodeId, onClearFinalVisual, outputVideoNodeId, onClearOutputVideo])
+        }, [currentFinalVisualNodeId, onClearFinalVisual, outputVideoNodeId, onClearOutputVideo, onBeforeDeleteNode])
 
         const executeNodeDelete = useCallback((nodeId: string) => {
             setNodes(p => {
@@ -1417,6 +1547,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     if (selectedEdgeId) { e.preventDefault(); setEdges(p => p.filter(ed => ed.id !== selectedEdgeId)); setSelectedEdgeId(null); setEditingEdgeLabel(null); setTimeout(() => { pushHistory(); emitNodesChange() }, 0); return }
                     if (selectedNodeIdsRef.current.size > 0) {
                         e.preventDefault(); const del = new Set(selectedNodeIdsRef.current)
+                        del.forEach(id => onBeforeDeleteNode?.(id))
                         // If any selected node is the current FV image, need confirmation
                         const fvNodeId = currentFinalVisualNodeId && del.has(currentFinalVisualNodeId)
                             ? currentFinalVisualNodeId
@@ -1544,6 +1675,31 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             }
         }, [setViewport])
 
+        // ── Hover hit-testing via canvas-level onMouseMove ──
+        const handleCanvasMouseMove = useCallback((e: React.MouseEvent) => {
+            // Skip hit-testing during active interactions (drag, resize, select, pan, connect)
+            if (interactionModeRef.current !== 'idle' && interactionModeRef.current !== 'editing') return
+
+            const cr = canvasRef.current?.getBoundingClientRect()
+            if (!cr) return
+            const vp = viewportRef.current
+            const wx = (e.clientX - cr.left - vp.offsetX) / vp.scale
+            const wy = (e.clientY - cr.top - vp.offsetY) / vp.scale
+
+            // Hit-test visible nodes in reverse z-order (topmost first)
+            const visible = nodesRef.current.filter(n => !nodeHidden(n, nodesRef.current))
+            let hit: string | null = null
+            for (let i = visible.length - 1; i >= 0; i--) {
+                const n = visible[i]
+                if (wx >= n.x && wx <= n.x + n.width && wy >= n.y && wy <= n.y + n.height) {
+                    hit = n.id
+                    break
+                }
+            }
+
+            setHoveredNodeId(prev => prev === hit ? prev : hit)
+        }, [])
+
         const visibleNodes = nodes.filter(n => !nodeHidden(n, nodes))
         const edgeLines = useMemo(() => edges.map(edge => {
             const fn = nodes.find(n => n.id === edge.from), tn = nodes.find(n => n.id === edge.to)
@@ -1560,6 +1716,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 style={{ cursor: spaceDownRef.current || interactionMode === 'panning' ? 'grab' : undefined }}
                 onMouseDown={handleCanvasMouseDown}
                 onDoubleClick={handleCanvasDoubleClick}
+                onMouseMove={handleCanvasMouseMove}
+                onMouseLeave={() => setHoveredNodeId(null)}
             >
                 {/* R4-005: Viewport transform wrapper — everything inside scales/pans */}
                 <div
@@ -1829,6 +1987,48 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         {Math.round(viewport.scale * 100)}%
                     </div>
                 )}
+
+                {/* ═══ Peek Ghost Preview (entity_ref only) — portal to body ═══ */}
+                {peekNodeId && peekImages.length > 0 && (() => {
+                    const node = nodes.find(n => n.id === peekNodeId)
+                    if (!node) return null
+                    // Compute screen position of node relative to page
+                    const cr = canvasRef.current?.getBoundingClientRect()
+                    if (!cr) return null
+                    const sx = node.x * viewport.scale + viewport.offsetX + cr.left
+                    const sy = node.y * viewport.scale + viewport.offsetY + cr.top
+                    const sw = node.width * viewport.scale
+                    const sh = node.height * viewport.scale
+                    // Position: above node, centered; clamp to viewport
+                    const peekW = Math.min(peekImages.length * 72 + (peekImages.length - 1) * 4 + 12, 320)
+                    const peekH = 80
+                    let px = sx + sw / 2 - peekW / 2
+                    let py = sy - peekH - 8
+                    // Clamp horizontal
+                    if (px < 4) px = 4
+                    if (px + peekW > window.innerWidth - 4) px = window.innerWidth - 4 - peekW
+                    // If no room above, show below
+                    if (py < 4) py = sy + sh + 8
+                    return createPortal(
+                        <div
+                            className="fixed z-[45] pointer-events-none"
+                            style={{ left: px, top: py }}
+                        >
+                            <div className="flex items-center gap-1 px-1.5 py-1.5 bg-zinc-900/95 border border-zinc-600/50 rounded-lg shadow-2xl backdrop-blur-sm">
+                                {peekImages.map((url, i) => (
+                                    <img
+                                        key={i}
+                                        src={url}
+                                        alt=""
+                                        className="w-16 h-16 rounded object-cover border border-zinc-700/50"
+                                        loading="lazy"
+                                    />
+                                ))}
+                            </div>
+                        </div>,
+                        document.body
+                    )
+                })()}
 
                 {/* R4.0a: Image Inspect Overlay */}
                 {inspectImage && (

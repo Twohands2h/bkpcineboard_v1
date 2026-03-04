@@ -27,10 +27,12 @@ import { createClient } from '@/lib/supabase/client'
 import { SceneShotStrip, setLastTakeForShot, type StripScene, type StripShot } from './scene-shot-strip'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { InspectorPanel } from '@/components/inspector/inspector-panel'
+import { invalidateEntityCache, bumpEntityVersion } from '@/lib/entities/entity-cache'
 import { EntityLibrary } from '@/components/entities/entity-library-v3'
 import { CrystallizeModal } from '@/components/entities/crystallize-modal'
 import { EntityEditOverlay } from '@/components/entities/entity-edit-overlay'
-
+import { ENTITY_TYPE_UI } from '@/lib/entities/entity-type-ui'
+import type { EntityType } from '@/app/actions/entities'
 import { crystallizeEntityAction, getEntityAction } from '@/app/actions/entities'
 import type { Entity } from '@/app/actions/entities'
 
@@ -203,6 +205,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   }, [readyTakeId]) // eslint-disable-line react-hooks/exhaustive-deps
   const [isLoading, setIsLoading] = useState(true)
   const [finalVisual, setFinalVisual] = useState<{ nodeId: string; takeId: string } | null>(null)
+  // Ref mirror: always matches finalVisual but readable synchronously in callbacks (no setState lag)
+  const finalVisualRef = useRef<{ nodeId: string; takeId: string } | null>(null)
   const [resolvedFv, setResolvedFv] = useState<{ src: string; storagePath: string } | null>(null)
 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
@@ -266,8 +270,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const extFromUrl = (url: string, fb: string) => { try { const e = new URL(url).pathname.split('.').pop(); return e && e.length <= 5 ? e : fb } catch { return fb } }
   const sceneIdx = stripData?.scenes?.findIndex(s => s.shots?.some(sh => sh.id === shot.id)) ?? 0
   const shotPrefix = `S${pad2(sceneIdx + 1)}_SH${pad2(shot.order_index + 1)}`
-  const fvTakeLabel = shot.final_visual_take_id ? (takes.find(t => t.id === shot.final_visual_take_id)?.name ?? null) : null
-  const outputTakeLabel = shot.output_take_id ? (takes.find(t => t.id === shot.output_take_id)?.name ?? null) : null
+  // outputRef: sync mirror for output video node — readable in onBeforeDeleteNode
+  const outputRef = useRef<{ videoNodeId: string; takeId: string } | null>(null)
+  // Local output mirror: drives header/TakeTabs immediately without waiting for router.refresh()
+  const [localOutputVideoSrc, setLocalOutputVideoSrc] = useState<string | null>((shot as any).output_video_src ?? null)
+  const [localOutputTakeId, setLocalOutputTakeId] = useState<string | null>((shot as any).output_take_id ?? null)
+  const [localOutputVideoNodeId, setLocalOutputVideoNodeId] = useState<string | null>((shot as any).output_video_node_id ?? null)
+  // Local FV takeId mirror: drives notch/label immediately
+  const [localFvTakeId, setLocalFvTakeId] = useState<string | null>((shot as any).final_visual_take_id ?? null)
+  const fvTakeLabel = localFvTakeId ? (takes.find(t => t.id === localFvTakeId)?.name ?? null) : null
+  const outputTakeLabel = localOutputTakeId ? (takes.find(t => t.id === localOutputTakeId)?.name ?? null) : null
   // Auto-dismiss upload error toast after 6s
   useEffect(() => {
     if (!uploadError) return
@@ -361,7 +373,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       getShotMediaRatings({ shotId: shot.id }),
     ])
     if (seq !== shotDerivedSeqRef.current) return // stale response, discard
+    finalVisualRef.current = fv
     setFinalVisual(fv)
+    setLocalFvTakeId(fv?.takeId ?? null)
     setRatingMap(ratings)
   }, [shot.id])
 
@@ -662,6 +676,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const handleDeleteTake = (takeId: string) => {
     const targetTake = takes.find(t => t.id === takeId)
     const isFVTake = finalVisual?.takeId === takeId
+    const isOutputTake = localOutputTakeId === takeId
 
     const title = isFVTake ? 'Delete Take + Clear Final Visual' : 'Delete Take'
     const body = isFVTake
@@ -675,19 +690,28 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       danger: true,
       onConfirm: () => {
         setConfirmState(null)
-        void executeDeleteTake(takeId, isFVTake)
+        void executeDeleteTake(takeId, isFVTake, isOutputTake)
       },
     })
   }
 
-  const executeDeleteTake = async (takeId: string, isFVTake: boolean) => {
+  const executeDeleteTake = async (takeId: string, isFVTake: boolean, isOutputTake = false) => {
     // FV guard: clear FV client-side first (FREEZED — do not modify)
     if (isFVTake) {
-      await clearShotFinalVisualAction({ shotId: shot.id })
+      finalVisualRef.current = null
       setFinalVisual(null)
+      setLocalFvTakeId(null)
       fvUndoStackRef.current = []
       setFvUndoCount(0)
+      await clearShotFinalVisualAction({ shotId: shot.id })
       router.refresh()
+    }
+    if (isOutputTake) {
+      outputRef.current = null
+      setLocalOutputVideoSrc(null)
+      setLocalOutputTakeId(null)
+      setLocalOutputVideoNodeId(null)
+      await clearShotOutputVideo(shot.id)
     }
 
     const deletedId = takeId
@@ -700,6 +724,16 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       const nextTake = remainingTakes[Math.min(deletedIndex, remainingTakes.length - 1)]
       setCurrentTakeId(nextTake.id)
     } else {
+      // Zero takes — clear all local mirrors so header/notch show neutral state
+      finalVisualRef.current = null
+      setFinalVisual(null)
+      setLocalFvTakeId(null)
+      fvUndoStackRef.current = []
+      setFvUndoCount(0)
+      outputRef.current = null
+      setLocalOutputVideoSrc(null)
+      setLocalOutputTakeId(null)
+      setLocalOutputVideoNodeId(null)
       setCurrentTakeId(null as any)
       setReadyTakeId(null)
       setReadyPayload(undefined)
@@ -745,6 +779,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [plpNodes, setPlpNodes] = useState<CanvasNode[]>([])
   const [plpEdges, setPlpEdges] = useState<CanvasEdge[]>([])
   const [showEntityLibrary, setShowEntityLibrary] = useState(false)
+  // Entity token drag: tracks drop position + which type token was dragged
+  const pendingEntityDropRef = useRef<{ screenX: number; screenY: number } | null>(null)
+  const [entityLibraryFilter, setEntityLibraryFilter] = useState<EntityType | undefined>(undefined)
+  const [ghostEntityType, setGhostEntityType] = useState<EntityType | null>(null)
   const [crystallizeState, setCrystallizeState] = useState<{
     selectedIds: string[]
     entityContent: any
@@ -826,6 +864,24 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     setShowEntityLibrary(false)
   }, [])
 
+  // Used when opening library from a type-token drag — inserts at drop position
+  const handleInsertEntityRefAtPos = useCallback((entity: Entity) => {
+    if (!canvasRef.current) return
+    const drop = pendingEntityDropRef.current
+    const sx = drop?.screenX ?? window.innerWidth / 2
+    const sy = drop?.screenY ?? window.innerHeight / 2
+    pendingEntityDropRef.current = null
+    canvasRef.current.createEntityRefNodeAtScreen(sx, sy, {
+      entity_id: entity.id,
+      entity_name: entity.name,
+      entity_type: entity.entity_type,
+      thumbnail_path: (entity.content as any)?.thumbnail_path,
+    })
+    setShowEntityLibrary(false)
+    setEntityLibraryFilter(undefined)
+    setGhostEntityType(null)
+  }, [])
+
   const handleCrystallize = useCallback(() => {
     if (!canvasRef.current) return
     const snap = canvasRef.current.getSnapshot()
@@ -891,11 +947,20 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       takeId: finalVisual?.takeId ?? null,
     })
     setFvUndoCount(fvUndoStackRef.current.length)
+    // Optimistic: update ref synchronously so onBeforeDeleteNode reads correct nodeId immediately
+    finalVisualRef.current = { nodeId, takeId: readyTakeId }
+    setFinalVisual(finalVisualRef.current)
+    setLocalFvTakeId(readyTakeId)
     const result = await setShotFinalVisualAction({ shotId: shot.id, nodeId, takeId: readyTakeId })
     if (result.success) {
       await loadShotDerivedState()
       router.refresh()
     } else {
+      // Rollback
+      const prev = fvUndoStackRef.current[fvUndoStackRef.current.length - 1]
+      finalVisualRef.current = prev?.nodeId ? { nodeId: prev.nodeId, takeId: prev.takeId! } : null
+      setFinalVisual(finalVisualRef.current)
+      setLocalFvTakeId(finalVisualRef.current?.takeId ?? null)
       fvUndoStackRef.current.pop()
       setFvUndoCount(fvUndoStackRef.current.length)
     }
@@ -955,15 +1020,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           </div>
         )}
         {renderStrip()}
-        <ShotHeader shot={shot} projectId={projectId} finalVisual={resolvedFv}
-          onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
-          outputVideoSrc={shot.output_video_src ?? null}
-          onPreviewFV={resolvedFv?.src ? () => setInspectMedia({ type: 'image', src: resolvedFv.src }) : undefined}
-          onPreviewOutput={shot.output_video_src ? () => setInspectMedia({ type: 'video', src: shot.output_video_src! }) : undefined}
-          onDownloadFV={resolvedFv?.src ? () => triggerDownload(resolvedFv.src, `${shotPrefix}_FV.${extFromUrl(resolvedFv.src, 'png')}`) : undefined}
-          onDownloadOutput={shot.output_video_src ? () => triggerDownload(shot.output_video_src!, `${shotPrefix}_OUTPUT.${extFromUrl(shot.output_video_src!, 'mp4')}`) : undefined}
-          fvTakeLabel={fvTakeLabel}
-          outputTakeLabel={outputTakeLabel}
+        <ShotHeader shot={shot} projectId={projectId}
+          finalVisual={null}
+          outputVideoSrc={null}
+          fvTakeLabel={null}
+          outputTakeLabel={null}
         />
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
           <div className="text-center">
@@ -982,7 +1043,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   const currentTake = readyTakeId ? takes.find(t => t.id === readyTakeId) : null
 
-  const shotOutputNodeId = shot.output_take_id === readyTakeId ? (shot.output_video_node_id ?? null) : null
+  const shotOutputNodeId = localOutputTakeId === readyTakeId ? (localOutputVideoNodeId ?? null) : null
   const currentUndoHistory = readyTakeId
     ? undoHistoryByTakeRef.current.get(readyTakeId)
     : undefined
@@ -1004,11 +1065,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       {renderStrip()}
       <ShotHeader shot={shot} projectId={projectId} finalVisual={resolvedFv}
         onUndoFinalVisual={fvUndoCount > 0 ? handleUndoFinalVisual : undefined}
-        outputVideoSrc={shot.output_video_src ?? null}
+        outputVideoSrc={localOutputVideoSrc ?? null}
         onPreviewFV={resolvedFv?.src ? () => setInspectMedia({ type: 'image', src: resolvedFv.src }) : undefined}
-        onPreviewOutput={shot.output_video_src ? () => setInspectMedia({ type: 'video', src: shot.output_video_src! }) : undefined}
+        onPreviewOutput={localOutputVideoSrc ? () => setInspectMedia({ type: 'video', src: localOutputVideoSrc! }) : undefined}
         onDownloadFV={resolvedFv?.src ? () => triggerDownload(resolvedFv.src, `${shotPrefix}_FV.${extFromUrl(resolvedFv.src, 'png')}`) : undefined}
-        onDownloadOutput={shot.output_video_src ? () => triggerDownload(shot.output_video_src!, `${shotPrefix}_OUTPUT.${extFromUrl(shot.output_video_src!, 'mp4')}`) : undefined}
+        onDownloadOutput={localOutputVideoSrc ? () => triggerDownload(localOutputVideoSrc!, `${shotPrefix}_OUTPUT.${extFromUrl(localOutputVideoSrc!, 'mp4')}`) : undefined}
         fvTakeLabel={fvTakeLabel}
         outputTakeLabel={outputTakeLabel}
       />
@@ -1034,8 +1095,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         onDelete={handleDeleteTake}
 
         approvedTakeId={shot.approved_take_id}
-        fvTakeId={shot.final_visual_take_id ?? null}
-        outputTakeId={shot.output_take_id ?? null}
+        fvTakeId={localFvTakeId ?? null}
+        outputTakeId={localOutputTakeId ?? null}
         onApproveTake={handleApproveTake}
         onRevokeTake={handleRevokeTake}
         onOpenProduction={handleOpenPLP}
@@ -1178,6 +1239,55 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           <button onClick={handleCrystallize} title="Crystallize Selection → Entity">
             💎
           </button>
+
+          {/* Entity type tokens — drag to insert entity_ref filtered by type */}
+          <div className="w-6 border-t border-zinc-700 my-1" />
+          {([
+            ['character', 'Char', 'text-amber-400   bg-amber-500/10   border-amber-500/40'],
+            ['environment', 'Envi', 'text-emerald-400 bg-emerald-500/10 border-emerald-500/40'],
+            ['prop', 'Prop', 'text-blue-400    bg-blue-500/10    border-blue-500/40'],
+            ['cinematography', 'Cine', 'text-purple-400  bg-purple-500/10  border-purple-500/40'],
+          ] as [EntityType, string, string][]).map(([type, label, cls]) => (
+            <button
+              key={type}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                setGhostEntityType(type)
+                setGhostPos({ x: e.clientX, y: e.clientY })
+
+                const handleMouseMove = (moveEvent: MouseEvent) => {
+                  setGhostPos({ x: moveEvent.clientX, y: moveEvent.clientY })
+                }
+
+                const handleMouseUp = (upEvent: MouseEvent) => {
+                  window.removeEventListener('mousemove', handleMouseMove)
+                  window.removeEventListener('mouseup', handleMouseUp)
+                  setGhostPos(null)
+                  setGhostEntityType(null)
+
+                  const canvas = canvasRef.current
+                  if (!canvas) return
+                  const rect = canvas.getCanvasRect()
+                  if (!rect) return
+                  const x = upEvent.clientX - rect.left
+                  const y = upEvent.clientY - rect.top
+                  // Only open library if dropped inside canvas bounds
+                  if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
+
+                  pendingEntityDropRef.current = { screenX: x, screenY: y }
+                  setEntityLibraryFilter(type)
+                  setShowEntityLibrary(true)
+                }
+
+                window.addEventListener('mousemove', handleMouseMove)
+                window.addEventListener('mouseup', handleMouseUp)
+              }}
+              className={`w-9 h-7 text-[8px] font-medium rounded flex items-center justify-center transition-all select-none cursor-grab active:cursor-grabbing border ${cls}`}
+              title={`Drag to canvas to insert ${label} entity ref`}
+            >
+              {label}
+            </button>
+          ))}
         </aside>
 
         <div
@@ -1381,17 +1491,42 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               onUndoHistoryChange={handleUndoHistoryChange}
               currentFinalVisualNodeId={finalVisual?.nodeId ?? null}
               outputVideoNodeId={shotOutputNodeId}
+              onBeforeDeleteNode={async (nodeId) => {
+                if (finalVisualRef.current?.nodeId === nodeId) {
+                  finalVisualRef.current = null
+                  setFinalVisual(null)
+                  setLocalFvTakeId(null)
+                  fvUndoStackRef.current = []
+                  setFvUndoCount(0)
+                  void clearShotFinalVisualAction({ shotId: shot.id }).then(() => router.refresh())
+                }
+                if (outputRef.current?.videoNodeId === nodeId) {
+                  const tid = outputRef.current.takeId
+                  outputRef.current = null
+                  setLocalOutputVideoSrc(null)
+                  setLocalOutputTakeId(null)
+                  setLocalOutputVideoNodeId(null)
+                  if (tid) void clearTakeOutputVideo(tid)
+                  void clearShotOutputVideo(shot.id).then(() => router.refresh())
+                }
+              }}
               onSetFinalVisual={handleSetFinalVisual}
               onClearFinalVisual={async () => {
-                await clearShotFinalVisualAction({ shotId: shot.id })
+                finalVisualRef.current = null
                 setFinalVisual(null)
+                setLocalFvTakeId(null)
                 fvUndoStackRef.current = []
                 setFvUndoCount(0)
+                await clearShotFinalVisualAction({ shotId: shot.id })
                 router.refresh()
               }}
 
-              onSetOutputVideo={async (nodeId: string) => {
+              onSetOutputVideo={async (nodeId: string, videoSrc: string) => {
                 if (!readyTakeId) return
+                outputRef.current = { videoNodeId: nodeId, takeId: readyTakeId }
+                setLocalOutputVideoSrc(videoSrc)
+                setLocalOutputTakeId(readyTakeId)
+                setLocalOutputVideoNodeId(nodeId)
                 await setTakeOutputVideo(readyTakeId, nodeId)
                 setTakes(prev => prev.map(t => t.id === readyTakeId ? { ...t, output_video_node_id: nodeId } : t))
                 await setShotOutputVideo(shot.id, nodeId, readyTakeId)
@@ -1399,6 +1534,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               }}
               onClearOutputVideo={async () => {
                 if (!readyTakeId) return
+                outputRef.current = null
+                setLocalOutputVideoSrc(null)
+                setLocalOutputTakeId(null)
+                setLocalOutputVideoNodeId(null)
                 await clearTakeOutputVideo(readyTakeId)
                 setTakes(prev => prev.map(t => t.id === readyTakeId ? { ...t, output_video_node_id: null } : t))
                 await clearShotOutputVideo(shot.id)
@@ -1440,6 +1579,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               onClose={() => setInspectorOpen(false)}
               onUpdateNodeData={handleUpdateNodeData}
               onOpenEntityEdit={(eid) => setEditEntityId(eid)}
+              projectId={projectId}
             />
           )}
 
@@ -1467,8 +1607,15 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       {showEntityLibrary && (
         <EntityLibrary
           projectId={projectId}
-          onClose={() => setShowEntityLibrary(false)}
-          onInsertRef={handleInsertEntityRef}
+          onClose={() => {
+            setShowEntityLibrary(false)
+            setEntityLibraryFilter(undefined)
+            pendingEntityDropRef.current = null
+            setGhostEntityType(null)
+          }}
+          onInsertRef={entityLibraryFilter ? handleInsertEntityRefAtPos : handleInsertEntityRef}
+          canvasRef={canvasRef}
+          initialFilter={entityLibraryFilter}
         />
       )}
       {crystallizeState && (
@@ -1479,7 +1626,13 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         />
       )}
       {editEntityId && (
-        <EditEntityLoader entityId={editEntityId} projectId={projectId} onClose={() => setEditEntityId(null)} />
+        <EditEntityLoader entityId={editEntityId} projectId={projectId} onClose={(saved) => {
+          if (saved) {
+            invalidateEntityCache(editEntityId)
+            bumpEntityVersion()
+          }
+          setEditEntityId(null)
+        }} />
       )}
       {exportNodes && readyTakeId && (
         <ExportTakeModal
@@ -1494,10 +1647,18 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           className="fixed pointer-events-none z-[9999]"
           style={{ left: ghostPos.x - 100, top: ghostPos.y - 60, width: 200, height: 120 }}
         >
-          <div className="w-full h-full bg-zinc-800 border border-zinc-600 rounded-lg opacity-60 flex flex-col p-3">
-            <span className="text-xs text-zinc-400">Untitled</span>
-            <span className="text-[10px] text-zinc-600 mt-1">Double-click to edit</span>
-          </div>
+          {ghostEntityType ? (
+            // Entity type token ghost
+            <div className={`w-full h-full rounded-lg opacity-70 flex flex-col items-center justify-center gap-1 border-2 border-dashed ${ENTITY_TYPE_UI[ghostEntityType]?.badgeClass ?? 'border-zinc-600 bg-zinc-800'}`}>
+              <span className="text-[10px] font-semibold text-zinc-300">{ENTITY_TYPE_UI[ghostEntityType]?.label ?? ghostEntityType}</span>
+              <span className="text-[9px] text-zinc-500">Drop to select entity</span>
+            </div>
+          ) : (
+            <div className="w-full h-full bg-zinc-800 border border-zinc-600 rounded-lg opacity-60 flex flex-col p-3">
+              <span className="text-xs text-zinc-400">Untitled</span>
+              <span className="text-[10px] text-zinc-600 mt-1">Double-click to edit</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -1536,7 +1697,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   )
 }
 // ── Thin loader for Edit Entity from Inspector ──
-function EditEntityLoader({ entityId, projectId, onClose }: { entityId: string; projectId: string; onClose: () => void }) {
+function EditEntityLoader({ entityId, projectId, onClose }: { entityId: string; projectId: string; onClose: (saved?: boolean) => void }) {
   const [entity, setEntity] = useState<Entity | null>(null)
   const [loading, setLoading] = useState(true)
   useEffect(() => {
@@ -1545,6 +1706,6 @@ function EditEntityLoader({ entityId, projectId, onClose }: { entityId: string; 
     return () => { cancelled = true }
   }, [entityId])
   if (loading) return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70"><p className="text-xs text-zinc-500">Loading…</p></div>
-  if (!entity) return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70" onClick={onClose}><p className="text-xs text-red-400">Entity not found</p></div>
-  return <EntityEditOverlay entity={entity} projectId={projectId} onSave={() => onClose()} onClose={onClose} />
+  if (!entity) return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70" onClick={() => onClose()}><p className="text-xs text-red-400">Entity not found</p></div>
+  return <EntityEditOverlay entity={entity} projectId={projectId} onSave={() => onClose(true)} onClose={() => onClose()} />
 }
