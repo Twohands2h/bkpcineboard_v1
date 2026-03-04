@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import Link from 'next/link'
 import {
     listEntitiesAction,
     createEntityAction,
@@ -12,7 +13,9 @@ import {
     deleteEntityCascadeAction,
     replaceEntityRefsAction,
     getEntityUsageCountsAction,
+    getEntityUsageAction,
     type EntityRefUsage,
+    type EntityUsageItem,
 } from '@/app/actions/entity-ref-ops'
 import { EntityEditOverlay } from './entity-edit-overlay'
 import { invalidateEntityCache, bumpEntityVersion } from '@/lib/entities/entity-cache'
@@ -272,6 +275,7 @@ export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef }: En
                                         key={entity.id}
                                         entity={entity}
                                         usageCount={usageCounts[entity.id] ?? 0}
+                                        projectId={projectId}
                                         onEdit={() => setEditingEntity(entity)}
                                         onDelete={() => handleDelete(entity.id)}
                                         onReplace={() => handleOpenReplace(entity)}
@@ -410,9 +414,10 @@ export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef }: En
 
 // ── Entity Row ──
 
-function EntityRow({ entity, usageCount, onEdit, onDelete, onReplace, onInsertRef }: {
+function EntityRow({ entity, usageCount, projectId, onEdit, onDelete, onReplace, onInsertRef }: {
     entity: Entity
     usageCount: number
+    projectId: string
     onEdit: () => void
     onDelete: () => void
     onReplace: () => void
@@ -420,6 +425,42 @@ function EntityRow({ entity, usageCount, onEdit, onDelete, onReplace, onInsertRe
 }) {
     const typeCfg = getEntityTypeUI(entity.entity_type)
     const { Icon: TypeIcon } = typeCfg
+
+    // ── Where-used popover ──
+    const [popoverOpen, setPopoverOpen] = useState(false)
+    const [popoverUsages, setPopoverUsages] = useState<EntityUsageItem[] | null>(null)
+    const [popoverLoading, setPopoverLoading] = useState(false)
+    const popoverRef = useRef<HTMLDivElement>(null)
+
+    const openPopover = useCallback(async (e: React.MouseEvent) => {
+        e.stopPropagation()
+        setPopoverOpen(p => {
+            if (p) return false  // toggle off
+            return true
+        })
+        if (popoverUsages !== null) return  // already loaded
+        setPopoverLoading(true)
+        try {
+            const result = await getEntityUsageAction(entity.id, projectId)
+            setPopoverUsages(result.usages)
+        } catch {
+            setPopoverUsages([])
+        } finally {
+            setPopoverLoading(false)
+        }
+    }, [entity.id, projectId, popoverUsages])
+
+    // Close on outside click
+    useEffect(() => {
+        if (!popoverOpen) return
+        const handler = (e: MouseEvent) => {
+            if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+                setPopoverOpen(false)
+            }
+        }
+        document.addEventListener('mousedown', handler)
+        return () => document.removeEventListener('mousedown', handler)
+    }, [popoverOpen])
     const mediaCount = (entity.content as any)?.media?.length ?? 0
     const promptCount = (entity.content as any)?.prompts?.length ?? 0
     const description = (entity.content as any)?.description ?? ''
@@ -451,9 +492,51 @@ function EntityRow({ entity, usageCount, onEdit, onDelete, onReplace, onInsertRe
                     {mediaCount > 0 && <span className="text-[9px] text-zinc-600">{mediaCount} media</span>}
                     {promptCount > 0 && <span className="text-[9px] text-zinc-600">{promptCount} prompts</span>}
                     {usageCount > 0 && (
-                        <span className="text-[9px] font-medium text-zinc-500 bg-zinc-700/50 px-1.5 py-0.5 rounded">
-                            Used {usageCount}
-                        </span>
+                        <div className="relative" ref={popoverRef}>
+                            <button
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={openPopover}
+                                className="text-[9px] font-medium text-zinc-400 bg-zinc-700/50 hover:bg-zinc-600/60 px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                            >
+                                Used {usageCount}
+                            </button>
+                            {popoverOpen && (
+                                <div
+                                    onPointerDownCapture={(e) => e.stopPropagation()}
+                                    onPointerUpCapture={(e) => e.stopPropagation()}
+                                    onClickCapture={(e) => e.stopPropagation()}
+                                    className="absolute left-0 top-full mt-1 z-50 w-56 bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl py-1"
+                                >
+                                    {popoverLoading ? (
+                                        <p className="text-[9px] text-zinc-600 px-3 py-2">Loading…</p>
+                                    ) : !popoverUsages || popoverUsages.length === 0 ? (
+                                        <p className="text-[9px] text-zinc-600 px-3 py-2 italic">Not used anywhere</p>
+                                    ) : (
+                                        popoverUsages.map(u => {
+                                            const href = u.shot_id
+                                                ? `/projects/${projectId}/shots/${u.shot_id}?take=${u.take_id}`
+                                                : null
+                                            if (!href) return (
+                                                <div key={u.take_id} className="px-3 py-1.5 text-[10px] text-zinc-600 font-mono">
+                                                    {u.film_label || u.shot_label}
+                                                </div>
+                                            )
+                                            return (
+                                                <Link
+                                                    key={u.take_id}
+                                                    href={href}
+                                                    onClick={(e) => { e.stopPropagation(); setPopoverOpen(false) }}
+                                                    className="block px-3 py-1.5 text-[10px] text-zinc-300 hover:text-white hover:bg-zinc-800 font-mono truncate transition-colors"
+                                                >
+                                                    {u.film_label || u.shot_label}
+                                                    {u.ref_count > 1 && <span className="text-zinc-600 ml-1">×{u.ref_count}</span>}
+                                                </Link>
+                                            )
+                                        })
+                                    )}
+                                </div>
+                            )}
+                        </div>
                     )}
                 </div>
             </div>

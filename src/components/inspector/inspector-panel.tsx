@@ -255,8 +255,7 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
                                                     : null
                                                 if (!href) return (
                                                     <div key={u.take_id} className="px-2.5 py-1.5 rounded text-[10px] bg-zinc-800/20 border border-zinc-800 text-zinc-600 cursor-not-allowed">
-                                                        <div className="leading-tight truncate">{u.shot_label}</div>
-                                                        <div className="text-[9px] mt-0.5">{u.take_label} · no shot_id</div>
+                                                        <div className="leading-tight truncate">{u.film_label || u.shot_label}</div>
                                                     </div>
                                                 )
                                                 return (
@@ -266,13 +265,12 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
                                                         onClick={(e) => e.stopPropagation()}
                                                         className="block w-full text-left px-2.5 py-1.5 rounded text-[10px] bg-zinc-800/40 hover:bg-zinc-700/50 border border-zinc-700/30 hover:border-zinc-600/40 transition-colors group cursor-pointer"
                                                     >
-                                                        <div className="text-zinc-200 group-hover:text-white leading-tight truncate">
-                                                            {u.scene_label && <span className="text-zinc-500">{u.scene_label} / </span>}
-                                                            {u.shot_label}
+                                                        <div className="text-zinc-200 group-hover:text-white leading-tight truncate font-mono">
+                                                            {u.film_label || u.shot_label}
                                                         </div>
-                                                        <div className="text-[9px] text-zinc-600 leading-tight mt-0.5">
-                                                            {u.take_label}{u.ref_count > 1 ? ` · ${u.ref_count} refs` : ''}
-                                                        </div>
+                                                        {u.ref_count > 1 && (
+                                                            <div className="text-[9px] text-zinc-600 leading-tight mt-0.5">{u.ref_count} refs</div>
+                                                        )}
                                                     </Link>
                                                 )
                                             })}
