@@ -15,22 +15,7 @@ import {
 } from '@/app/actions/entity-ref-ops'
 import { EntityEditOverlay } from './entity-edit-overlay'
 import { invalidateEntityCache, bumpEntityVersion } from '@/lib/entities/entity-cache'
-
-// ── Constants ──
-
-const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
-    character: 'Character',
-    environment: 'Environment',
-    prop: 'Prop',
-    cinematography: 'Cinematography',
-}
-
-const ENTITY_TYPE_COLORS: Record<EntityType, string> = {
-    character: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
-    environment: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
-    prop: 'text-blue-400 bg-blue-500/10 border-blue-500/20',
-    cinematography: 'text-purple-400 bg-purple-500/10 border-purple-500/20',
-}
+import { ENTITY_TYPE_UI, getEntityTypeUI } from '@/lib/entities/entity-type-ui'
 
 // ── Props ──
 
@@ -230,8 +215,8 @@ export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef }: En
                                     onChange={e => setNewType(e.target.value as EntityType)}
                                     className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-300 focus:outline-none"
                                 >
-                                    {(Object.entries(ENTITY_TYPE_LABELS) as [EntityType, string][]).map(([k, v]) => (
-                                        <option key={k} value={k}>{v}</option>
+                                    {(Object.entries(ENTITY_TYPE_UI) as [EntityType, { label: string }][]).map(([k, v]) => (
+                                        <option key={k} value={k}>{v.label}</option>
                                     ))}
                                 </select>
                                 <button
@@ -253,13 +238,13 @@ export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef }: En
                         >
                             All
                         </button>
-                        {(Object.entries(ENTITY_TYPE_LABELS) as [EntityType, string][]).map(([k, v]) => (
+                        {(Object.entries(ENTITY_TYPE_UI) as [EntityType, { label: string }][]).map(([k, v]) => (
                             <button
                                 key={k}
                                 onClick={() => setFilterType(k)}
                                 className={`px-2 py-0.5 text-[10px] rounded transition-colors ${filterType === k ? 'bg-zinc-700 text-zinc-200' : 'text-zinc-500 hover:text-zinc-300'}`}
                             >
-                                {v}
+                                {v.label}
                             </button>
                         ))}
                     </div>
@@ -377,8 +362,8 @@ export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef }: En
                                         disabled={replaceBusy || replaceScanning || !replaceUsage || replaceUsage.totalRefs === 0}
                                         className="w-full flex items-center gap-2 px-3 py-2 rounded bg-zinc-800/50 border border-zinc-700/50 hover:border-zinc-500 transition-colors text-left disabled:opacity-50"
                                     >
-                                        <span className={`text-[8px] font-medium px-1.5 py-0.5 rounded border shrink-0 ${ENTITY_TYPE_COLORS[e.entity_type] ?? 'text-zinc-400 bg-zinc-800 border-zinc-700'}`}>
-                                            {ENTITY_TYPE_LABELS[e.entity_type]}
+                                        <span className={`text-[8px] font-medium px-1.5 py-0.5 rounded border shrink-0 ${getEntityTypeUI(e.entity_type).badgeClass}`}>
+                                            {getEntityTypeUI(e.entity_type).label}
                                         </span>
                                         <span className="text-[11px] text-zinc-200 truncate">{e.name}</span>
                                     </button>
@@ -423,7 +408,8 @@ function EntityRow({ entity, onEdit, onDelete, onReplace, onInsertRef }: {
     onReplace: () => void
     onInsertRef?: () => void
 }) {
-    const typeColor = ENTITY_TYPE_COLORS[entity.entity_type] ?? 'text-zinc-400 bg-zinc-800 border-zinc-700'
+    const typeCfg = getEntityTypeUI(entity.entity_type)
+    const { Icon: TypeIcon } = typeCfg
     const mediaCount = (entity.content as any)?.media?.length ?? 0
     const promptCount = (entity.content as any)?.prompts?.length ?? 0
     const description = (entity.content as any)?.description ?? ''
@@ -436,11 +422,7 @@ function EntityRow({ entity, onEdit, onDelete, onReplace, onInsertRef }: {
                 {thumbnail ? (
                     <img src={thumbnail} alt="" className="w-full h-full object-cover" />
                 ) : (
-                    <span className="text-zinc-600 text-lg">
-                        {entity.entity_type === 'character' ? '👤' :
-                            entity.entity_type === 'environment' ? '🌍' :
-                                entity.entity_type === 'prop' ? '🎭' : '🎬'}
-                    </span>
+                    <TypeIcon size={20} className={typeCfg.textClass} />
                 )}
             </div>
 
@@ -448,8 +430,8 @@ function EntityRow({ entity, onEdit, onDelete, onReplace, onInsertRef }: {
             <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-0.5">
                     <span className="text-xs font-medium text-zinc-200 truncate">{entity.name}</span>
-                    <span className={`text-[8px] font-medium px-1.5 py-0.5 rounded border shrink-0 ${typeColor}`}>
-                        {ENTITY_TYPE_LABELS[entity.entity_type]}
+                    <span className={`text-[8px] font-medium px-1.5 py-0.5 rounded border shrink-0 ${typeCfg.badgeClass}`}>
+                        {typeCfg.label}
                     </span>
                 </div>
                 {description && (
