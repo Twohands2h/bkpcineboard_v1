@@ -30,14 +30,16 @@ interface EntityLibraryProps {
     onInsertRef?: (entity: Entity) => void
     /** Canvas ref for in-memory patching after project-wide ops */
     canvasRef?: React.RefObject<{ patchEntityRefsForReplace: (from: string, to: string) => number; removeEntityRefs: (id: string) => number } | null>
+    /** Pre-select a filter type when opened from a type token drag */
+    initialFilter?: EntityType
 }
 
 // ── Component ──
 
-export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef }: EntityLibraryProps) {
+export function EntityLibrary({ projectId, onClose, onInsertRef, canvasRef, initialFilter }: EntityLibraryProps) {
     const [entities, setEntities] = useState<Entity[]>([])
     const [loading, setLoading] = useState(true)
-    const [filterType, setFilterType] = useState<EntityType | 'all'>('all')
+    const [filterType, setFilterType] = useState<EntityType | 'all'>(initialFilter ?? 'all')
     const [editingEntity, setEditingEntity] = useState<Entity | null>(null)
     const [showCreate, setShowCreate] = useState(false)
 

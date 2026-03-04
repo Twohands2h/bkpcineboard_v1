@@ -31,7 +31,8 @@ import { invalidateEntityCache, bumpEntityVersion } from '@/lib/entities/entity-
 import { EntityLibrary } from '@/components/entities/entity-library-v3'
 import { CrystallizeModal } from '@/components/entities/crystallize-modal'
 import { EntityEditOverlay } from '@/components/entities/entity-edit-overlay'
-
+import { ENTITY_TYPE_UI } from '@/lib/entities/entity-type-ui'
+import type { EntityType } from '@/app/actions/entities'
 import { crystallizeEntityAction, getEntityAction } from '@/app/actions/entities'
 import type { Entity } from '@/app/actions/entities'
 
@@ -746,6 +747,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [plpNodes, setPlpNodes] = useState<CanvasNode[]>([])
   const [plpEdges, setPlpEdges] = useState<CanvasEdge[]>([])
   const [showEntityLibrary, setShowEntityLibrary] = useState(false)
+  // Entity token drag: tracks drop position + which type token was dragged
+  const pendingEntityDropRef = useRef<{ screenX: number; screenY: number } | null>(null)
+  const [entityLibraryFilter, setEntityLibraryFilter] = useState<EntityType | undefined>(undefined)
+  const [ghostEntityType, setGhostEntityType] = useState<EntityType | null>(null)
   const [crystallizeState, setCrystallizeState] = useState<{
     selectedIds: string[]
     entityContent: any
@@ -825,6 +830,24 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       }
     )
     setShowEntityLibrary(false)
+  }, [])
+
+  // Used when opening library from a type-token drag — inserts at drop position
+  const handleInsertEntityRefAtPos = useCallback((entity: Entity) => {
+    if (!canvasRef.current) return
+    const drop = pendingEntityDropRef.current
+    const sx = drop?.screenX ?? window.innerWidth / 2
+    const sy = drop?.screenY ?? window.innerHeight / 2
+    pendingEntityDropRef.current = null
+    canvasRef.current.createEntityRefNodeAtScreen(sx, sy, {
+      entity_id: entity.id,
+      entity_name: entity.name,
+      entity_type: entity.entity_type,
+      thumbnail_path: (entity.content as any)?.thumbnail_path,
+    })
+    setShowEntityLibrary(false)
+    setEntityLibraryFilter(undefined)
+    setGhostEntityType(null)
   }, [])
 
   const handleCrystallize = useCallback(() => {
@@ -1179,6 +1202,56 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           <button onClick={handleCrystallize} title="Crystallize Selection → Entity">
             💎
           </button>
+
+          {/* Entity type tokens — drag to insert entity_ref filtered by type */}
+          <div className="w-6 border-t border-zinc-700 my-1" />
+          {(Object.entries(ENTITY_TYPE_UI) as [EntityType, { label: string; badgeClass: string }][]).map(([type, cfg]) => {
+            const tokenCls = type === 'character' ? 'text-amber-400   border-amber-500/40   bg-amber-500/10'
+              : type === 'environment' ? 'text-emerald-400 border-emerald-500/40 bg-emerald-500/10'
+                : type === 'prop' ? 'text-blue-400    border-blue-500/40    bg-blue-500/10'
+                  : 'text-purple-400   border-purple-500/40  bg-purple-500/10'
+            return (
+              <button
+                key={type}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  setGhostEntityType(type)
+                  setGhostPos({ x: e.clientX, y: e.clientY })
+
+                  const handleMouseMove = (moveEvent: MouseEvent) => {
+                    setGhostPos({ x: moveEvent.clientX, y: moveEvent.clientY })
+                  }
+
+                  const handleMouseUp = (upEvent: MouseEvent) => {
+                    window.removeEventListener('mousemove', handleMouseMove)
+                    window.removeEventListener('mouseup', handleMouseUp)
+                    setGhostPos(null)
+                    setGhostEntityType(null)
+
+                    const canvas = canvasRef.current
+                    if (!canvas) return
+                    const rect = canvas.getCanvasRect()
+                    if (!rect) return
+                    const x = upEvent.clientX - rect.left
+                    const y = upEvent.clientY - rect.top
+                    // Only open library if dropped inside canvas bounds
+                    if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
+
+                    pendingEntityDropRef.current = { screenX: x, screenY: y }
+                    setEntityLibraryFilter(type)
+                    setShowEntityLibrary(true)
+                  }
+
+                  window.addEventListener('mousemove', handleMouseMove)
+                  window.addEventListener('mouseup', handleMouseUp)
+                }}
+                className={`w-9 h-7 text-[8px] font-medium rounded flex items-center justify-center transition-all select-none cursor-grab active:cursor-grabbing border ${tokenCls}`}
+                title={`Drag to canvas to insert ${cfg.label} entity ref`}
+              >
+                {cfg.label.slice(0, 4)}
+              </button>
+            )
+          })}
         </aside>
 
         <div
@@ -1469,9 +1542,15 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       {showEntityLibrary && (
         <EntityLibrary
           projectId={projectId}
-          onClose={() => setShowEntityLibrary(false)}
-          onInsertRef={handleInsertEntityRef}
+          onClose={() => {
+            setShowEntityLibrary(false)
+            setEntityLibraryFilter(undefined)
+            pendingEntityDropRef.current = null
+            setGhostEntityType(null)
+          }}
+          onInsertRef={entityLibraryFilter ? handleInsertEntityRefAtPos : handleInsertEntityRef}
           canvasRef={canvasRef}
+          initialFilter={entityLibraryFilter}
         />
       )}
       {crystallizeState && (
@@ -1503,10 +1582,18 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           className="fixed pointer-events-none z-[9999]"
           style={{ left: ghostPos.x - 100, top: ghostPos.y - 60, width: 200, height: 120 }}
         >
-          <div className="w-full h-full bg-zinc-800 border border-zinc-600 rounded-lg opacity-60 flex flex-col p-3">
-            <span className="text-xs text-zinc-400">Untitled</span>
-            <span className="text-[10px] text-zinc-600 mt-1">Double-click to edit</span>
-          </div>
+          {ghostEntityType ? (
+            // Entity type token ghost
+            <div className={`w-full h-full rounded-lg opacity-70 flex flex-col items-center justify-center gap-1 border-2 border-dashed ${ENTITY_TYPE_UI[ghostEntityType]?.badgeClass ?? 'border-zinc-600 bg-zinc-800'}`}>
+              <span className="text-[10px] font-semibold text-zinc-300">{ENTITY_TYPE_UI[ghostEntityType]?.label ?? ghostEntityType}</span>
+              <span className="text-[9px] text-zinc-500">Drop to select entity</span>
+            </div>
+          ) : (
+            <div className="w-full h-full bg-zinc-800 border border-zinc-600 rounded-lg opacity-60 flex flex-col p-3">
+              <span className="text-xs text-zinc-400">Untitled</span>
+              <span className="text-[10px] text-zinc-600 mt-1">Double-click to edit</span>
+            </div>
+          )}
         </div>
       )}
 
