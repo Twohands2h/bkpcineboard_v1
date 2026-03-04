@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
+import { AlertTriangle } from 'lucide-react'
+import { getEntityTypeUI } from '@/lib/entities/entity-type-ui'
 import { entityCache, useEntityVersion } from '@/lib/entities/entity-cache'
 import { getEntityAction } from '@/app/actions/entities'
 
@@ -451,12 +453,15 @@ export function EntityRefContent({ data }: { data: EntityRefData }) {
     // ── Loading: neutral placeholder (no stale flash) ──
     if (!resolved) {
         return (
-            <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 rounded border-2 border-dashed border-zinc-700/40 bg-zinc-800/20 p-3">
-                <span className="w-6 h-6 rounded-full bg-zinc-700/50 animate-pulse" />
-                <span className="text-[10px] font-medium text-zinc-500 text-center truncate max-w-full">
-                    {data.entity_name || 'Loading…'}
-                </span>
-                <span className="text-[8px] text-zinc-600 uppercase tracking-wider">ref</span>
+            <div className="flex items-stretch w-full h-full min-h-[52px] rounded overflow-hidden bg-zinc-800/40 border border-zinc-700/40">
+                <div className="w-1 flex-shrink-0 bg-zinc-600 animate-pulse" />
+                <div className="flex items-center gap-2.5 px-3 flex-1 min-w-0">
+                    <div className="w-4 h-4 rounded bg-zinc-600 animate-pulse flex-shrink-0" />
+                    <div className="flex flex-col gap-1.5 flex-1 min-w-0">
+                        <div className="h-2.5 w-20 rounded bg-zinc-600 animate-pulse" />
+                        <div className="h-2 w-12 rounded bg-zinc-700 animate-pulse" />
+                    </div>
+                </div>
             </div>
         )
     }
@@ -464,42 +469,39 @@ export function EntityRefContent({ data }: { data: EntityRefData }) {
     // ── Missing: entity not found after fetch ──
     if (!liveEntity) {
         return (
-            <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 rounded border-2 border-dashed border-red-500/20 bg-red-500/5 p-3">
-                <span className="text-2xl">⚠️</span>
-                <span className="text-[10px] font-medium text-zinc-400 text-center truncate max-w-full">
-                    {data.entity_name || 'Missing Entity'}
-                </span>
-                <span className="text-[8px] text-red-400/60 uppercase tracking-wider">missing ref</span>
+            <div className="flex items-stretch w-full h-full min-h-[52px] rounded overflow-hidden bg-zinc-800/40 border border-red-500/30">
+                <div className="w-1 flex-shrink-0 bg-red-500" />
+                <div className="flex items-center gap-2.5 px-3 flex-1 min-w-0">
+                    <AlertTriangle size={14} className="text-red-400 flex-shrink-0" />
+                    <div className="flex flex-col min-w-0">
+                        <span className="text-[10px] font-medium text-red-300 truncate leading-tight">Missing entity</span>
+                        <span className="text-[8px] text-red-500/70 uppercase tracking-wider leading-tight">not found</span>
+                    </div>
+                </div>
             </div>
         )
     }
 
-    // ── Resolved: render live data ──
-    const displayType = liveEntity.entity_type
-    const displayName = liveEntity.name
-
-    const typeEmoji = displayType === 'character' ? '👤'
-        : displayType === 'environment' ? '🌍'
-            : displayType === 'prop' ? '🎭' : '🎬'
-
-    const typeColor = displayType === 'character' ? 'border-amber-500/30 bg-amber-500/5'
-        : displayType === 'environment' ? 'border-emerald-500/30 bg-emerald-500/5'
-            : displayType === 'prop' ? 'border-blue-500/30 bg-blue-500/5'
-                : 'border-purple-500/30 bg-purple-500/5'
+    // ── Resolved: render live data only ──
+    const cfg = getEntityTypeUI(liveEntity.entity_type)
+    const { Icon } = cfg
 
     return (
-        <div className={`w-full h-full flex flex-col items-center justify-center gap-1.5 rounded border-2 border-dashed ${typeColor} p-3`}>
-            {data.thumbnail_path ? (
-                <img src={data.thumbnail_path} alt="" className="w-10 h-10 rounded object-cover" />
-            ) : (
-                <span className="text-2xl">{typeEmoji}</span>
-            )}
-            <span className="text-[10px] font-medium text-zinc-200 text-center truncate max-w-full">
-                {displayName || 'Entity'}
-            </span>
-            <span className="text-[8px] text-zinc-500 uppercase tracking-wider">
-                {displayType} ref
-            </span>
+        <div className="flex items-stretch w-full h-full min-h-[52px] rounded overflow-hidden bg-zinc-800/50 border border-zinc-700/30">
+            {/* Left type stripe */}
+            <div className={`w-1 flex-shrink-0 ${cfg.stripeClass}`} />
+            {/* Content */}
+            <div className="flex items-center gap-2.5 px-3 flex-1 min-w-0">
+                <Icon size={14} className={`${cfg.textClass} flex-shrink-0`} />
+                <div className="flex flex-col min-w-0 flex-1">
+                    <span className="text-[11px] font-medium text-zinc-100 truncate leading-tight" title={liveEntity.name}>
+                        {liveEntity.name}
+                    </span>
+                    <span className={`text-[8px] uppercase tracking-wider leading-tight ${cfg.textClass} opacity-80`}>
+                        {cfg.label}
+                    </span>
+                </div>
+            </div>
         </div>
     )
 }

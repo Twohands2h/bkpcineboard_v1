@@ -12,6 +12,7 @@ import {
 import { getEntityAction, type Entity } from '@/app/actions/entities'
 import { EntityPackPreview, normalizeMedia, normalizePrompts, normalizeNotes, getMediaUrl } from '@/components/entities/entity-pack-preview'
 import { entityCache, invalidateEntityCache, useEntityVersion } from '@/lib/entities/entity-cache'
+import { getEntityTypeUI } from '@/lib/entities/entity-type-ui'
 // ── Helpers ──
 
 function humanType(node: CanvasNode): string {
@@ -178,14 +179,10 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
                                 }
                                 const liveType = fetchedEntity.entity_type
                                 const liveName = fetchedEntity.name
+                                const typeCfg = getEntityTypeUI(liveType)
                                 return (
                                     <div>
-                                        <span className={`text-[8px] font-medium px-1.5 py-0.5 rounded border inline-block mb-1.5 uppercase tracking-wider ${liveType === 'character' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
-                                                liveType === 'environment' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
-                                                    liveType === 'prop' ? 'text-blue-400 bg-blue-500/10 border-blue-500/20' :
-                                                        liveType === 'cinematography' ? 'text-purple-400 bg-purple-500/10 border-purple-500/20' :
-                                                            'text-zinc-400 bg-zinc-800 border-zinc-700'
-                                            }`}>{liveType}</span>
+                                        <span className={`text-[8px] font-medium px-1.5 py-0.5 rounded border inline-block mb-1.5 uppercase tracking-wider ${typeCfg.badgeClass}`}>{liveType}</span>
                                         <div className="text-[13px] text-zinc-100 font-semibold leading-tight truncate">{liveName}</div>
                                     </div>
                                 )
