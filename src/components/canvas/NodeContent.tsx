@@ -483,21 +483,32 @@ export function EntityRefContent({ data }: { data: EntityRefData }) {
     }
 
     // ── Resolved: render live data only ──
+    // Static class maps — dynamic strings are purged by Tailwind at build time
+    const stripeClass = liveEntity.entity_type === 'character' ? 'bg-amber-500'
+        : liveEntity.entity_type === 'environment' ? 'bg-emerald-500'
+            : liveEntity.entity_type === 'prop' ? 'bg-blue-500'
+                : liveEntity.entity_type === 'cinematography' ? 'bg-purple-500'
+                    : 'bg-zinc-500'
+    const textClass = liveEntity.entity_type === 'character' ? 'text-amber-400'
+        : liveEntity.entity_type === 'environment' ? 'text-emerald-400'
+            : liveEntity.entity_type === 'prop' ? 'text-blue-400'
+                : liveEntity.entity_type === 'cinematography' ? 'text-purple-400'
+                    : 'text-zinc-400'
     const cfg = getEntityTypeUI(liveEntity.entity_type)
     const { Icon } = cfg
 
     return (
         <div className="flex items-stretch w-full h-full min-h-[52px] rounded overflow-hidden bg-zinc-800/50 border border-zinc-700/30">
             {/* Left type stripe */}
-            <div className={`w-1 flex-shrink-0 ${cfg.stripeClass}`} />
+            <div className={`w-1 flex-shrink-0 ${stripeClass}`} />
             {/* Content */}
             <div className="flex items-center gap-2.5 px-3 flex-1 min-w-0">
-                <Icon size={14} className={`${cfg.textClass} flex-shrink-0`} />
+                <Icon size={14} className={`${textClass} flex-shrink-0`} />
                 <div className="flex flex-col min-w-0 flex-1">
                     <span className="text-[11px] font-medium text-zinc-100 truncate leading-tight" title={liveEntity.name}>
                         {liveEntity.name}
                     </span>
-                    <span className={`text-[8px] uppercase tracking-wider leading-tight ${cfg.textClass} opacity-80`}>
+                    <span className={`text-[8px] uppercase tracking-wider leading-tight ${textClass} opacity-80`}>
                         {cfg.label}
                     </span>
                 </div>
