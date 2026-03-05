@@ -137,3 +137,54 @@ These changes must preserve: **memory > organization**, **film-first**, **no inf
 ## Notes / Watchouts
 - Monitor if users try to drag entities into columns. If frequent, improve link discoverability (highlight target prompt on edge drag, micro hints), but keep canon: entities do not “live inside” columns.
 - Keep PLP reflection pure; additions must remain mechanical and explicit.
+
+Regola canonica: incoming edge EntityRef → Prompt
+Le Entities entrano nel Prompt Pack esclusivamente tramite edge in ingresso al nodo Prompt:
+EntityRef → Prompt   (label: 'ref' o no-label)   ✅ PLP-relevant
+Prompt → EntityRef                                 ❌ non contato
+column ↔ entity_ref  (label: 'struct')             ❌ non contato
+Non esiste inferenza, deduzione semantica, o bucket categorization. Se un EntityRef non ha un edge incoming verso un Prompt, non compare nel Prompt Pack. È una regola meccanica e intenzionale: il filmmaker decide esplicitamente quali entities entrano nel contesto del prompt.
+Questa regola è congelata. Modifiche richiedono revisione esplicita del canon.
+
+UX: Link feedback + PLP nudge (mechanical, not inference)
+B1 — Toast "Entity added to Prompt Pack"
+
+Trigger: creazione edge valido entity_ref → prompt (fromType === entity_ref, toType === prompt) in TakeCanvas.handleConnectionMouseUp, nel branch !isDupe.
+Implementazione: stato interno entityLinkToast + timer ref in TakeCanvas. Nessuna prop aggiuntiva esposta verso il parent.
+Coalescing: ogni nuovo edge PLP-relevant resetta il timer. Il toast rimane visibile 1.8s dall'ultimo evento. Se l'utente crea 5 edge consecutivi, il toast non spamma — rimane acceso e si azzera 1.8s dopo l'ultimo.
+UI: pill centrata in basso nel canvas, bg-zinc-800 border-zinc-600, testo "Entity added to Prompt Pack". Non invasivo, pointer-events-none.
+Non triggerare per: edge structurali (column), edge prompt → entity_ref (direzione opposta), qualsiasi edge non entity_ref.
+
+B2 — Nudge in PLP
+
+Condizione meccanica: entityRefNodes.length > 0 AND countLinkedToPrompt === 0
+Logica: in ProductionLaunchPanel, useMemo che scansiona gli edges: conta gli EntityRef che compaiono come edge.from dove edge.to è un nodo prompt. Se linkedEntityIds.size === 0 → hasUnlinkedEntities = true.
+UI: una riga discreta text-[10px] text-zinc-600 italic nel pannello Prompts: "Some entities aren't linked to any prompt, so they won't be included."
+Non mostra: elenco delle entities non linkate, suggerimenti su quale collegare, inferenza sull'importanza.
+Scompare automaticamente appena almeno un EntityRef è collegato a un Prompt (perché il PLP riceve i nuovi edges via getSnapshot() all'apertura — o al prossimo open).
+
+
+File toccati (Milestone B)
+FileModificasrc/components/canvas/TakeCanvas.tsx+entityLinkToast state + showEntityLinkToast (coalescing) + trigger in handleConnectionMouseUp + toast pill JSXsrc/components/production/production-launch-panel.tsx+entityRefNodes + hasUnlinkedEntities useMemo + nudge JSXdocs/ROADMAP_ENTITIES_PLP_CANON_MAR2026.mdQuesto file
+
+Invarianti rispettate
+
+Snapshot shape: ✗ non toccata
+Persist pipeline (emitNodesChange): ✗ non toccata
+FV/Output/ShotHeader: ✗ non toccati
+TakeCanvas core (3-layer sacred): ✅ solo aggiunta UI overlay + stato interno
+No dedup/inference in PLP: ✅ solo reflection meccanica
+
+## UX — Entity → Prompt linking feedback (Mechanical, not inference)
+
+### Link feedback (toast)
+When the user creates a PLP-relevant edge `EntityRef → Prompt`:
+- Show a lightweight, temporary toast: **“Entity added to Prompt Pack”**
+- Coalesce repeated links (no spam); UI-only (no DB persistence).
+
+### PLP nudge (education)
+If the current take contains `entity_ref` nodes but **none** are linked to any Prompt via incoming edges:
+- Show a subtle message in PLP: “Some entities aren’t linked to any prompt, so they won’t be included.”
+- This is purely mechanical (count-based), not semantic inference.
+
+**Canon unchanged:** Entities are included in PLP **only** via incoming edges `EntityRef → Prompt`.

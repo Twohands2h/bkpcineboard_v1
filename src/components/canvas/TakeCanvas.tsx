@@ -212,6 +212,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const hoveredNodeIdRef = useRef<string | null>(null)
         hoveredNodeIdRef.current = hoveredNodeId
 
+        // ── Entity→Prompt link toast (B1) ──
+        const [entityLinkToast, setEntityLinkToast] = useState(false)
+        const entityLinkToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
         // ── Peek Ghost Preview (entity_ref only) ──
         const [peekNodeId, setPeekNodeId] = useState<string | null>(null)
         const [peekImages, setPeekImages] = useState<string[]>([])
@@ -998,6 +1002,16 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setConnectionGhost({ fromX: f.x, fromY: f.y, toX: world.x, toY: world.y })
         }, [mouseToWorld])
 
+        // Coalescing: reset timer on each call, toast shows for 1.8s after last event
+        const showEntityLinkToast = useCallback(() => {
+            if (entityLinkToastTimerRef.current) clearTimeout(entityLinkToastTimerRef.current)
+            setEntityLinkToast(true)
+            entityLinkToastTimerRef.current = setTimeout(() => {
+                setEntityLinkToast(false)
+                entityLinkToastTimerRef.current = null
+            }, 1800)
+        }, [])
+
         const handleConnectionMouseUp = useCallback((e: MouseEvent) => {
             window.removeEventListener('mousemove', handleConnectionMouseMove); window.removeEventListener('mouseup', handleConnectionMouseUp)
             const c = connectionRef.current
@@ -1049,11 +1063,15 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     if (!isDupe) {
                         setEdges(p => [...p, { id: crypto.randomUUID(), from: edgeFrom, to: edgeTo, label: edgeLabel }])
                         setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                        // B1: toast when entity_ref links to prompt (PLP-relevant edge)
+                        if (fromType === 'entity_ref' && toType === 'prompt') {
+                            showEntityLinkToast()
+                        }
                     }
                 }
             }
             connectionRef.current = null; setConnectionGhost(null); setInteractionMode('idle')
-        }, [handleConnectionMouseMove, pushHistory, emitNodesChange, mouseToWorld])
+        }, [handleConnectionMouseMove, pushHistory, emitNodesChange, mouseToWorld, showEntityLinkToast])
 
         const handleConnectionStart = useCallback((nodeId: string, mx: number, my: number) => {
             const cr = canvasRef.current?.getBoundingClientRect(); if (!cr) return
@@ -2039,6 +2057,15 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         naturalHeight={inspectImage.naturalHeight}
                         onClose={() => setInspectImage(null)}
                     />
+                )}
+
+                {/* B1: Entity→Prompt link toast */}
+                {entityLinkToast && (
+                    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
+                        <div className="px-3 py-1.5 rounded-full bg-zinc-800 border border-zinc-600 text-zinc-300 text-[11px] font-medium shadow-lg">
+                            Entity added to Prompt Pack
+                        </div>
+                    </div>
                 )}
 
                 {/* Confirm Modal — replaces window.confirm for delete guards */}

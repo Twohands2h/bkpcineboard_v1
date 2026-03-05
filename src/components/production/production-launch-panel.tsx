@@ -905,8 +905,8 @@ function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileTe
             disabled={busy || !canDownload}
             title={!canDownload ? 'Nothing to export' : undefined}
             className={`px-2 py-1 text-[10px] rounded transition-colors border shrink-0 ${canDownload
-                    ? 'border-zinc-700 bg-transparent hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 disabled:opacity-50'
-                    : 'border-zinc-800 bg-transparent text-zinc-700 cursor-not-allowed'
+                ? 'border-zinc-700 bg-transparent hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 disabled:opacity-50'
+                : 'border-zinc-800 bg-transparent text-zinc-700 cursor-not-allowed'
                 }`}
         >
             {busy ? '⏳ Exporting…' : `↓ ${label}`}
@@ -995,6 +995,24 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
     const hasPrompts = promptEntries.length > 0
     const hasNotes = noteNodes.length > 0
     const hasMedia = media.firstFrame || media.lastFrame || media.references.length > 0
+
+    // B2: Nudge — entity_ref nodes exist but none are incoming-linked to any prompt
+    const entityRefNodes = useMemo(() => nodes.filter(n => n.type === 'entity_ref'), [nodes])
+    const hasUnlinkedEntities = useMemo(() => {
+        if (entityRefNodes.length === 0) return false
+        const edgeList = edges ?? []
+        // Check if ANY entity_ref is the source of an incoming edge to a prompt
+        const linkedEntityIds = new Set(
+            edgeList
+                .filter(e => {
+                    const toNode = nodeMap.get(e.to)
+                    const fromNode = nodeMap.get(e.from)
+                    return toNode?.type === 'prompt' && fromNode?.type === 'entity_ref'
+                })
+                .map(e => e.from)
+        )
+        return linkedEntityIds.size === 0
+    }, [entityRefNodes, edges, nodeMap])
 
     const fvId = currentFinalVisualId ?? null
     const outId = outputVideoNodeId ?? null
@@ -1120,6 +1138,13 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                             <h3 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-4">
                                 Prompts {hasPrompts && <span className="text-zinc-600">({grouped.flat.length})</span>}
                             </h3>
+
+                            {/* B2: Entity nudge — entities present but none linked to a prompt */}
+                            {hasUnlinkedEntities && (
+                                <p className="text-[10px] text-zinc-600 italic mb-3">
+                                    Some entities aren't linked to any prompt, so they won't be included.
+                                </p>
+                            )}
 
                             {!hasPrompts && (
                                 <p className="text-xs text-zinc-600 italic">No prompts in this Take.</p>
