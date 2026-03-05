@@ -710,6 +710,102 @@ function buildAssetsFromAttachments(attachments: ColumnAttachment[]): AssetDescr
     return assets
 }
 
+// ── Entity export helpers (C1/C2) ──
+
+interface EntityExportItem {
+    nodeId: string       // entity_ref node id (for dedup)
+    entityId: string
+    entityName: string
+    entityType: string
+    thumbnailPath: string | null  // storage_path from thumbnail_path if present
+    folderName: string   // sanitized, collision-resolved folder under entities/
+}
+
+/** Collect entity_ref nodes that have an incoming edge from them to ANY prompt in the given set.
+ *  Returns one EntityExportItem per unique entity_id (deduped — same entity linked multiple times = one entry). */
+function collectLinkedEntities(
+    promptNodeIds: Set<string>,
+    entityRefNodes: ExportNode[],
+    edges: ExportEdge[],
+    nodeMap: Map<string, ExportNode>,
+): EntityExportItem[] {
+    // Build set of entity_ref node ids that point to a prompt in scope
+    const linkedRefIds = new Set<string>()
+    for (const edge of edges) {
+        if (!promptNodeIds.has(edge.to)) continue
+        const fromNode = nodeMap.get(edge.from)
+        if (fromNode?.type === 'entity_ref') linkedRefIds.add(edge.from)
+    }
+
+    // Dedup by entity_id — first occurrence wins
+    const seenEntityIds = new Set<string>()
+    const items: EntityExportItem[] = []
+    const usedFolders = new Map<string, number>() // lowercase folder → count (collision)
+
+    for (const node of entityRefNodes) {
+        if (!linkedRefIds.has(node.id)) continue
+        const entityId = asString(node.data.entity_id ?? '')
+        if (!entityId || seenEntityIds.has(entityId)) continue
+        seenEntityIds.add(entityId)
+
+        const entityName = asString(node.data.entity_name ?? '') || 'unnamed'
+        const entityType = asString(node.data.entity_type ?? '')
+        const thumbnailPath = asString(node.data.thumbnail_path ?? '') || null
+
+        // Build collision-safe folder name
+        const sanitized = sanitizeExportName(entityName).replace(/\s+/g, '-')
+        const key = sanitized.toLowerCase()
+        const count = usedFolders.get(key) ?? 0
+        usedFolders.set(key, count + 1)
+        const folderName = count === 0 ? sanitized : `${sanitized}-${count + 1}`
+
+        items.push({ nodeId: node.id, entityId, entityName, entityType, thumbnailPath, folderName })
+    }
+
+    return items
+}
+
+/** Build AssetDescriptors with prefixed exportName for entity thumbnails. */
+function buildEntityAssetDescriptors(items: EntityExportItem[]): AssetDescriptor[] {
+    const assets: AssetDescriptor[] = []
+    for (const item of items) {
+        if (!item.thumbnailPath) continue
+        const ext = item.thumbnailPath.includes('.') ? item.thumbnailPath.substring(item.thumbnailPath.lastIndexOf('.')) : '.png'
+        assets.push({
+            nodeId: `entity:${item.entityId}`,
+            type: 'image',
+            bucket: 'take-images',
+            storagePath: item.thumbnailPath,
+            originalFilename: `entities/${item.folderName}/thumbnail${ext}`,
+            nodeData: {},
+            role: 'ref',
+        })
+    }
+    return assets
+}
+
+/** Build ENTITY.txt files for entities without a thumbnail (or always — mechanical id card). */
+function buildEntityTextFiles(items: EntityExportItem[]): Array<{ path: string; content: string }> {
+    return items.map(item => ({
+        path: `entities/${item.folderName}/ENTITY.txt`,
+        content: [
+            `id: ${item.entityId}`,
+            `name: ${item.entityName}`,
+            `type: ${item.entityType || 'unknown'}`,
+        ].join('\n'),
+    }))
+}
+
+/** Build the "Included Entities" section for 00_prompt.txt. */
+function buildEntitiesSection(items: EntityExportItem[]): string {
+    if (items.length === 0) return ''
+    const lines = items.map(item => {
+        const typeStr = item.entityType ? ` [${item.entityType}]` : ''
+        return `- ${item.entityName}${typeStr}  (id: ${item.entityId})`
+    })
+    return `\nINCLUDED ENTITIES\n${'─'.repeat(40)}\n${lines.join('\n')}`
+}
+
 const ROLE_PRIORITY: Record<string, number> = { final_visual: 0, output: 1, ref: 2, attachment: 3 }
 
 /** Dedup by nodeId, keeping the highest-priority role (FV > Output > ref > attachment). */
@@ -814,20 +910,24 @@ async function triggerExportZip(
     exportNameMap: Map<string, string>,
     promptFileText?: string,
     zipName?: string,
+    extraTextFiles?: Array<{ path: string; content: string }>,
 ): Promise<void> {
-    if (assets.length === 0 && !hasMeaningfulText(promptFileText)) {
-        console.warn('[export-pack] nothing to export (no assets, no text)')
+    if (assets.length === 0 && !hasMeaningfulText(promptFileText) && (!extraTextFiles || extraTextFiles.length === 0)) {
+        console.warn('[export-pack] nothing to export (no assets, no text, no entity files)')
         return
     }
 
     // Enrich assets with export names for the route
     const enriched = assets.map(a => ({
         ...a,
-        exportName: exportNameMap.get(a.nodeId) ?? a.originalFilename ?? 'file',
+        // Entity assets carry their folder-prefixed path in originalFilename
+        exportName: a.originalFilename.startsWith('entities/')
+            ? a.originalFilename
+            : (exportNameMap.get(a.nodeId) ?? a.originalFilename ?? 'file'),
     }))
 
-    const payload = { mode, assets: enriched, promptFileText, zipName }
-    console.log('[export-pack] payload', payload.mode, payload.assets.length, 'assets')
+    const payload = { mode, assets: enriched, promptFileText, zipName, extraTextFiles }
+    console.log('[export-pack] payload', payload.mode, payload.assets.length, 'assets', extraTextFiles?.length ?? 0, 'extraTextFiles')
 
     try {
         const resp = await fetch('/api/export-pack', {
@@ -876,28 +976,29 @@ async function triggerExportZip(
 
 // ── Download Assets Button ──
 
-function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileText, zipName }: {
+function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileText, zipName, extraTextFiles }: {
     assets: AssetDescriptor[]
     mode: 'prompt' | 'column' | 'pack'
     label: string
     exportNameMap: Map<string, string>
     promptFileText?: string
     zipName?: string
+    extraTextFiles?: Array<{ path: string; content: string }>
 }) {
     const [busy, setBusy] = useState(false)
 
-    const canDownload = assets.length > 0 || hasMeaningfulText(promptFileText)
+    const canDownload = assets.length > 0 || hasMeaningfulText(promptFileText) || (extraTextFiles?.length ?? 0) > 0
 
     const handleClick = useCallback(async (e: React.MouseEvent) => {
         e.stopPropagation()
         if (busy || !canDownload) return
         setBusy(true)
         try {
-            await triggerExportZip(mode, assets, exportNameMap, promptFileText, zipName)
+            await triggerExportZip(mode, assets, exportNameMap, promptFileText, zipName, extraTextFiles)
         } finally {
             setBusy(false)
         }
-    }, [assets, mode, busy, canDownload, exportNameMap, promptFileText, zipName])
+    }, [assets, mode, busy, canDownload, exportNameMap, promptFileText, zipName, extraTextFiles])
 
     return (
         <button
@@ -1013,6 +1114,16 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
         )
         return linkedEntityIds.size === 0
     }, [entityRefNodes, edges, nodeMap])
+
+    // C1: "Include Entities" toggle — default ON (explicit editorial gesture)
+    const [includeEntities, setIncludeEntities] = useState(true)
+
+    // C2: All entities linked to any prompt in the pack
+    const allPromptNodeIds = useMemo(() => new Set(promptEntries.map(e => e.node.id)), [promptEntries])
+    const allLinkedEntities = useMemo(() =>
+        collectLinkedEntities(allPromptNodeIds, entityRefNodes, edges ?? [], nodeMap),
+        [allPromptNodeIds, entityRefNodes, edges, nodeMap]
+    )
 
     const fvId = currentFinalVisualId ?? null
     const outId = outputVideoNodeId ?? null
@@ -1248,6 +1359,9 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                     return dedupeAssets(all)
                                 })()
                                 const colSlug = cg.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 20) || 'col'
+                                // C2: entities linked to prompts in this column
+                                const colPromptNodeIds = new Set(cg.entries.map(e => e.node.id))
+                                const colLinkedEntities = collectLinkedEntities(colPromptNodeIds, entityRefNodes, edges ?? [], nodeMap)
                                 return (
                                     <div key={cg.columnId} className="mb-4 bg-blue-950/20 border border-blue-500/15 rounded-lg p-4">
                                         {/* Column header */}
@@ -1274,8 +1388,37 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                         </span>
                                                     </label>
                                                 )}
+                                                {colLinkedEntities.length > 0 && (
+                                                    <label className="flex items-center gap-1 cursor-pointer select-none">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={includeEntities}
+                                                            onChange={(e) => setIncludeEntities(e.target.checked)}
+                                                            className="w-3 h-3 rounded border-zinc-600 bg-zinc-800 text-violet-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                                        />
+                                                        <span className="text-[10px] text-zinc-400">
+                                                            + Entities ({colLinkedEntities.length})
+                                                        </span>
+                                                    </label>
+                                                )}
                                                 <CopyButton text={columnBlockText} label="Copy Column Block" />
-                                                <DownloadAssetsButton assets={columnAssets} mode="column" label="Download" exportNameMap={exportNameMap} promptFileText={buildPromptFileText(columnAssets, exportNameMap, columnBlockText)} zipName={`${zipPrefix}_col-${colSlug}.zip`} />
+                                                {(() => {
+                                                    const colEntityAssets = includeEntities ? buildEntityAssetDescriptors(colLinkedEntities) : []
+                                                    const colEntityTextFiles = includeEntities ? buildEntityTextFiles(colLinkedEntities) : []
+                                                    const colEntitySection = includeEntities ? buildEntitiesSection(colLinkedEntities) : ''
+                                                    const colAllAssets = [...columnAssets, ...colEntityAssets]
+                                                    return (
+                                                        <DownloadAssetsButton
+                                                            assets={colAllAssets}
+                                                            mode="column"
+                                                            label="Download"
+                                                            exportNameMap={exportNameMap}
+                                                            promptFileText={buildPromptFileText(columnAssets, exportNameMap, columnBlockText + colEntitySection)}
+                                                            zipName={`${zipPrefix}_col-${colSlug}.zip`}
+                                                            extraTextFiles={colEntityTextFiles}
+                                                        />
+                                                    )
+                                                })()}
                                             </div>
                                         </div>
 
@@ -1401,16 +1544,26 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
 
                             {/* Footer: Copy Prompt Pack + toggles */}
                             {hasPrompts && (
-                                <div className="flex items-center gap-3 mt-4 pt-3 border-t border-zinc-700/60">
+                                <div className="flex items-center gap-3 mt-4 pt-3 border-t border-zinc-700/60 flex-wrap">
                                     <CopyButton text={promptPack} label="Copy Prompt Pack" />
-                                    <DownloadAssetsButton
-                                        assets={allPackAssets}
-                                        mode="pack"
-                                        label="Download Pack"
-                                        exportNameMap={exportNameMap}
-                                        promptFileText={buildPromptFileText(allPackAssets, exportNameMap, promptPack)}
-                                        zipName={`${zipPrefix}_pack.zip`}
-                                    />
+                                    {(() => {
+                                        const entityAssets = includeEntities ? buildEntityAssetDescriptors(allLinkedEntities) : []
+                                        const entityTextFiles = includeEntities ? buildEntityTextFiles(allLinkedEntities) : []
+                                        const entitySection = includeEntities ? buildEntitiesSection(allLinkedEntities) : ''
+                                        const packText = buildPromptFileText(allPackAssets, exportNameMap, promptPack + entitySection)
+                                        const allAssets = [...allPackAssets, ...entityAssets]
+                                        return (
+                                            <DownloadAssetsButton
+                                                assets={allAssets}
+                                                mode="pack"
+                                                label="Download Pack"
+                                                exportNameMap={exportNameMap}
+                                                promptFileText={packText}
+                                                zipName={`${zipPrefix}_pack.zip`}
+                                                extraTextFiles={entityTextFiles}
+                                            />
+                                        )
+                                    })()}
                                     {hasNotes && (
                                         <label className="flex items-center gap-1.5 cursor-pointer select-none">
                                             <input
@@ -1421,6 +1574,19 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                             />
                                             <span className="text-[10px] text-zinc-400">
                                                 + Notes ({noteNodes.length})
+                                            </span>
+                                        </label>
+                                    )}
+                                    {allLinkedEntities.length > 0 && (
+                                        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                            <input
+                                                type="checkbox"
+                                                checked={includeEntities}
+                                                onChange={(e) => setIncludeEntities(e.target.checked)}
+                                                className="w-3 h-3 rounded border-zinc-600 bg-zinc-800 text-violet-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                            />
+                                            <span className="text-[10px] text-zinc-400">
+                                                + Entities ({allLinkedEntities.length})
                                             </span>
                                         </label>
                                     )}

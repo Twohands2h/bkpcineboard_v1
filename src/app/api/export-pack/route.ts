@@ -20,6 +20,8 @@ interface ExportPackBody {
     assets: AssetDescriptor[]
     promptFileText?: string
     zipName?: string
+    /** Optional additional text files to include verbatim in the ZIP. */
+    extraTextFiles?: Array<{ path: string; content: string }>
 }
 
 // ── Helpers ──
@@ -214,6 +216,17 @@ export async function POST(req: NextRequest) {
         // 00_prompt.txt — complete content (header + body) built by PLP client
         if (body.promptFileText) {
             archive.append(body.promptFileText, { name: '00_prompt.txt' })
+        }
+
+        // Extra text files (e.g. entities/<name>/ENTITY.txt)
+        if (Array.isArray(body.extraTextFiles)) {
+            for (const tf of body.extraTextFiles) {
+                if (tf.path && typeof tf.content === 'string') {
+                    // Sanitize path segments to prevent traversal
+                    const safePath = tf.path.replace(/\.\./g, '_').replace(/^\//, '')
+                    archive.append(tf.content, { name: safePath })
+                }
+            }
         }
 
         // ── 5. Finalize archive, then await collected buffer ──
