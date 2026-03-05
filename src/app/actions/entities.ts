@@ -73,6 +73,72 @@ export async function getEntityAction(entityId: string): Promise<Entity | null> 
   return data as Entity
 }
 
+/** Shape returned per entity — carries full content for ENTITY.txt generation. */
+export type EntityFreshData = {
+  name: string
+  type: string
+  thumbnailPath: string | null
+  content: {
+    prompts: Array<{ id: string; title?: string; body: string }>
+    notes: Array<{ id: string; body: string }>
+  }
+}
+/**
+ * Fetch multiple entities by id in a single query, bypassing all caches.
+ * Used by PLP at export click time to ensure ZIP reflects latest edits.
+ *
+ * Returns a Map<entityId, EntityFreshData>. Missing ids are absent (caller
+ * falls back to node.data). On error returns empty Map — never throws.
+ */
+export async function getEntitiesByIdsAction(
+  ids: string[],
+): Promise<Map<string, EntityFreshData>> {
+  const result = new Map<string, EntityFreshData>()
+  if (ids.length === 0) return result
+
+  const uniqueIds = [...new Set(ids)]
+
+  try {
+    const supabase = await createClient()
+
+    const { data, error } = await supabase
+      .from('entities')
+      .select('id, name, entity_type, content')
+      .in('id', uniqueIds)
+
+    if (error) {
+      console.error('[getEntitiesByIdsAction] query error:', error.message)
+      return result
+    }
+
+    for (const row of data ?? []) {
+      const c = (row.content as any) ?? {}
+
+      const thumbnailPath: string | null = c.thumbnail_path ?? null
+
+      const prompts: Array<{ id: string; title?: string; body: string }> =
+        Array.isArray(c.prompts)
+          ? c.prompts.filter((p: any) => typeof p.body === 'string')
+          : []
+
+      const notes: Array<{ id: string; body: string }> =
+        Array.isArray(c.notes)
+          ? c.notes.filter((n: any) => typeof n.body === 'string')
+          : []
+
+      result.set(row.id, {
+        name: row.name ?? '',
+        type: row.entity_type ?? '',
+        thumbnailPath,
+        content: { prompts, notes },
+      })
+    }
+  } catch (err) {
+    console.error('[getEntitiesByIdsAction] unexpected error:', err)
+  }
+
+  return result
+}
 // ── Mutations ──
 
 export async function createEntityAction(params: {
