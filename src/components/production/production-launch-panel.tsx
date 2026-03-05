@@ -48,6 +48,9 @@ interface ProductionLaunchPanelProps {
     shotIndex: number    // 0-based (shot.order_index)
     takeNumber: number   // 1-based (take.take_number)
     onClose: () => void
+    /** Fix 2: fresh entity data fetched by parent at PLP open time (cache: no-store).
+     *  Key = entity_id. If present, overrides stale node.data fields for export. */
+    entityDataMap?: Map<string, { name: string; type: string; thumbnailPath: string | null }>
 }
 
 // ── Helpers ──
@@ -721,38 +724,64 @@ interface EntityExportItem {
     folderName: string   // sanitized, collision-resolved folder under entities/
 }
 
-/** Collect entity_ref nodes that have an incoming edge from them to ANY prompt in the given set.
- *  Returns one EntityExportItem per unique entity_id (deduped — same entity linked multiple times = one entry). */
+/** Collect entity_ref nodes eligible for a column or prompt-pack scope.
+ *
+ * eligibility (OR):
+ *   A) entity_ref.parentId === columnId  (containment — Fix 1)
+ *   B) edge entity_ref → columnId        (edge to column)
+ *   C) edge entity_ref → promptNodeId ∈ promptNodeIds
+ *
+ * For Prompt Pack scope pass columnId = null → only C applies.
+ *
+ * Fix 2: if entityDataMap is provided, name/type/thumbnailPath are taken from there
+ * (fresh data fetched by parent at PLP open time) with fallback to node.data.
+ */
 function collectLinkedEntities(
     promptNodeIds: Set<string>,
     entityRefNodes: ExportNode[],
     edges: ExportEdge[],
     nodeMap: Map<string, ExportNode>,
+    columnId?: string | null,
+    entityDataMap?: Map<string, { name: string; type: string; thumbnailPath: string | null }>,
 ): EntityExportItem[] {
-    // Build set of entity_ref node ids that point to a prompt in scope
-    const linkedRefIds = new Set<string>()
+    // Build set of eligible entity_ref node ids
+    const eligibleRefIds = new Set<string>()
+
     for (const edge of edges) {
-        if (!promptNodeIds.has(edge.to)) continue
         const fromNode = nodeMap.get(edge.from)
-        if (fromNode?.type === 'entity_ref') linkedRefIds.add(edge.from)
+        if (fromNode?.type !== 'entity_ref') continue
+        // C: entity_ref → prompt in scope
+        if (promptNodeIds.has(edge.to)) eligibleRefIds.add(edge.from)
+        // B: entity_ref → column (edge to column)
+        if (columnId && edge.to === columnId) eligibleRefIds.add(edge.from)
+    }
+
+    // A: entity_ref contained in column (parentId)
+    if (columnId) {
+        for (const node of entityRefNodes) {
+            if (asString(node.data.parentId ?? '') === columnId) eligibleRefIds.add(node.id)
+        }
     }
 
     // Dedup by entity_id — first occurrence wins
     const seenEntityIds = new Set<string>()
     const items: EntityExportItem[] = []
-    const usedFolders = new Map<string, number>() // lowercase folder → count (collision)
+    const usedFolders = new Map<string, number>()
 
     for (const node of entityRefNodes) {
-        if (!linkedRefIds.has(node.id)) continue
+        if (!eligibleRefIds.has(node.id)) continue
         const entityId = asString(node.data.entity_id ?? '')
         if (!entityId || seenEntityIds.has(entityId)) continue
         seenEntityIds.add(entityId)
 
-        const entityName = asString(node.data.entity_name ?? '') || 'unnamed'
-        const entityType = asString(node.data.entity_type ?? '')
-        const thumbnailPath = asString(node.data.thumbnail_path ?? '') || null
+        // Fix 2: prefer fresh data from entityDataMap, fallback to snapshot
+        const fresh = entityDataMap?.get(entityId)
+        const entityName = (fresh?.name ?? asString(node.data.entity_name ?? '')) || 'unnamed'
+        const entityType = fresh?.type ?? asString(node.data.entity_type ?? '')
+        const thumbnailPath = fresh !== undefined
+            ? fresh.thumbnailPath
+            : (asString(node.data.thumbnail_path ?? '') || null)
 
-        // Build collision-safe folder name
         const sanitized = sanitizeExportName(entityName).replace(/\s+/g, '-')
         const key = sanitized.toLowerCase()
         const count = usedFolders.get(key) ?? 0
@@ -1017,7 +1046,7 @@ function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileTe
 
 // ── Component ──
 
-export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVisualId, outputVideoNodeId, sceneIndex, shotIndex, takeNumber, onClose }: ProductionLaunchPanelProps) {
+export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVisualId, outputVideoNodeId, sceneIndex, shotIndex, takeNumber, onClose, entityDataMap }: ProductionLaunchPanelProps) {
     const pad2 = (n: number) => String(n).padStart(2, '0')
     const zipPrefix = `cb_S${pad2(sceneIndex + 1)}_Sh${shotIndex}_T${pad2(takeNumber)}`
     const promptNodes = useMemo(() => nodes.filter(n => n.type === 'prompt'), [nodes])
@@ -1118,11 +1147,11 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
     // C1: "Include Entities" toggle — default ON (explicit editorial gesture)
     const [includeEntities, setIncludeEntities] = useState(true)
 
-    // C2: All entities linked to any prompt in the pack
+    // C2: All entities linked to any prompt in the pack (prompt-pack scope — only via edge C)
     const allPromptNodeIds = useMemo(() => new Set(promptEntries.map(e => e.node.id)), [promptEntries])
     const allLinkedEntities = useMemo(() =>
-        collectLinkedEntities(allPromptNodeIds, entityRefNodes, edges ?? [], nodeMap),
-        [allPromptNodeIds, entityRefNodes, edges, nodeMap]
+        collectLinkedEntities(allPromptNodeIds, entityRefNodes, edges ?? [], nodeMap, null, entityDataMap),
+        [allPromptNodeIds, entityRefNodes, edges, nodeMap, entityDataMap]
     )
 
     const fvId = currentFinalVisualId ?? null
@@ -1324,15 +1353,38 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                             <CopyButton text={copyBlock} label="Copy Block" />
                                             {(() => {
                                                 const promptAssets = buildAssetsFromRefs(refs, fvId, outId)
+                                                // Fix 3: entities linked to THIS prompt, shown in card
+                                                const promptEntityIds = new Set([entry.node.id])
+                                                const promptEntities = collectLinkedEntities(promptEntityIds, entityRefNodes, edges ?? [], nodeMap, null, entityDataMap)
+                                                const entityAssets = includeEntities ? buildEntityAssetDescriptors(promptEntities) : []
+                                                const entityTextFiles = includeEntities ? buildEntityTextFiles(promptEntities) : []
+                                                const entitySection = includeEntities ? buildEntitiesSection(promptEntities) : ''
+                                                const allPromptAssets = [...promptAssets, ...entityAssets]
                                                 return (
-                                                    <DownloadAssetsButton
-                                                        assets={promptAssets}
-                                                        mode="prompt"
-                                                        label="Download"
-                                                        exportNameMap={exportNameMap}
-                                                        promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock)}
-                                                        zipName={`${zipPrefix}_p${pad2(gIdx + 1)}.zip`}
-                                                    />
+                                                    <>
+                                                        {promptEntities.length > 0 && (
+                                                            <label className="flex items-center gap-1 cursor-pointer select-none">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={includeEntities}
+                                                                    onChange={(e) => setIncludeEntities(e.target.checked)}
+                                                                    className="w-3 h-3 rounded border-zinc-600 bg-zinc-800 text-violet-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                                                />
+                                                                <span className="text-[10px] text-zinc-500">
+                                                                    + Entities ({promptEntities.length})
+                                                                </span>
+                                                            </label>
+                                                        )}
+                                                        <DownloadAssetsButton
+                                                            assets={allPromptAssets}
+                                                            mode="prompt"
+                                                            label="Download"
+                                                            exportNameMap={exportNameMap}
+                                                            promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock + entitySection)}
+                                                            zipName={`${zipPrefix}_p${pad2(gIdx + 1)}.zip`}
+                                                            extraTextFiles={entityTextFiles}
+                                                        />
+                                                    </>
                                                 )
                                             })()}
                                         </div>
@@ -1342,6 +1394,8 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
 
                             {/* Column sections */}
                             {grouped.columns.map(cg => {
+                                // Fix 1: column export only exists when column has at least 1 prompt
+                                const colHasPrompts = cg.entries.length > 0
                                 const colNotes = columnNotesMap.get(cg.columnId) ?? []
                                 const colAttachments = columnAttachmentsMap.get(cg.columnId) ?? []
                                 const columnBlockText = formatColumnBlock(
@@ -1359,9 +1413,12 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                     return dedupeAssets(all)
                                 })()
                                 const colSlug = cg.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 20) || 'col'
-                                // C2: entities linked to prompts in this column
+                                // Fix 1+C2: entities — containment (A), edge-to-column (B), edge-to-prompt (C)
+                                // Only collected when colHasPrompts (product rule)
                                 const colPromptNodeIds = new Set(cg.entries.map(e => e.node.id))
-                                const colLinkedEntities = collectLinkedEntities(colPromptNodeIds, entityRefNodes, edges ?? [], nodeMap)
+                                const colLinkedEntities = colHasPrompts
+                                    ? collectLinkedEntities(colPromptNodeIds, entityRefNodes, edges ?? [], nodeMap, cg.columnId, entityDataMap)
+                                    : []
                                 return (
                                     <div key={cg.columnId} className="mb-4 bg-blue-950/20 border border-blue-500/15 rounded-lg p-4">
                                         {/* Column header */}
@@ -1374,52 +1431,55 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                     ({cg.entries.length} prompt{cg.entries.length !== 1 ? 's' : ''})
                                                 </span>
                                             </div>
-                                            <div className="flex items-center gap-2">
-                                                {colNotes.length > 0 && (
-                                                    <label className="flex items-center gap-1 cursor-pointer select-none">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={includeColumnNotes}
-                                                            onChange={(e) => setIncludeColumnNotes(e.target.checked)}
-                                                            className="w-3 h-3 rounded border-zinc-600 bg-zinc-800 text-blue-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
-                                                        />
-                                                        <span className="text-[10px] text-zinc-400">
-                                                            + Notes ({colNotes.length})
-                                                        </span>
-                                                    </label>
-                                                )}
-                                                {colLinkedEntities.length > 0 && (
-                                                    <label className="flex items-center gap-1 cursor-pointer select-none">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={includeEntities}
-                                                            onChange={(e) => setIncludeEntities(e.target.checked)}
-                                                            className="w-3 h-3 rounded border-zinc-600 bg-zinc-800 text-violet-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
-                                                        />
-                                                        <span className="text-[10px] text-zinc-400">
-                                                            + Entities ({colLinkedEntities.length})
-                                                        </span>
-                                                    </label>
-                                                )}
-                                                <CopyButton text={columnBlockText} label="Copy Column Block" />
-                                                {(() => {
-                                                    const colEntityAssets = includeEntities ? buildEntityAssetDescriptors(colLinkedEntities) : []
-                                                    const colEntityTextFiles = includeEntities ? buildEntityTextFiles(colLinkedEntities) : []
-                                                    const colEntitySection = includeEntities ? buildEntitiesSection(colLinkedEntities) : ''
-                                                    const colAllAssets = [...columnAssets, ...colEntityAssets]
-                                                    return (
-                                                        <DownloadAssetsButton
-                                                            assets={colAllAssets}
-                                                            mode="column"
-                                                            label="Download"
-                                                            exportNameMap={exportNameMap}
-                                                            promptFileText={buildPromptFileText(columnAssets, exportNameMap, columnBlockText + colEntitySection)}
-                                                            zipName={`${zipPrefix}_col-${colSlug}.zip`}
-                                                            extraTextFiles={colEntityTextFiles}
-                                                        />
-                                                    )
-                                                })()}
-                                            </div>
+                                            {/* Fix 1: export controls only when column has prompts */}
+                                            {colHasPrompts && (
+                                                <div className="flex items-center gap-2">
+                                                    {colNotes.length > 0 && (
+                                                        <label className="flex items-center gap-1 cursor-pointer select-none">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={includeColumnNotes}
+                                                                onChange={(e) => setIncludeColumnNotes(e.target.checked)}
+                                                                className="w-3 h-3 rounded border-zinc-600 bg-zinc-800 text-blue-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                                            />
+                                                            <span className="text-[10px] text-zinc-400">
+                                                                + Notes ({colNotes.length})
+                                                            </span>
+                                                        </label>
+                                                    )}
+                                                    {colLinkedEntities.length > 0 && (
+                                                        <label className="flex items-center gap-1 cursor-pointer select-none">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={includeEntities}
+                                                                onChange={(e) => setIncludeEntities(e.target.checked)}
+                                                                className="w-3 h-3 rounded border-zinc-600 bg-zinc-800 text-violet-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                                            />
+                                                            <span className="text-[10px] text-zinc-400">
+                                                                + Entities ({colLinkedEntities.length})
+                                                            </span>
+                                                        </label>
+                                                    )}
+                                                    <CopyButton text={columnBlockText} label="Copy Column Block" />
+                                                    {(() => {
+                                                        const colEntityAssets = includeEntities ? buildEntityAssetDescriptors(colLinkedEntities) : []
+                                                        const colEntityTextFiles = includeEntities ? buildEntityTextFiles(colLinkedEntities) : []
+                                                        const colEntitySection = includeEntities ? buildEntitiesSection(colLinkedEntities) : ''
+                                                        const colAllAssets = [...columnAssets, ...colEntityAssets]
+                                                        return (
+                                                            <DownloadAssetsButton
+                                                                assets={colAllAssets}
+                                                                mode="column"
+                                                                label="Download"
+                                                                exportNameMap={exportNameMap}
+                                                                promptFileText={buildPromptFileText(columnAssets, exportNameMap, columnBlockText + colEntitySection)}
+                                                                zipName={`${zipPrefix}_col-${colSlug}.zip`}
+                                                                extraTextFiles={colEntityTextFiles}
+                                                            />
+                                                        )
+                                                    })()}
+                                                </div>
+                                            )}
                                         </div>
 
                                         {/* Column prompts — ordered by childOrder */}
@@ -1483,15 +1543,38 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                         <CopyButton text={copyBlock} label="Copy Block" />
                                                         {(() => {
                                                             const promptAssets = buildAssetsFromRefs(refs, fvId, outId)
+                                                            // Fix 3: per-prompt entities in card (edge C only for prompt scope)
+                                                            const singlePromptIds = new Set([entry.node.id])
+                                                            const promptEntities = collectLinkedEntities(singlePromptIds, entityRefNodes, edges ?? [], nodeMap, null, entityDataMap)
+                                                            const pEntityAssets = includeEntities ? buildEntityAssetDescriptors(promptEntities) : []
+                                                            const pEntityTextFiles = includeEntities ? buildEntityTextFiles(promptEntities) : []
+                                                            const pEntitySection = includeEntities ? buildEntitiesSection(promptEntities) : ''
+                                                            const allPAssets = [...promptAssets, ...pEntityAssets]
                                                             return (
-                                                                <DownloadAssetsButton
-                                                                    assets={promptAssets}
-                                                                    mode="prompt"
-                                                                    label="Download"
-                                                                    exportNameMap={exportNameMap}
-                                                                    promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock)}
-                                                                    zipName={`${zipPrefix}_p${pad2(gIdx + 1)}.zip`}
-                                                                />
+                                                                <>
+                                                                    {promptEntities.length > 0 && (
+                                                                        <label className="flex items-center gap-1 cursor-pointer select-none">
+                                                                            <input
+                                                                                type="checkbox"
+                                                                                checked={includeEntities}
+                                                                                onChange={(e) => setIncludeEntities(e.target.checked)}
+                                                                                className="w-3 h-3 rounded border-zinc-600 bg-zinc-800 text-violet-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                                                            />
+                                                                            <span className="text-[10px] text-zinc-500">
+                                                                                + Entities ({promptEntities.length})
+                                                                            </span>
+                                                                        </label>
+                                                                    )}
+                                                                    <DownloadAssetsButton
+                                                                        assets={allPAssets}
+                                                                        mode="prompt"
+                                                                        label="Download"
+                                                                        exportNameMap={exportNameMap}
+                                                                        promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock + pEntitySection)}
+                                                                        zipName={`${zipPrefix}_p${pad2(gIdx + 1)}.zip`}
+                                                                        extraTextFiles={pEntityTextFiles}
+                                                                    />
+                                                                </>
                                                             )
                                                         })()}
                                                     </div>
