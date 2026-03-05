@@ -86,9 +86,14 @@ export async function getEntitiesByIdsAction(
 
       const thumbnailPath: string | null = c.thumbnail_path ?? null
 
-      const prompts: Array<{ id: string; title?: string; body: string }> =
+      const prompts: Array<{ id: string; title?: string; body: string; origin?: string }> =
         Array.isArray(c.prompts)
-          ? c.prompts.filter((p: any) => typeof p.body === 'string')
+          ? c.prompts.filter((p: any) => typeof p.body === 'string').map((p: any) => ({
+            id: p.id ?? '',
+            title: p.title ?? undefined,
+            body: p.body,
+            origin: typeof p.origin === 'string' ? p.origin : undefined,
+          }))
           : []
 
       const notes: Array<{ id: string; body: string }> =
@@ -96,14 +101,21 @@ export async function getEntitiesByIdsAction(
           ? c.notes.filter((n: any) => typeof n.body === 'string')
           : []
 
-      // Collect origin_label from each media item (backward-compat: absent = 'Unknown')
-      const mediaOriginLabels: string[] = Array.isArray(c.media)
-        ? c.media.map((m: any) =>
-          typeof m.provenance?.origin_label === 'string' && m.provenance.origin_label.trim()
-            ? m.provenance.origin_label.trim()
-            : 'Unknown'
-        )
-        : []
+      // Full media list with per-media provenance for ENTITY.txt MEDIA INCLUDED
+      const media: Array<{ filename: string; generated_with: string; origin_label: string; notes: string }> =
+        Array.isArray(c.media)
+          ? c.media.map((m: any) => ({
+            filename: m.display_name ?? m.filename ?? m.name ?? '',
+            generated_with: typeof m.provenance?.generated_with === 'string' ? m.provenance.generated_with : '',
+            origin_label: typeof m.provenance?.origin_label === 'string' && m.provenance.origin_label.trim()
+              ? m.provenance.origin_label.trim()
+              : 'Unknown',
+            notes: typeof m.provenance?.notes === 'string' ? m.provenance.notes : '',
+          }))
+          : []
+
+      // Backward-compat summary for deriveOriginSummary in PLP
+      const mediaOriginLabels: string[] = media.map(m => m.origin_label)
 
       result.set(row.id, {
         name: row.name ?? '',
@@ -112,6 +124,7 @@ export async function getEntitiesByIdsAction(
         content: {
           prompts,
           notes,
+          media,
           mediaOriginLabels,
           provenance: {
             generated_with: typeof c.provenance?.generated_with === 'string' ? c.provenance.generated_with : '',

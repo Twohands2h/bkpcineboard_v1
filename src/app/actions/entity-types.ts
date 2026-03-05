@@ -68,9 +68,11 @@ export type EntityFreshData = {
     type: string
     thumbnailPath: string | null
     content: {
-        prompts: Array<{ id: string; title?: string; body: string }>
+        prompts: Array<{ id: string; title?: string; body: string; origin?: string }>
         notes: Array<{ id: string; body: string }>
-        /** origin_label values from each media item — used for PLP origin summary */
+        /** Full media list with per-media provenance — for ENTITY.txt MEDIA INCLUDED */
+        media: Array<{ filename: string; generated_with: string; origin_label: string; notes: string }>
+        /** origin_label values — used for deriveOriginSummary in PLP */
         mediaOriginLabels: string[]
         provenance: {
             generated_with: string   // '' if absent

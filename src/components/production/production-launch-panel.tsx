@@ -731,9 +731,16 @@ type EntityFreshData = {
     type: string
     thumbnailPath: string | null
     content?: {
-        prompts?: Array<{ id: string; title?: string; body: string }>
+        prompts?: Array<{ id: string; title?: string; body: string; origin?: string }>
         notes?: Array<{ id: string; body: string }>
         mediaOriginLabels?: string[]
+        // Full media list for ENTITY.txt MEDIA INCLUDED section
+        media?: Array<{
+            filename: string
+            generated_with: string  // from media.provenance.generated_with
+            origin_label: string    // from media.provenance.origin_label ('Unknown' if absent)
+            notes: string           // from media.provenance.notes
+        }>
         provenance?: {
             generated_with?: string
             tool_origin?: string
@@ -746,15 +753,13 @@ interface EntityExportItem {
     entityId: string
     entityName: string
     entityType: string
-    thumbnailPath: string | null  // storage_path from thumbnail_path if present
-    folderName: string   // sanitized, collision-resolved folder under entities/
-    // full content for ENTITY.txt — populated from fresh fetch, empty arrays as fallback
-    prompts: Array<{ id: string; title?: string; body: string }>
+    thumbnailPath: string | null
+    folderName: string
+    prompts: Array<{ id: string; title?: string; body: string; origin?: string }>
     notes: Array<{ id: string; body: string }>
-    // provenance fields for ENTITY.txt header (short labels only, no URLs)
-    origin: string           // derived: single label / Mixed / Unknown — see deriveOriginSummary()
-    generatedWith: string    // generated_with label, or ''
-    mediaOriginLabels: string[]  // raw per-media labels, used for origin derivation
+    mediaItems: Array<{ filename: string; generated_with: string; origin_label: string; notes: string }>
+    // derived from mediaItems for 00_prompt.txt summary
+    mediaOriginLabels: string[]
 }
 
 /** Derive a single origin summary label from per-media origin_label values.
@@ -827,11 +832,16 @@ function collectLinkedEntities(
         const thumbnailPath = fresh !== undefined
             ? fresh.thumbnailPath
             : (asString(node.data.thumbnail_path ?? '') || null)
-        const prompts = fresh?.content?.prompts ?? []
+        const prompts = (fresh?.content?.prompts ?? []) as Array<{ id: string; title?: string; body: string; origin?: string }>
         const notes = fresh?.content?.notes ?? []
-        const mediaOriginLabels = fresh?.content?.mediaOriginLabels ?? []
-        const origin = deriveOriginSummary(mediaOriginLabels)
-        const generatedWith = asString(fresh?.content?.provenance?.generated_with ?? '')
+        const rawMedia = fresh?.content?.media ?? []
+        const mediaItems = rawMedia.map(m => ({
+            filename: m.filename,
+            generated_with: m.generated_with,
+            origin_label: m.origin_label,
+            notes: m.notes,
+        }))
+        const mediaOriginLabels = rawMedia.map(m => m.origin_label)
 
         const sanitized = sanitizeExportName(entityName).replace(/\s+/g, '-')
         const key = sanitized.toLowerCase()
@@ -839,7 +849,7 @@ function collectLinkedEntities(
         usedFolders.set(key, count + 1)
         const folderName = count === 0 ? sanitized : `${sanitized}-${count + 1}`
 
-        items.push({ nodeId: node.id, entityId, entityName, entityType, thumbnailPath, folderName, prompts, notes, origin, generatedWith, mediaOriginLabels })
+        items.push({ nodeId: node.id, entityId, entityName, entityType, thumbnailPath, folderName, prompts, notes, mediaItems, mediaOriginLabels })
     }
 
     return items
@@ -864,25 +874,34 @@ function buildEntityAssetDescriptors(items: EntityExportItem[]): AssetDescriptor
     return assets
 }
 
-/** Build ENTITY.txt files with full content — parity with Drawer entity download.
- *  Header: name / type / id / origin / generated — separated by a rule line.
- *  PROMPTS section: each prompt title + body (verbatim, no URLs/toolchain).
- *  NOTES section: each note body.
+/** Build ENTITY.txt — the memory keystone for each included entity.
+ *
+ *  Format:
+ *    name / type / id  (no entity-level generated/origin — per-media only)
+ *    ────────────────────────────────────────
+ *    PROMPTS
+ *    ────────────────────────────────────────
+ *    Generated with: <origin>
+ *    <title if present>
+ *    <body verbatim>
+ *
+ *    MEDIA INCLUDED
+ *    ────────────────────────────────────────
+ *    filename | Generated: <gw> | Origin: <label> [note]
+ *
+ *    NOTES
+ *    ────────────────────────────────────────
+ *    <body verbatim>
  */
 function buildEntityTextFiles(items: EntityExportItem[]): Array<{ path: string; content: string }> {
     return items.map(item => {
         const lines: string[] = []
         const SEP = '─'.repeat(40)
 
-        // ── Header ──
+        // ── Header (name/type/id only — no entity-level provenance) ──
         lines.push(`name: ${item.entityName}`)
         lines.push(`type: ${item.entityType || 'unknown'}`)
         lines.push(`id:   ${item.entityId}`)
-        // origin: short label only — no URLs, no toolchain paths
-        lines.push(`origin: ${item.origin || '—'}`)
-        // generated: yes if generated_with is present and non-empty, unknown otherwise
-        const generatedLabel = item.generatedWith ? 'yes' : 'unknown'
-        lines.push(`generated: ${generatedLabel}`)
         lines.push(SEP)
 
         // ── Prompts ──
@@ -892,8 +911,24 @@ function buildEntityTextFiles(items: EntityExportItem[]): Array<{ path: string; 
             lines.push(SEP)
             item.prompts.forEach((p, i) => {
                 if (i > 0) lines.push('')
+                // Header line mirrors 00_prompt.txt style
+                const originLabel = p.origin ? `Generated with: ${p.origin}` : 'Generated with: —'
+                lines.push(originLabel)
                 if (p.title) lines.push(p.title)
                 lines.push(p.body)
+            })
+        }
+
+        // ── Media Included ──
+        if (item.mediaItems.length > 0) {
+            lines.push('')
+            lines.push('MEDIA INCLUDED')
+            lines.push(SEP)
+            item.mediaItems.forEach(m => {
+                const gw = m.generated_with ? `Generated: ${m.generated_with}` : 'Generated: —'
+                const origin = `Origin: ${m.origin_label || 'Unknown'}`
+                const note = m.notes ? `  [${m.notes}]` : ''
+                lines.push(`${m.filename || 'unnamed'}  |  ${gw}  |  ${origin}${note}`)
             })
         }
 
@@ -915,15 +950,15 @@ function buildEntityTextFiles(items: EntityExportItem[]): Array<{ path: string; 
     })
 }
 
-/** Build the "Included Entities" section for 00_prompt.txt.
- *  Prefixed with two blank lines for readability after the prompt body. */
+/** Build the "Included Entities" section appended to 00_prompt.txt.
+ *  Prefixed with exactly 2 blank lines separating it from the prompt body. */
 function buildEntitiesSection(items: EntityExportItem[]): string {
     if (items.length === 0) return ''
     const lines = items.map(item => {
         const typeStr = item.entityType ? ` [${item.entityType}]` : ''
         return `- ${item.entityName}${typeStr}  (id: ${item.entityId})`
     })
-    return `\n\n\nINCLUDED ENTITIES\n${'─'.repeat(40)}\n${lines.join('\n')}`
+    return `\n\nINCLUDED ENTITIES\n${'─'.repeat(40)}\n${lines.join('\n')}`
 }
 
 const ROLE_PRIORITY: Record<string, number> = { final_visual: 0, output: 1, ref: 2, attachment: 3 }
@@ -1159,8 +1194,8 @@ function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileTe
             disabled={busy || !canDownload}
             title={!canDownload ? 'Nothing to export' : undefined}
             className={`px-2 py-1 text-[10px] rounded transition-colors border shrink-0 ${canDownload
-                ? 'border-zinc-700 bg-transparent hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 disabled:opacity-50'
-                : 'border-zinc-800 bg-transparent text-zinc-700 cursor-not-allowed'
+                    ? 'border-zinc-700 bg-transparent hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 disabled:opacity-50'
+                    : 'border-zinc-800 bg-transparent text-zinc-700 cursor-not-allowed'
                 }`}
         >
             {busy ? '⏳ Exporting…' : `↓ ${label}`}
