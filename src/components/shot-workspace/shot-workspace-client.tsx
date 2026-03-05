@@ -33,7 +33,8 @@ import { CrystallizeModal } from '@/components/entities/crystallize-modal'
 import { EntityEditOverlay } from '@/components/entities/entity-edit-overlay'
 import { ENTITY_TYPE_UI } from '@/lib/entities/entity-type-ui'
 import type { EntityType } from '@/app/actions/entities'
-import { crystallizeEntityAction, getEntityAction } from '@/app/actions/entities'
+import { crystallizeEntityAction, getEntityAction, getEntitiesByIdsAction } from '@/app/actions/entities'
+import type { EntityFreshData } from '@/app/actions/entities'
 import type { Entity } from '@/app/actions/entities'
 
 // ===================================================
@@ -778,6 +779,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [showPLP, setShowPLP] = useState(false)
   const [plpNodes, setPlpNodes] = useState<CanvasNode[]>([])
   const [plpEdges, setPlpEdges] = useState<CanvasEdge[]>([])
+  const [plpEntityDataMap, setPlpEntityDataMap] = useState<Map<string, EntityFreshData>>(new Map())
   const [showEntityLibrary, setShowEntityLibrary] = useState(false)
   // Entity token drag: tracks drop position + which type token was dragged
   const pendingEntityDropRef = useRef<{ screenX: number; screenY: number } | null>(null)
@@ -834,7 +836,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     canvasRef.current?.updateNodeDataWithHistory(nodeId, patch)
   }, [])
 
-  const handleOpenPLP = () => {
+  const handleOpenPLP = async () => {
     if (!canvasRef.current) return
     const snap = canvasRef.current.getSnapshot()
     setPlpNodes(snap.nodes)
@@ -847,6 +849,24 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       console.log(`[PLP edge] ${e.from.slice(0, 8)}→${e.to.slice(0, 8)} dir=${dir}`)
     }
     setShowPLP(true)
+
+    // Fetch fresh entity data for export (bypasses node.data stale values)
+    const entityIds = [...new Set(
+      snap.nodes
+        .filter((n: any) => n.type === 'entity_ref')
+        .map((n: any) => n.data?.entity_id as string | undefined)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    )]
+    if (entityIds.length === 0) {
+      setPlpEntityDataMap(new Map())
+      return
+    }
+    try {
+      const freshMap = await getEntitiesByIdsAction(entityIds)
+      setPlpEntityDataMap(freshMap)
+    } catch {
+      setPlpEntityDataMap(new Map()) // fallback: PLP uses node.data
+    }
   }
   const handleInsertEntityRef = useCallback((entity: Entity) => {
     if (!canvasRef.current) return
@@ -1601,7 +1621,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           sceneIndex={sceneIdx}
           shotIndex={shot.order_index}
           takeNumber={currentTake?.take_number ?? 1}
-          onClose={() => setShowPLP(false)}
+          entityDataMap={plpEntityDataMap}
+          onClose={() => { setShowPLP(false); setPlpEntityDataMap(new Map()) }}
         />
       )}
       {showEntityLibrary && (

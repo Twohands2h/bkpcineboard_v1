@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useMemo, useCallback } from 'react'
+import { getEntitiesByIdsAction } from '@/app/actions/entities'
 
 // ===================================================
 // PRODUCTION LAUNCH PANEL (PLP) v2.1
@@ -49,8 +50,17 @@ interface ProductionLaunchPanelProps {
     takeNumber: number   // 1-based (take.take_number)
     onClose: () => void
     /** Fix 2: fresh entity data fetched by parent at PLP open time (cache: no-store).
-     *  Key = entity_id. If present, overrides stale node.data fields for export. */
-    entityDataMap?: Map<string, { name: string; type: string; thumbnailPath: string | null }>
+     *  Key = entity_id. If present, overrides stale node.data fields for export.
+     *  content carries prompts[] and notes[] for full ENTITY.txt generation. */
+    entityDataMap?: Map<string, {
+        name: string
+        type: string
+        thumbnailPath: string | null
+        content?: {
+            prompts?: Array<{ id: string; title?: string; body: string }>
+            notes?: Array<{ id: string; body: string }>
+        }
+    }>
 }
 
 // ── Helpers ──
@@ -715,6 +725,17 @@ function buildAssetsFromAttachments(attachments: ColumnAttachment[]): AssetDescr
 
 // ── Entity export helpers (C1/C2) ──
 
+/** Shape of the fresh entity data map — carries full content for ENTITY.txt */
+type EntityFreshData = {
+    name: string
+    type: string
+    thumbnailPath: string | null
+    content?: {
+        prompts?: Array<{ id: string; title?: string; body: string }>
+        notes?: Array<{ id: string; body: string }>
+    }
+}
+
 interface EntityExportItem {
     nodeId: string       // entity_ref node id (for dedup)
     entityId: string
@@ -722,6 +743,9 @@ interface EntityExportItem {
     entityType: string
     thumbnailPath: string | null  // storage_path from thumbnail_path if present
     folderName: string   // sanitized, collision-resolved folder under entities/
+    // Fix 2: full content for ENTITY.txt — populated from fresh fetch, empty arrays as fallback
+    prompts: Array<{ id: string; title?: string; body: string }>
+    notes: Array<{ id: string; body: string }>
 }
 
 /** Collect entity_ref nodes eligible for a column or prompt-pack scope.
@@ -733,8 +757,8 @@ interface EntityExportItem {
  *
  * For Prompt Pack scope pass columnId = null → only C applies.
  *
- * Fix 2: if entityDataMap is provided, name/type/thumbnailPath are taken from there
- * (fresh data fetched by parent at PLP open time) with fallback to node.data.
+ * entityDataMap: fresh data fetched at PLP open time (or at export time).
+ * Carries name/type/thumbnailPath/content. Fallback to node.data when absent.
  */
 function collectLinkedEntities(
     promptNodeIds: Set<string>,
@@ -742,7 +766,7 @@ function collectLinkedEntities(
     edges: ExportEdge[],
     nodeMap: Map<string, ExportNode>,
     columnId?: string | null,
-    entityDataMap?: Map<string, { name: string; type: string; thumbnailPath: string | null }>,
+    entityDataMap?: Map<string, EntityFreshData>,
 ): EntityExportItem[] {
     // Build set of eligible entity_ref node ids
     const eligibleRefIds = new Set<string>()
@@ -774,13 +798,15 @@ function collectLinkedEntities(
         if (!entityId || seenEntityIds.has(entityId)) continue
         seenEntityIds.add(entityId)
 
-        // Fix 2: prefer fresh data from entityDataMap, fallback to snapshot
+        // Prefer fresh data from entityDataMap, fallback to snapshot
         const fresh = entityDataMap?.get(entityId)
         const entityName = (fresh?.name ?? asString(node.data.entity_name ?? '')) || 'unnamed'
         const entityType = fresh?.type ?? asString(node.data.entity_type ?? '')
         const thumbnailPath = fresh !== undefined
             ? fresh.thumbnailPath
             : (asString(node.data.thumbnail_path ?? '') || null)
+        const prompts = fresh?.content?.prompts ?? []
+        const notes = fresh?.content?.notes ?? []
 
         const sanitized = sanitizeExportName(entityName).replace(/\s+/g, '-')
         const key = sanitized.toLowerCase()
@@ -788,7 +814,7 @@ function collectLinkedEntities(
         usedFolders.set(key, count + 1)
         const folderName = count === 0 ? sanitized : `${sanitized}-${count + 1}`
 
-        items.push({ nodeId: node.id, entityId, entityName, entityType, thumbnailPath, folderName })
+        items.push({ nodeId: node.id, entityId, entityName, entityType, thumbnailPath, folderName, prompts, notes })
     }
 
     return items
@@ -813,16 +839,48 @@ function buildEntityAssetDescriptors(items: EntityExportItem[]): AssetDescriptor
     return assets
 }
 
-/** Build ENTITY.txt files for entities without a thumbnail (or always — mechanical id card). */
+/** Build ENTITY.txt files with full content — parity with Drawer entity download.
+ *  Header: name / type / id
+ *  PROMPTS section: each prompt title + body (verbatim, no tool origin / URLs)
+ *  NOTES section: each note body
+ */
 function buildEntityTextFiles(items: EntityExportItem[]): Array<{ path: string; content: string }> {
-    return items.map(item => ({
-        path: `entities/${item.folderName}/ENTITY.txt`,
-        content: [
-            `id: ${item.entityId}`,
-            `name: ${item.entityName}`,
-            `type: ${item.entityType || 'unknown'}`,
-        ].join('\n'),
-    }))
+    return items.map(item => {
+        const lines: string[] = []
+
+        // ── Header ──
+        lines.push(`name: ${item.entityName}`)
+        lines.push(`type: ${item.entityType || 'unknown'}`)
+        lines.push(`id: ${item.entityId}`)
+
+        // ── Prompts ──
+        if (item.prompts.length > 0) {
+            lines.push('')
+            lines.push('PROMPTS')
+            lines.push('─'.repeat(40))
+            item.prompts.forEach((p, i) => {
+                if (i > 0) lines.push('')
+                if (p.title) lines.push(p.title)
+                lines.push(p.body)
+            })
+        }
+
+        // ── Notes ──
+        if (item.notes.length > 0) {
+            lines.push('')
+            lines.push('NOTES')
+            lines.push('─'.repeat(40))
+            item.notes.forEach((n, i) => {
+                if (i > 0) lines.push('')
+                lines.push(n.body)
+            })
+        }
+
+        return {
+            path: `entities/${item.folderName}/ENTITY.txt`,
+            content: lines.join('\n'),
+        }
+    })
 }
 
 /** Build the "Included Entities" section for 00_prompt.txt. */
@@ -1005,7 +1063,15 @@ async function triggerExportZip(
 
 // ── Download Assets Button ──
 
-function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileText, zipName, extraTextFiles }: {
+/** Returned by onBeforeExport — fresh entity data computed at click time.
+ *  Replaces whatever was pre-rendered (fixes stale-on-export). */
+interface EntityOverride {
+    extraAssets: AssetDescriptor[]
+    extraTextFiles: Array<{ path: string; content: string }>
+    promptFileSuffix: string   // appended to promptFileText before ZIP build
+}
+
+function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileText, zipName, extraTextFiles, onBeforeExport }: {
     assets: AssetDescriptor[]
     mode: 'prompt' | 'column' | 'pack'
     label: string
@@ -1013,6 +1079,10 @@ function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileTe
     promptFileText?: string
     zipName?: string
     extraTextFiles?: Array<{ path: string; content: string }>
+    /** Fix 1: called at click time to fetch fresh entity data.
+     *  If provided, its result overrides extraTextFiles and appends to promptFileText.
+     *  If fetch fails, falls back to the pre-rendered extraTextFiles silently. */
+    onBeforeExport?: () => Promise<EntityOverride | null>
 }) {
     const [busy, setBusy] = useState(false)
 
@@ -1023,11 +1093,32 @@ function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileTe
         if (busy || !canDownload) return
         setBusy(true)
         try {
-            await triggerExportZip(mode, assets, exportNameMap, promptFileText, zipName, extraTextFiles)
+            // Fix 1: fetch fresh entity data at click time if hook provided
+            let finalExtraTextFiles = extraTextFiles
+            let finalExtraAssets: AssetDescriptor[] = []
+            let finalPromptFileText = promptFileText
+
+            if (onBeforeExport) {
+                try {
+                    const override = await onBeforeExport()
+                    if (override) {
+                        finalExtraTextFiles = override.extraTextFiles
+                        finalExtraAssets = override.extraAssets
+                        if (override.promptFileSuffix) {
+                            finalPromptFileText = (finalPromptFileText ?? '') + override.promptFileSuffix
+                        }
+                    }
+                } catch {
+                    // Silently fall back to pre-rendered data
+                }
+            }
+
+            const allAssets = [...assets, ...finalExtraAssets]
+            await triggerExportZip(mode, allAssets, exportNameMap, finalPromptFileText, zipName, finalExtraTextFiles)
         } finally {
             setBusy(false)
         }
-    }, [assets, mode, busy, canDownload, exportNameMap, promptFileText, zipName, extraTextFiles])
+    }, [assets, mode, busy, canDownload, exportNameMap, promptFileText, zipName, extraTextFiles, onBeforeExport])
 
     return (
         <button
@@ -1042,6 +1133,44 @@ function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileTe
             {busy ? '⏳ Exporting…' : `↓ ${label}`}
         </button>
     )
+}
+
+// ── Fresh-at-click entity helper ──
+
+/**
+ * Called at Download click time to fetch the latest entity data and build
+ * the EntityOverride (assets + ENTITY.txt files + 00_prompt.txt suffix).
+ *
+ * This is the single function used by ALL download call sites — any change
+ * to entity export format goes here, not duplicated across call sites.
+ *
+ * On fetch failure: returns null → DownloadAssetsButton falls back to
+ * pre-rendered extraTextFiles (empty content at worst, never a crash).
+ */
+async function buildEntityOverride(
+    entityIds: string[],
+    entityRefNodes: ExportNode[],
+    edges: ExportEdge[],
+    nodeMap: Map<string, ExportNode>,
+    promptNodeIds: Set<string>,
+    columnId: string | null | undefined,
+    includeEntities: boolean,
+): Promise<EntityOverride | null> {
+    if (!includeEntities || entityIds.length === 0) {
+        return { extraAssets: [], extraTextFiles: [], promptFileSuffix: '' }
+    }
+    try {
+        // Fix 1: always fetch fresh — overrides any stale entityDataMap
+        const freshMap = await getEntitiesByIdsAction(entityIds) as Map<string, EntityFreshData>
+        const items = collectLinkedEntities(promptNodeIds, entityRefNodes, edges, nodeMap, columnId, freshMap)
+        return {
+            extraAssets: buildEntityAssetDescriptors(items),
+            extraTextFiles: buildEntityTextFiles(items),
+            promptFileSuffix: buildEntitiesSection(items),
+        }
+    } catch {
+        return null  // DownloadAssetsButton will fall back silently
+    }
 }
 
 // ── Component ──
@@ -1360,6 +1489,11 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                 const entityTextFiles = includeEntities ? buildEntityTextFiles(promptEntities) : []
                                                 const entitySection = includeEntities ? buildEntitiesSection(promptEntities) : ''
                                                 const allPromptAssets = [...promptAssets, ...entityAssets]
+                                                // Fix 1: fresh fetch at click time
+                                                const entityIdsForScope = promptEntities.map(p => p.entityId)
+                                                const onBeforeExport = entityIdsForScope.length > 0
+                                                    ? () => buildEntityOverride(entityIdsForScope, entityRefNodes, edges ?? [], nodeMap, promptEntityIds, null, includeEntities)
+                                                    : undefined
                                                 return (
                                                     <>
                                                         {promptEntities.length > 0 && (
@@ -1376,13 +1510,14 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                             </label>
                                                         )}
                                                         <DownloadAssetsButton
-                                                            assets={allPromptAssets}
+                                                            assets={promptAssets}
                                                             mode="prompt"
                                                             label="Download"
                                                             exportNameMap={exportNameMap}
                                                             promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock + entitySection)}
                                                             zipName={`${zipPrefix}_p${pad2(gIdx + 1)}.zip`}
                                                             extraTextFiles={entityTextFiles}
+                                                            onBeforeExport={onBeforeExport}
                                                         />
                                                     </>
                                                 )
@@ -1466,15 +1601,21 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                         const colEntityTextFiles = includeEntities ? buildEntityTextFiles(colLinkedEntities) : []
                                                         const colEntitySection = includeEntities ? buildEntitiesSection(colLinkedEntities) : ''
                                                         const colAllAssets = [...columnAssets, ...colEntityAssets]
+                                                        // Fix 1: fresh fetch at click time
+                                                        const colEntityIdsForScope = colLinkedEntities.map(e => e.entityId)
+                                                        const onBeforeExport = colEntityIdsForScope.length > 0
+                                                            ? () => buildEntityOverride(colEntityIdsForScope, entityRefNodes, edges ?? [], nodeMap, colPromptNodeIds, cg.columnId, includeEntities)
+                                                            : undefined
                                                         return (
                                                             <DownloadAssetsButton
-                                                                assets={colAllAssets}
+                                                                assets={columnAssets}
                                                                 mode="column"
                                                                 label="Download"
                                                                 exportNameMap={exportNameMap}
                                                                 promptFileText={buildPromptFileText(columnAssets, exportNameMap, columnBlockText + colEntitySection)}
                                                                 zipName={`${zipPrefix}_col-${colSlug}.zip`}
                                                                 extraTextFiles={colEntityTextFiles}
+                                                                onBeforeExport={onBeforeExport}
                                                             />
                                                         )
                                                     })()}
@@ -1550,6 +1691,11 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                             const pEntityTextFiles = includeEntities ? buildEntityTextFiles(promptEntities) : []
                                                             const pEntitySection = includeEntities ? buildEntitiesSection(promptEntities) : ''
                                                             const allPAssets = [...promptAssets, ...pEntityAssets]
+                                                            // Fix 1: fresh fetch at click time
+                                                            const pEntityIdsForScope = promptEntities.map(p => p.entityId)
+                                                            const onBeforeExport = pEntityIdsForScope.length > 0
+                                                                ? () => buildEntityOverride(pEntityIdsForScope, entityRefNodes, edges ?? [], nodeMap, singlePromptIds, null, includeEntities)
+                                                                : undefined
                                                             return (
                                                                 <>
                                                                     {promptEntities.length > 0 && (
@@ -1566,13 +1712,14 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                                         </label>
                                                                     )}
                                                                     <DownloadAssetsButton
-                                                                        assets={allPAssets}
+                                                                        assets={promptAssets}
                                                                         mode="prompt"
                                                                         label="Download"
                                                                         exportNameMap={exportNameMap}
                                                                         promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock + pEntitySection)}
                                                                         zipName={`${zipPrefix}_p${pad2(gIdx + 1)}.zip`}
                                                                         extraTextFiles={pEntityTextFiles}
+                                                                        onBeforeExport={onBeforeExport}
                                                                     />
                                                                 </>
                                                             )
@@ -1634,16 +1781,21 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                         const entityTextFiles = includeEntities ? buildEntityTextFiles(allLinkedEntities) : []
                                         const entitySection = includeEntities ? buildEntitiesSection(allLinkedEntities) : ''
                                         const packText = buildPromptFileText(allPackAssets, exportNameMap, promptPack + entitySection)
-                                        const allAssets = [...allPackAssets, ...entityAssets]
+                                        // Fix 1: fresh fetch at click time
+                                        const packEntityIds = allLinkedEntities.map(e => e.entityId)
+                                        const onBeforeExport = packEntityIds.length > 0
+                                            ? () => buildEntityOverride(packEntityIds, entityRefNodes, edges ?? [], nodeMap, allPromptNodeIds, null, includeEntities)
+                                            : undefined
                                         return (
                                             <DownloadAssetsButton
-                                                assets={allAssets}
+                                                assets={allPackAssets}
                                                 mode="pack"
                                                 label="Download Pack"
                                                 exportNameMap={exportNameMap}
                                                 promptFileText={packText}
                                                 zipName={`${zipPrefix}_pack.zip`}
                                                 extraTextFiles={entityTextFiles}
+                                                onBeforeExport={onBeforeExport}
                                             />
                                         )
                                     })()}
