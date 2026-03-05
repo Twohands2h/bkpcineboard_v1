@@ -11,7 +11,10 @@ export interface NormalizedMedia {
     src: string
     filename: string
     kind: 'image' | 'video'
-    generated_with: string
+    generated_with: string       // legacy entity-level field
+    // per-media provenance (v2 — absent on older items)
+    prov_generated_with: string  // from media.provenance.generated_with, '' if absent
+    prov_origin_label: string    // from media.provenance.origin_label, 'Unknown' if absent
 }
 
 export interface NormalizedPrompt {
@@ -32,6 +35,8 @@ export function normalizeMedia(raw: any[]): NormalizedMedia[] {
         filename: m.display_name ?? m.filename ?? m.name ?? '',
         kind: (m.kind ?? m.asset_type ?? (m.bucket === 'take-videos' ? 'video' : 'image')) as 'image' | 'video',
         generated_with: m.generated_with ?? '',
+        prov_generated_with: m.provenance?.generated_with ?? '',
+        prov_origin_label: m.provenance?.origin_label ?? 'Unknown',
     })).filter(m => m.storage_path || m.src)
 }
 
@@ -60,7 +65,7 @@ export function getMediaUrl(m: NormalizedMedia): string {
 
 // ── Copy helper ──
 function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text).catch(() => {})
+    navigator.clipboard.writeText(text).catch(() => { })
 }
 
 // ── Component ──
@@ -163,6 +168,19 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick, 
                                             </button>
                                         )}
                                     </div>
+                                    {/* Per-media provenance — shown only when set */}
+                                    {(m.prov_generated_with || m.prov_origin_label !== 'Unknown') && (
+                                        <div className="px-2 pb-1.5 flex gap-3">
+                                            {m.prov_generated_with && (
+                                                <span className="text-[8px] text-zinc-600">
+                                                    <span className="text-zinc-700">Generated: </span>{m.prov_generated_with}
+                                                </span>
+                                            )}
+                                            <span className="text-[8px] text-zinc-600">
+                                                <span className="text-zinc-700">Origin: </span>{m.prov_origin_label}
+                                            </span>
+                                        </div>
+                                    )}
                                 </div>
                             ))}
                         </div>
@@ -194,11 +212,10 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick, 
                         <div key={i} className="mb-2.5 last:mb-0">
                             <div className="flex items-center gap-1.5 mb-1">
                                 {p.promptType && (
-                                    <span className={`text-[8px] px-1.5 py-px rounded font-medium ${
-                                        p.promptType.toLowerCase() === 'master' ? 'text-amber-400 bg-amber-500/10' :
-                                        p.promptType.toLowerCase() === 'negative' ? 'text-red-400 bg-red-500/10' :
-                                        'text-zinc-500 bg-zinc-800'
-                                    }`}>{p.promptType}</span>
+                                    <span className={`text-[8px] px-1.5 py-px rounded font-medium ${p.promptType.toLowerCase() === 'master' ? 'text-amber-400 bg-amber-500/10' :
+                                            p.promptType.toLowerCase() === 'negative' ? 'text-red-400 bg-red-500/10' :
+                                                'text-zinc-500 bg-zinc-800'
+                                        }`}>{p.promptType}</span>
                                 )}
                                 {p.origin && <span className="text-[8px] text-zinc-600">· {p.origin}</span>}
                                 <button

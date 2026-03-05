@@ -2,44 +2,25 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
+import type {
+  EntityContent,
+  EntityType,
+  Entity,
+  EntityFreshData,
+} from '@/app/actions/entity-types'
 
-// ── Types ──
+// Re-export types so existing importers of entities.ts don't break
+export type {
+  EntityContent,
+  EntityType,
+  Entity,
+  EntityFreshData,
+  MediaProvenance,
+  MediaOriginLabel,
+} from '@/app/actions/entity-types'
 
-export interface EntityContent {
-  description?: string
-  media?: Array<{
-    storage_path: string
-    bucket: string
-    display_name: string
-    mime_type?: string
-    asset_type: 'image' | 'video'
-  }>
-  prompts?: Array<{
-    body: string
-    promptType?: string
-    origin?: string
-    title?: string
-  }>
-  notes?: Array<{ body: string }>
-  provenance?: {
-    generated_with?: string
-    tool_origin?: string
-    source_url?: string
-  }
-  thumbnail_path?: string
-}
-
-export type EntityType = 'character' | 'environment' | 'prop' | 'cinematography'
-
-export interface Entity {
-  id: string
-  project_id: string
-  name: string
-  entity_type: EntityType
-  content: EntityContent
-  created_at: string
-  updated_at: string
-}
+// Re-export MEDIA_ORIGIN_LABELS via a thin async wrapper is not possible in 'use server'.
+// Import MEDIA_ORIGIN_LABELS directly from '@/app/actions/entity-types' in client components.
 
 // ── Queries ──
 
@@ -73,22 +54,7 @@ export async function getEntityAction(entityId: string): Promise<Entity | null> 
   return data as Entity
 }
 
-/** Shape returned per entity — carries full content for ENTITY.txt generation. */
-export type EntityFreshData = {
-  name: string
-  type: string
-  thumbnailPath: string | null
-  content: {
-    prompts: Array<{ id: string; title?: string; body: string }>
-    notes: Array<{ id: string; body: string }>
-    provenance: {
-      generated_with: string   // '' if absent
-      tool_origin: string      // '' if absent
-    }
-  }
-}
-/**
- * Fetch multiple entities by id in a single query, bypassing all caches.
+/** Fetch multiple entities by id in a single query, bypassing all caches.
  * Used by PLP at export click time to ensure ZIP reflects latest edits.
  *
  * Returns a Map<entityId, EntityFreshData>. Missing ids are absent (caller
@@ -130,6 +96,15 @@ export async function getEntitiesByIdsAction(
           ? c.notes.filter((n: any) => typeof n.body === 'string')
           : []
 
+      // Collect origin_label from each media item (backward-compat: absent = 'Unknown')
+      const mediaOriginLabels: string[] = Array.isArray(c.media)
+        ? c.media.map((m: any) =>
+          typeof m.provenance?.origin_label === 'string' && m.provenance.origin_label.trim()
+            ? m.provenance.origin_label.trim()
+            : 'Unknown'
+        )
+        : []
+
       result.set(row.id, {
         name: row.name ?? '',
         type: row.entity_type ?? '',
@@ -137,6 +112,7 @@ export async function getEntitiesByIdsAction(
         content: {
           prompts,
           notes,
+          mediaOriginLabels,
           provenance: {
             generated_with: typeof c.provenance?.generated_with === 'string' ? c.provenance.generated_with : '',
             tool_origin: typeof c.provenance?.tool_origin === 'string' ? c.provenance.tool_origin : '',
