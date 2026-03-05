@@ -12,9 +12,10 @@ export interface NormalizedMedia {
     filename: string
     kind: 'image' | 'video'
     generated_with: string       // legacy entity-level field
-    // per-media provenance (v2 — absent on older items)
-    prov_generated_with: string  // from media.provenance.generated_with, '' if absent
-    prov_origin_label: string    // from media.provenance.origin_label, 'Unknown' if absent
+    // per-media provenance v2 (absent on pre-migration items — backward-compat)
+    prov_generated_with: string  // '' if absent
+    prov_origin_label: string    // 'Unknown' if absent
+    prov_notes: string           // '' if absent
 }
 
 export interface NormalizedPrompt {
@@ -37,6 +38,7 @@ export function normalizeMedia(raw: any[]): NormalizedMedia[] {
         generated_with: m.generated_with ?? '',
         prov_generated_with: m.provenance?.generated_with ?? '',
         prov_origin_label: m.provenance?.origin_label ?? 'Unknown',
+        prov_notes: m.provenance?.notes ?? '',
     })).filter(m => m.storage_path || m.src)
 }
 
@@ -168,17 +170,19 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick, 
                                             </button>
                                         )}
                                     </div>
-                                    {/* Per-media provenance — shown only when set */}
-                                    {(m.prov_generated_with || m.prov_origin_label !== 'Unknown') && (
-                                        <div className="px-2 pb-1.5 flex gap-3">
+                                    {/* Per-media provenance — shown only when any field is set */}
+                                    {(m.prov_generated_with || m.prov_origin_label !== 'Unknown' || m.prov_notes) && (
+                                        <div className="px-2 pb-1.5 space-y-0.5">
                                             {m.prov_generated_with && (
-                                                <span className="text-[8px] text-zinc-600">
+                                                <div className="text-[8px] text-zinc-600">
                                                     <span className="text-zinc-700">Generated: </span>{m.prov_generated_with}
-                                                </span>
+                                                </div>
                                             )}
-                                            <span className="text-[8px] text-zinc-600">
-                                                <span className="text-zinc-700">Origin: </span>{m.prov_origin_label}
-                                            </span>
+                                            <div className="text-[8px] text-zinc-600">
+                                                <span className="text-zinc-700">Origin: </span>
+                                                <span className="px-1 py-px rounded border border-zinc-700 bg-zinc-800/60">{m.prov_origin_label}</span>
+                                                {m.prov_notes && <span className="text-zinc-700 ml-1">{m.prov_notes}</span>}
+                                            </div>
                                         </div>
                                     )}
                                 </div>
@@ -240,15 +244,6 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick, 
                         <div key={i} className="text-[10px] text-zinc-500 mb-1 last:mb-0 whitespace-pre-wrap break-words leading-relaxed">{n.body}</div>
                     ))}
                 </CollapsibleSection>
-            )}
-
-            {/* Provenance (if present at entity level) */}
-            {content.provenance && (content.provenance.generated_with || content.provenance.tool_origin) && (
-                <div>
-                    <div className="text-[10px] text-zinc-600 uppercase tracking-wider mb-0.5">Provenance</div>
-                    {content.provenance.generated_with && <div className="text-[10px] text-zinc-500">Generated: {content.provenance.generated_with}</div>}
-                    {content.provenance.tool_origin && <div className="text-[10px] text-zinc-500">Origin: {content.provenance.tool_origin}</div>}
-                </div>
             )}
 
             {/* Portal lightbox — fullscreen, outside any drawer/overflow container */}
