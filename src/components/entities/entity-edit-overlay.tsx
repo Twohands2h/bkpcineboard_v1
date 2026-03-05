@@ -46,6 +46,15 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
     const [uploading, setUploading] = useState(false)
     const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
     const fileInputRef = useRef<HTMLInputElement>(null)
+    const [selectedMediaIdx, setSelectedMediaIdx] = useState(0)
+
+    // ── Helpers ──
+
+    const getMediaUrl = useCallback((m: NonNullable<EntityContent['media']>[number]): string => {
+        if ((m as any).src) return (m as any).src
+        const supabase = createClient()
+        return supabase.storage.from(m.bucket).getPublicUrl(m.storage_path).data.publicUrl
+    }, [])
 
     // ── Dirty detection ──
 
@@ -128,14 +137,18 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
 
             const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(storagePath)
 
-            setMedia(prev => [...prev, {
-                storage_path: storagePath,
-                bucket,
-                display_name: file.name,
-                mime_type: file.type,
-                asset_type: isVideo ? 'video' : 'image',
-                provenance: { origin_label: 'Unknown', generated_with: '' } as MediaProvenance,
-            }])
+            setMedia(prev => {
+                const next = [...prev, {
+                    storage_path: storagePath,
+                    bucket,
+                    display_name: file.name,
+                    mime_type: file.type,
+                    asset_type: isVideo ? 'video' : 'image',
+                    provenance: { origin_label: 'Unknown', generated_with: '' } as MediaProvenance,
+                }]
+                setSelectedMediaIdx(next.length - 1)
+                return next
+            })
         }
 
         setUploading(false)
@@ -147,7 +160,12 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
     const [mediaDeleteConfirmIdx, setMediaDeleteConfirmIdx] = useState<number | null>(null)
     const confirmRemoveMedia = () => {
         if (mediaDeleteConfirmIdx !== null) {
-            setMedia(prev => prev.filter((_, i) => i !== mediaDeleteConfirmIdx))
+            setMedia(prev => {
+                const next = prev.filter((_, i) => i !== mediaDeleteConfirmIdx)
+                // clamp selection: if deleted item was at or after selection, pull back
+                setSelectedMediaIdx(s => Math.min(s, Math.max(0, next.length - 1)))
+                return next
+            })
             setMediaDeleteConfirmIdx(null)
         }
     }
@@ -226,100 +244,164 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                         />
                     </div>
 
-                    {/* Media */}
+                    {/* Media — List + Keystone */}
                     <div>
-                        <div className="flex items-center justify-between mb-1.5">
+                        <div className="flex items-center justify-between mb-2">
                             <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Media ({media.length})</label>
-                            <button type="button" onClick={() => { if (fileInputRef.current) { fileInputRef.current.value = ''; fileInputRef.current.click() }; if (process.env.NODE_ENV === 'development') console.log('[entity-edit] upload click') }} className="px-2 py-0.5 text-[9px]
- rounded bg-zinc-800 border border-zinc-700 text-zinc-400 hover:text-zinc-200 cursor-pointer transition-colors">
+                            <button
+                                type="button"
+                                onClick={() => { if (fileInputRef.current) { fileInputRef.current.value = ''; fileInputRef.current.click() } }}
+                                className="px-2 py-0.5 text-[9px] rounded bg-zinc-800 border border-zinc-700 text-zinc-400 hover:text-zinc-200 cursor-pointer transition-colors"
+                            >
                                 {uploading ? '⏳ Uploading…' : '+ Upload'}
                             </button>
-                            <input ref={fileInputRef} type="file" multiple accept="image/*,video/*" onChange={(e) => { if (process.env.NODE_ENV === 'development') console.log('[entity-edit] input change files=', e.currentTarget.files?.length ?? 0); handleMediaUpload(e) }} style={{ display: 'none' }} />
-
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                multiple
+                                accept="image/*,video/*"
+                                onChange={handleMediaUpload}
+                                style={{ display: 'none' }}
+                            />
                         </div>
-                        {media.length > 0 && (
-                            <div className="space-y-2">
-                                {media.map((m, i) => {
-                                    const prov: MediaProvenance = (m as any).provenance ?? { origin_label: 'Unknown', generated_with: '' }
-                                    const currentChip = MEDIA_ORIGIN_CHIPS.includes(prov.origin_label as any) ? prov.origin_label : null
-                                    const customNote = prov.notes ?? ''
-                                    const updateProv = (patch: Partial<MediaProvenance>) =>
-                                        setMedia(prev => prev.map((item, idx) =>
-                                            idx !== i ? item : { ...item, provenance: { ...(item as any).provenance ?? { origin_label: 'Unknown', generated_with: '' }, ...patch } }
-                                        ))
-                                    return (
-                                        <div key={i} className="group bg-zinc-800 border border-zinc-700 rounded overflow-hidden">
-                                            {/* Thumbnail row */}
-                                            <div className="flex items-center gap-2 px-2 py-1.5">
-                                                <div className="relative w-12 h-12 shrink-0 bg-zinc-900 rounded overflow-hidden">
-                                                    {m.asset_type === 'video' ? (
-                                                        <div className="w-full h-full flex items-center justify-center text-zinc-500 text-sm">▶</div>
-                                                    ) : (
-                                                        <img
-                                                            src={(() => {
-                                                                const supabase = createClient()
-                                                                return supabase.storage.from(m.bucket).getPublicUrl(m.storage_path).data.publicUrl
-                                                            })()}
-                                                            alt={m.display_name}
-                                                            className="w-full h-full object-cover"
-                                                        />
-                                                    )}
-                                                </div>
-                                                <div className="flex-1 min-w-0">
-                                                    <div className="text-[9px] text-zinc-400 truncate">{m.display_name}</div>
-                                                </div>
-                                                <button
-                                                    onClick={() => removeMedia(i)}
-                                                    className="opacity-0 group-hover:opacity-100 w-5 h-5 bg-red-900/80 text-red-300 text-[8px] rounded flex items-center justify-center transition-opacity shrink-0"
-                                                >✕</button>
-                                            </div>
-                                            {/* Per-media provenance */}
-                                            <div className="border-t border-zinc-700/50 px-2 pb-2 pt-1.5 space-y-1.5">
-                                                {/* Generated with */}
-                                                <div>
-                                                    <span className="text-[8px] text-zinc-600 uppercase tracking-wider block mb-1">Generated with</span>
-                                                    <select
-                                                        value={prov.generated_with ?? ''}
-                                                        onChange={e => updateProv({ generated_with: e.target.value })}
-                                                        onKeyDown={e => e.stopPropagation()}
-                                                        className="w-full bg-zinc-900 border border-zinc-700/60 rounded px-1.5 py-0.5 text-[9px] text-zinc-400 focus:outline-none focus:border-zinc-500 transition-colors"
-                                                    >
-                                                        <option value="">—</option>
-                                                        {ORIGIN_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
-                                                    </select>
-                                                </div>
-                                                {/* Origin chips */}
-                                                <div>
-                                                    <span className="text-[8px] text-zinc-600 uppercase tracking-wider block mb-1">Origin</span>
-                                                    <div className="flex flex-wrap gap-1">
-                                                        {MEDIA_ORIGIN_CHIPS.map(chip => (
-                                                            <button
-                                                                key={chip}
-                                                                type="button"
-                                                                onClick={() => updateProv({ origin_label: chip })}
-                                                                className={`px-1.5 py-0.5 text-[8px] rounded border transition-colors ${currentChip === chip
-                                                                        ? 'border-zinc-500 text-zinc-200 bg-zinc-700'
-                                                                        : 'border-zinc-700 text-zinc-500 bg-zinc-800/50 hover:text-zinc-300 hover:border-zinc-600'
-                                                                    }`}
-                                                            >{chip}</button>
-                                                        ))}
+
+                        {media.length > 0 && (() => {
+                            const sel = Math.min(selectedMediaIdx, media.length - 1)
+                            const selMedia = media[sel]
+                            const selProv: MediaProvenance = (selMedia as any).provenance ?? { origin_label: 'Unknown', generated_with: '' }
+                            const selChip = MEDIA_ORIGIN_CHIPS.includes(selProv.origin_label as any) ? selProv.origin_label : null
+                            const updateSelProv = (patch: Partial<MediaProvenance>) =>
+                                setMedia(prev => prev.map((item, idx) =>
+                                    idx !== sel ? item : { ...item, provenance: { ...(item as any).provenance ?? { origin_label: 'Unknown', generated_with: '' }, ...patch } }
+                                ))
+
+                            return (
+                                <div className="flex gap-3" style={{ minHeight: 220 }}>
+
+                                    {/* ── Left: scrollable list ── */}
+                                    <div className="w-[160px] shrink-0 overflow-y-auto space-y-0.5 pr-0.5" style={{ maxHeight: 320 }}>
+                                        {media.map((m, i) => {
+                                            const prov: MediaProvenance = (m as any).provenance ?? { origin_label: 'Unknown', generated_with: '' }
+                                            const isSelected = i === sel
+                                            return (
+                                                <div
+                                                    key={i}
+                                                    onClick={() => setSelectedMediaIdx(i)}
+                                                    className={`group flex items-center gap-1.5 px-1.5 py-1 rounded cursor-pointer transition-colors ${
+                                                        isSelected
+                                                            ? 'bg-zinc-700/60 border border-zinc-600'
+                                                            : 'border border-transparent hover:bg-zinc-800/60'
+                                                    }`}
+                                                >
+                                                    {/* mini thumb */}
+                                                    <div className="w-8 h-8 shrink-0 rounded overflow-hidden bg-zinc-800">
+                                                        {m.asset_type === 'video' ? (
+                                                            <div className="w-full h-full flex items-center justify-center text-zinc-600 text-[10px]">▶</div>
+                                                        ) : (
+                                                            <img
+                                                                src={getMediaUrl(m)}
+                                                                alt={m.display_name}
+                                                                className="w-full h-full object-cover"
+                                                            />
+                                                        )}
                                                     </div>
-                                                    {/* Custom origin note (free text supplement) */}
-                                                    <input
-                                                        type="text"
-                                                        placeholder="Note (optional)…"
-                                                        value={customNote}
-                                                        onChange={e => updateProv({ notes: e.target.value || null })}
-                                                        onKeyDown={e => e.stopPropagation()}
-                                                        className="mt-1 w-full bg-zinc-900 border border-zinc-700/40 rounded px-1.5 py-0.5 text-[9px] text-zinc-500 placeholder-zinc-700 focus:outline-none focus:border-zinc-600 transition-colors"
-                                                    />
+                                                    {/* filename + badges */}
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="text-[8px] text-zinc-300 truncate leading-tight">{m.display_name || 'unnamed'}</div>
+                                                        <div className="flex flex-wrap gap-0.5 mt-0.5">
+                                                            {prov.generated_with && (
+                                                                <span className="text-[7px] text-zinc-500 bg-zinc-800 px-1 rounded truncate max-w-[80px]">{prov.generated_with}</span>
+                                                            )}
+                                                            {prov.origin_label && prov.origin_label !== 'Unknown' && (
+                                                                <span className="text-[7px] text-zinc-600 border border-zinc-700 px-1 rounded truncate max-w-[80px]">{prov.origin_label}</span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    {/* delete */}
+                                                    <button
+                                                        onClick={e => { e.stopPropagation(); removeMedia(i) }}
+                                                        className="opacity-0 group-hover:opacity-100 w-4 h-4 text-red-400/60 hover:text-red-400 text-[9px] transition-opacity shrink-0 flex items-center justify-center"
+                                                    >✕</button>
                                                 </div>
+                                            )
+                                        })}
+                                    </div>
+
+                                    {/* ── Right: keystone + provenance ── */}
+                                    <div className="flex-1 flex flex-col gap-2 min-w-0">
+
+                                        {/* Keystone image */}
+                                        <div className="relative bg-zinc-950 rounded-lg overflow-hidden flex items-center justify-center" style={{ height: 200 }}>
+                                            {selMedia.asset_type === 'video' ? (
+                                                <div className="flex flex-col items-center gap-1 text-zinc-600">
+                                                    <span className="text-2xl">▶</span>
+                                                    <span className="text-[9px]">{selMedia.display_name}</span>
+                                                </div>
+                                            ) : (
+                                                <img
+                                                    src={getMediaUrl(selMedia)}
+                                                    alt={selMedia.display_name}
+                                                    className="w-full h-full object-contain"
+                                                />
+                                            )}
+                                            {/* filename overlay */}
+                                            <div className="absolute bottom-0 left-0 right-0 px-2 py-1 bg-black/50 backdrop-blur-sm">
+                                                <span className="text-[8px] text-zinc-400 truncate block">{selMedia.display_name}</span>
                                             </div>
                                         </div>
-                                    )
-                                })}
-                            </div>
-                        )}
+
+                                        {/* Provenance for selected */}
+                                        <div className="bg-zinc-800/40 border border-zinc-700/40 rounded-lg px-3 py-2.5 space-y-2">
+                                            <span className="text-[8px] font-bold uppercase tracking-wider text-zinc-600 block">Provenance</span>
+
+                                            {/* Generated with */}
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-[8px] text-zinc-600 w-20 shrink-0">Generated with</span>
+                                                <select
+                                                    value={selProv.generated_with ?? ''}
+                                                    onChange={e => updateSelProv({ generated_with: e.target.value })}
+                                                    onKeyDown={e => e.stopPropagation()}
+                                                    className="flex-1 bg-zinc-900 border border-zinc-700/60 rounded px-1.5 py-0.5 text-[9px] text-zinc-300 focus:outline-none focus:border-zinc-500 transition-colors"
+                                                >
+                                                    <option value="">—</option>
+                                                    {ORIGIN_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                                                </select>
+                                            </div>
+
+                                            {/* Origin chips */}
+                                            <div>
+                                                <span className="text-[8px] text-zinc-600 block mb-1">Origin</span>
+                                                <div className="flex flex-wrap gap-1">
+                                                    {MEDIA_ORIGIN_CHIPS.map(chip => (
+                                                        <button
+                                                            key={chip}
+                                                            type="button"
+                                                            onClick={() => updateSelProv({ origin_label: chip })}
+                                                            className={`px-1.5 py-0.5 text-[8px] rounded border transition-colors ${
+                                                                selChip === chip
+                                                                    ? 'border-zinc-500 text-zinc-200 bg-zinc-700'
+                                                                    : 'border-zinc-700 text-zinc-500 bg-zinc-800/50 hover:text-zinc-300 hover:border-zinc-600'
+                                                            }`}
+                                                        >{chip}</button>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            {/* Note */}
+                                            <input
+                                                type="text"
+                                                placeholder="Note (optional)…"
+                                                value={selProv.notes ?? ''}
+                                                onChange={e => updateSelProv({ notes: e.target.value || null })}
+                                                onKeyDown={e => e.stopPropagation()}
+                                                className="w-full bg-zinc-900 border border-zinc-700/40 rounded px-2 py-0.5 text-[9px] text-zinc-400 placeholder-zinc-700 focus:outline-none focus:border-zinc-600 transition-colors"
+                                            />
+                                        </div>
+
+                                    </div>
+                                </div>
+                            )
+                        })()}
                     </div>
 
                     {/* Prompts */}
