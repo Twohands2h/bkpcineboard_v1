@@ -733,6 +733,7 @@ type EntityFreshData = {
     content?: {
         prompts?: Array<{ id: string; title?: string; body: string }>
         notes?: Array<{ id: string; body: string }>
+        mediaOriginLabels?: string[]
         provenance?: {
             generated_with?: string
             tool_origin?: string
@@ -751,8 +752,22 @@ interface EntityExportItem {
     prompts: Array<{ id: string; title?: string; body: string }>
     notes: Array<{ id: string; body: string }>
     // provenance fields for ENTITY.txt header (short labels only, no URLs)
-    origin: string       // tool_origin short label, or ''
-    generatedWith: string // generated_with label, or ''
+    origin: string           // derived: single label / Mixed / Unknown — see deriveOriginSummary()
+    generatedWith: string    // generated_with label, or ''
+    mediaOriginLabels: string[]  // raw per-media labels, used for origin derivation
+}
+
+/** Derive a single origin summary label from per-media origin_label values.
+ *  Rules (mechanical, no inference):
+ *   - no media / all absent/Unknown → "Unknown"
+ *   - all same non-Unknown label    → that label
+ *   - multiple distinct labels      → "Mixed"
+ */
+function deriveOriginSummary(labels: string[]): string {
+    const meaningful = labels.filter(l => l && l !== 'Unknown')
+    if (meaningful.length === 0) return 'Unknown'
+    const unique = [...new Set(meaningful)]
+    return unique.length === 1 ? unique[0] : 'Mixed'
 }
 
 /** Collect entity_ref nodes eligible for a column or prompt-pack scope.
@@ -814,7 +829,8 @@ function collectLinkedEntities(
             : (asString(node.data.thumbnail_path ?? '') || null)
         const prompts = fresh?.content?.prompts ?? []
         const notes = fresh?.content?.notes ?? []
-        const origin = asString(fresh?.content?.provenance?.tool_origin ?? '')
+        const mediaOriginLabels = fresh?.content?.mediaOriginLabels ?? []
+        const origin = deriveOriginSummary(mediaOriginLabels)
         const generatedWith = asString(fresh?.content?.provenance?.generated_with ?? '')
 
         const sanitized = sanitizeExportName(entityName).replace(/\s+/g, '-')
@@ -823,7 +839,7 @@ function collectLinkedEntities(
         usedFolders.set(key, count + 1)
         const folderName = count === 0 ? sanitized : `${sanitized}-${count + 1}`
 
-        items.push({ nodeId: node.id, entityId, entityName, entityType, thumbnailPath, folderName, prompts, notes, origin, generatedWith })
+        items.push({ nodeId: node.id, entityId, entityName, entityType, thumbnailPath, folderName, prompts, notes, origin, generatedWith, mediaOriginLabels })
     }
 
     return items

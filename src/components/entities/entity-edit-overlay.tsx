@@ -8,6 +8,7 @@ import {
     type EntityType,
     type EntityContent,
 } from '@/app/actions/entities'
+import type { MediaProvenance } from '@/app/actions/entity-types'
 
 // ── Types ──
 
@@ -27,7 +28,6 @@ const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
 
 const PROMPT_TYPES = ['master', 'prompt', 'negative', 'pre-prompt', 'post-prompt'] as const
 const ORIGIN_OPTIONS = ['Manual', 'ChatGPT', 'Claude', 'Gemini', 'Midjourney', 'Runway', 'Kling', 'Veo', 'ComfyUI'] as const
-const TOOL_ORIGIN_CHIPS = ['Production Live', 'Take', 'Library import', 'External', 'Scan', 'Client'] as const
 
 // ── Component ──
 
@@ -132,6 +132,7 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                 display_name: file.name,
                 mime_type: file.type,
                 asset_type: isVideo ? 'video' : 'image',
+                provenance: { origin_label: 'Unknown', generated_with: 'Manual' } as MediaProvenance,
             }])
         }
 
@@ -236,36 +237,58 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                         </div>
                         {media.length > 0 && (
                             <div className="grid grid-cols-4 gap-2">
-                                {media.map((m, i) => (
-                                    <div key={i} className="group relative bg-zinc-800 border border-zinc-700 rounded overflow-hidden h-20">
-                                        {m.asset_type === 'video' ? (
-                                            <div className="w-full h-full flex items-center justify-center">
-                                                <span className="text-zinc-500 text-sm">▶</span>
+                                {media.map((m, i) => {
+                                    const prov: MediaProvenance = (m as any).provenance ?? { origin_label: 'Unknown', generated_with: 'Manual' }
+                                    const updateProv = (patch: Partial<MediaProvenance>) =>
+                                        setMedia(prev => prev.map((item, idx) =>
+                                            idx === i ? { ...item, provenance: { ...(item as any).provenance ?? { origin_label: 'Unknown', generated_with: 'Manual' }, ...patch } } : item
+                                        ))
+                                    return (
+                                        <div key={i} className="group bg-zinc-800 border border-zinc-700 rounded overflow-hidden">
+                                            {/* Thumbnail */}
+                                            <div className="relative h-20">
+                                                {m.asset_type === 'video' ? (
+                                                    <div className="w-full h-full flex items-center justify-center">
+                                                        <span className="text-zinc-500 text-sm">▶</span>
+                                                    </div>
+                                                ) : (
+                                                    <img
+                                                        src={(() => {
+                                                            const supabase = createClient()
+                                                            return supabase.storage.from(m.bucket).getPublicUrl(m.storage_path).data.publicUrl
+                                                        })()}
+                                                        alt={m.display_name}
+                                                        className="w-full h-full object-cover"
+                                                    />
+                                                )}
+                                                {m.display_name && <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-1 py-0.5 text-[7px] text-zinc-400 truncate">{m.display_name}</div>}
+                                                <button
+                                                    onClick={() => removeMedia(i)}
+                                                    className="absolute top-0.5 right-0.5 opacity-0 group-hover:opacity-100 w-4 h-4 bg-red-900/80 text-red-300 text-[8px] rounded flex items-center justify-center transition-opacity"
+                                                >✕</button>
                                             </div>
-                                        ) : (
-                                            <img
-                                                src={(() => {
-                                                    const supabase = createClient()
-                                                    return supabase.storage.from(m.bucket).getPublicUrl(m.storage_path).data.publicUrl
-                                                })()}
-                                                alt={m.display_name}
-                                                className="w-full h-full object-cover"
-                                            />
-
-                                        )}
-                                        {m.display_name && <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-1 py-0.5 text-[7px] text-zinc-400 truncate">{m.display_name}</div>}
-
-                                        <button
-                                            onClick={() => removeMedia(i)}
-                                            className="absolute top-0.5 right-0.5 opacity-0 group-hover:opacity-100 w-4 h-4 bg-red-900/80 text-red-300 text-[8px] rounded flex items-center justify-center transition-opacity"
-                                        >
-                                            ✕
-                                        </button>
-                                        <span className="absolute bottom-0.5 left-0.5 text-[7px] text-zinc-500 bg-zinc-900/80 px-1 rounded truncate max-w-[90%]">
-                                            {m.display_name}
-                                        </span>
-                                    </div>
-                                ))}
+                                            {/* Per-media provenance */}
+                                            <div className="px-1.5 py-1.5 border-t border-zinc-700/50 space-y-1">
+                                                <select
+                                                    value={prov.generated_with ?? 'Manual'}
+                                                    onChange={e => updateProv({ generated_with: e.target.value })}
+                                                    onKeyDown={e => e.stopPropagation()}
+                                                    className="w-full bg-zinc-900 border border-zinc-700/60 rounded px-1 py-0.5 text-[9px] text-zinc-400 focus:outline-none focus:border-zinc-500 transition-colors"
+                                                >
+                                                    {ORIGIN_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                                                </select>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Origin…"
+                                                    value={prov.origin_label === 'Unknown' ? '' : (prov.origin_label ?? '')}
+                                                    onChange={e => updateProv({ origin_label: e.target.value || 'Unknown' })}
+                                                    onKeyDown={e => e.stopPropagation()}
+                                                    className="w-full bg-zinc-900 border border-zinc-700/60 rounded px-1 py-0.5 text-[9px] text-zinc-400 placeholder-zinc-700 focus:outline-none focus:border-zinc-500 transition-colors"
+                                                />
+                                            </div>
+                                        </div>
+                                    )
+                                })}
                             </div>
                         )}
                     </div>
@@ -371,21 +394,6 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                                     placeholder="e.g. Production Live"
                                     className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[10px] text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
                                 />
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                    {TOOL_ORIGIN_CHIPS.map(chip => (
-                                        <button
-                                            key={chip}
-                                            type="button"
-                                            onClick={() => setProvenance(prev => ({ ...prev, tool_origin: chip }))}
-                                            className={`px-1.5 py-0.5 text-[8px] rounded border transition-colors ${provenance.tool_origin === chip
-                                                    ? 'border-zinc-500 text-zinc-200 bg-zinc-700'
-                                                    : 'border-zinc-700 text-zinc-500 bg-zinc-800/50 hover:text-zinc-300 hover:border-zinc-600'
-                                                }`}
-                                        >
-                                            {chip}
-                                        </button>
-                                    ))}
-                                </div>
                             </div>
                         </div>
                     </div>
