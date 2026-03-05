@@ -733,6 +733,10 @@ type EntityFreshData = {
     content?: {
         prompts?: Array<{ id: string; title?: string; body: string }>
         notes?: Array<{ id: string; body: string }>
+        provenance?: {
+            generated_with?: string
+            tool_origin?: string
+        }
     }
 }
 
@@ -743,9 +747,12 @@ interface EntityExportItem {
     entityType: string
     thumbnailPath: string | null  // storage_path from thumbnail_path if present
     folderName: string   // sanitized, collision-resolved folder under entities/
-    // Fix 2: full content for ENTITY.txt — populated from fresh fetch, empty arrays as fallback
+    // full content for ENTITY.txt — populated from fresh fetch, empty arrays as fallback
     prompts: Array<{ id: string; title?: string; body: string }>
     notes: Array<{ id: string; body: string }>
+    // provenance fields for ENTITY.txt header (short labels only, no URLs)
+    origin: string       // tool_origin short label, or ''
+    generatedWith: string // generated_with label, or ''
 }
 
 /** Collect entity_ref nodes eligible for a column or prompt-pack scope.
@@ -807,6 +814,8 @@ function collectLinkedEntities(
             : (asString(node.data.thumbnail_path ?? '') || null)
         const prompts = fresh?.content?.prompts ?? []
         const notes = fresh?.content?.notes ?? []
+        const origin = asString(fresh?.content?.provenance?.tool_origin ?? '')
+        const generatedWith = asString(fresh?.content?.provenance?.generated_with ?? '')
 
         const sanitized = sanitizeExportName(entityName).replace(/\s+/g, '-')
         const key = sanitized.toLowerCase()
@@ -814,7 +823,7 @@ function collectLinkedEntities(
         usedFolders.set(key, count + 1)
         const folderName = count === 0 ? sanitized : `${sanitized}-${count + 1}`
 
-        items.push({ nodeId: node.id, entityId, entityName, entityType, thumbnailPath, folderName, prompts, notes })
+        items.push({ nodeId: node.id, entityId, entityName, entityType, thumbnailPath, folderName, prompts, notes, origin, generatedWith })
     }
 
     return items
@@ -840,24 +849,31 @@ function buildEntityAssetDescriptors(items: EntityExportItem[]): AssetDescriptor
 }
 
 /** Build ENTITY.txt files with full content — parity with Drawer entity download.
- *  Header: name / type / id
- *  PROMPTS section: each prompt title + body (verbatim, no tool origin / URLs)
- *  NOTES section: each note body
+ *  Header: name / type / id / origin / generated — separated by a rule line.
+ *  PROMPTS section: each prompt title + body (verbatim, no URLs/toolchain).
+ *  NOTES section: each note body.
  */
 function buildEntityTextFiles(items: EntityExportItem[]): Array<{ path: string; content: string }> {
     return items.map(item => {
         const lines: string[] = []
+        const SEP = '─'.repeat(40)
 
         // ── Header ──
         lines.push(`name: ${item.entityName}`)
         lines.push(`type: ${item.entityType || 'unknown'}`)
-        lines.push(`id: ${item.entityId}`)
+        lines.push(`id:   ${item.entityId}`)
+        // origin: short label only — no URLs, no toolchain paths
+        lines.push(`origin: ${item.origin || '—'}`)
+        // generated: yes if generated_with is present and non-empty, unknown otherwise
+        const generatedLabel = item.generatedWith ? 'yes' : 'unknown'
+        lines.push(`generated: ${generatedLabel}`)
+        lines.push(SEP)
 
         // ── Prompts ──
         if (item.prompts.length > 0) {
             lines.push('')
             lines.push('PROMPTS')
-            lines.push('─'.repeat(40))
+            lines.push(SEP)
             item.prompts.forEach((p, i) => {
                 if (i > 0) lines.push('')
                 if (p.title) lines.push(p.title)
@@ -869,7 +885,7 @@ function buildEntityTextFiles(items: EntityExportItem[]): Array<{ path: string; 
         if (item.notes.length > 0) {
             lines.push('')
             lines.push('NOTES')
-            lines.push('─'.repeat(40))
+            lines.push(SEP)
             item.notes.forEach((n, i) => {
                 if (i > 0) lines.push('')
                 lines.push(n.body)
@@ -883,14 +899,15 @@ function buildEntityTextFiles(items: EntityExportItem[]): Array<{ path: string; 
     })
 }
 
-/** Build the "Included Entities" section for 00_prompt.txt. */
+/** Build the "Included Entities" section for 00_prompt.txt.
+ *  Prefixed with two blank lines for readability after the prompt body. */
 function buildEntitiesSection(items: EntityExportItem[]): string {
     if (items.length === 0) return ''
     const lines = items.map(item => {
         const typeStr = item.entityType ? ` [${item.entityType}]` : ''
         return `- ${item.entityName}${typeStr}  (id: ${item.entityId})`
     })
-    return `\nINCLUDED ENTITIES\n${'─'.repeat(40)}\n${lines.join('\n')}`
+    return `\n\n\nINCLUDED ENTITIES\n${'─'.repeat(40)}\n${lines.join('\n')}`
 }
 
 const ROLE_PRIORITY: Record<string, number> = { final_visual: 0, output: 1, ref: 2, attachment: 3 }
@@ -1487,7 +1504,6 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                 const promptEntities = collectLinkedEntities(promptEntityIds, entityRefNodes, edges ?? [], nodeMap, null, entityDataMap)
                                                 const entityAssets = includeEntities ? buildEntityAssetDescriptors(promptEntities) : []
                                                 const entityTextFiles = includeEntities ? buildEntityTextFiles(promptEntities) : []
-                                                const entitySection = includeEntities ? buildEntitiesSection(promptEntities) : ''
                                                 const allPromptAssets = [...promptAssets, ...entityAssets]
                                                 // Fix 1: fresh fetch at click time
                                                 const entityIdsForScope = promptEntities.map(p => p.entityId)
@@ -1514,7 +1530,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                             mode="prompt"
                                                             label="Download"
                                                             exportNameMap={exportNameMap}
-                                                            promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock + entitySection)}
+                                                            promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock)}
                                                             zipName={`${zipPrefix}_p${pad2(gIdx + 1)}.zip`}
                                                             extraTextFiles={entityTextFiles}
                                                             onBeforeExport={onBeforeExport}
@@ -1599,7 +1615,6 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                     {(() => {
                                                         const colEntityAssets = includeEntities ? buildEntityAssetDescriptors(colLinkedEntities) : []
                                                         const colEntityTextFiles = includeEntities ? buildEntityTextFiles(colLinkedEntities) : []
-                                                        const colEntitySection = includeEntities ? buildEntitiesSection(colLinkedEntities) : ''
                                                         const colAllAssets = [...columnAssets, ...colEntityAssets]
                                                         // Fix 1: fresh fetch at click time
                                                         const colEntityIdsForScope = colLinkedEntities.map(e => e.entityId)
@@ -1612,7 +1627,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                                 mode="column"
                                                                 label="Download"
                                                                 exportNameMap={exportNameMap}
-                                                                promptFileText={buildPromptFileText(columnAssets, exportNameMap, columnBlockText + colEntitySection)}
+                                                                promptFileText={buildPromptFileText(columnAssets, exportNameMap, columnBlockText)}
                                                                 zipName={`${zipPrefix}_col-${colSlug}.zip`}
                                                                 extraTextFiles={colEntityTextFiles}
                                                                 onBeforeExport={onBeforeExport}
@@ -1689,7 +1704,6 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                             const promptEntities = collectLinkedEntities(singlePromptIds, entityRefNodes, edges ?? [], nodeMap, null, entityDataMap)
                                                             const pEntityAssets = includeEntities ? buildEntityAssetDescriptors(promptEntities) : []
                                                             const pEntityTextFiles = includeEntities ? buildEntityTextFiles(promptEntities) : []
-                                                            const pEntitySection = includeEntities ? buildEntitiesSection(promptEntities) : ''
                                                             const allPAssets = [...promptAssets, ...pEntityAssets]
                                                             // Fix 1: fresh fetch at click time
                                                             const pEntityIdsForScope = promptEntities.map(p => p.entityId)
@@ -1716,7 +1730,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                                                         mode="prompt"
                                                                         label="Download"
                                                                         exportNameMap={exportNameMap}
-                                                                        promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock + pEntitySection)}
+                                                                        promptFileText={buildPromptFileText(promptAssets, exportNameMap, copyBlock)}
                                                                         zipName={`${zipPrefix}_p${pad2(gIdx + 1)}.zip`}
                                                                         extraTextFiles={pEntityTextFiles}
                                                                         onBeforeExport={onBeforeExport}
@@ -1779,8 +1793,7 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
                                     {(() => {
                                         const entityAssets = includeEntities ? buildEntityAssetDescriptors(allLinkedEntities) : []
                                         const entityTextFiles = includeEntities ? buildEntityTextFiles(allLinkedEntities) : []
-                                        const entitySection = includeEntities ? buildEntitiesSection(allLinkedEntities) : ''
-                                        const packText = buildPromptFileText(allPackAssets, exportNameMap, promptPack + entitySection)
+                                        const packText = buildPromptFileText(allPackAssets, exportNameMap, promptPack)
                                         // Fix 1: fresh fetch at click time
                                         const packEntityIds = allLinkedEntities.map(e => e.entityId)
                                         const onBeforeExport = packEntityIds.length > 0

@@ -81,6 +81,10 @@ export type EntityFreshData = {
   content: {
     prompts: Array<{ id: string; title?: string; body: string }>
     notes: Array<{ id: string; body: string }>
+    provenance: {
+      generated_with: string   // '' if absent
+      tool_origin: string      // '' if absent
+    }
   }
 }
 /**
@@ -130,7 +134,14 @@ export async function getEntitiesByIdsAction(
         name: row.name ?? '',
         type: row.entity_type ?? '',
         thumbnailPath,
-        content: { prompts, notes },
+        content: {
+          prompts,
+          notes,
+          provenance: {
+            generated_with: typeof c.provenance?.generated_with === 'string' ? c.provenance.generated_with : '',
+            tool_origin: typeof c.provenance?.tool_origin === 'string' ? c.provenance.tool_origin : '',
+          },
+        },
       })
     }
   } catch (err) {
