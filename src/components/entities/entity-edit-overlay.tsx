@@ -28,6 +28,8 @@ const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
 
 const PROMPT_TYPES = ['master', 'prompt', 'negative', 'pre-prompt', 'post-prompt'] as const
 const ORIGIN_OPTIONS = ['Manual', 'ChatGPT', 'Claude', 'Gemini', 'Midjourney', 'Runway', 'Kling', 'Veo', 'ComfyUI'] as const
+// Per-media origin chips (structured — same labels used by PLP ENTITY.txt)
+const MEDIA_ORIGIN_CHIPS = ['Production Live', 'Take', 'Library import', 'External', 'Scan', 'Client', 'Unknown'] as const
 
 // ── Component ──
 
@@ -132,7 +134,7 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                 display_name: file.name,
                 mime_type: file.type,
                 asset_type: isVideo ? 'video' : 'image',
-                provenance: { origin_label: 'Unknown', generated_with: 'Manual' } as MediaProvenance,
+                provenance: { origin_label: 'Unknown', generated_with: '' } as MediaProvenance,
             }])
         }
 
@@ -236,55 +238,82 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
 
                         </div>
                         {media.length > 0 && (
-                            <div className="grid grid-cols-4 gap-2">
+                            <div className="space-y-2">
                                 {media.map((m, i) => {
-                                    const prov: MediaProvenance = (m as any).provenance ?? { origin_label: 'Unknown', generated_with: 'Manual' }
+                                    const prov: MediaProvenance = (m as any).provenance ?? { origin_label: 'Unknown', generated_with: '' }
+                                    const currentChip = MEDIA_ORIGIN_CHIPS.includes(prov.origin_label as any) ? prov.origin_label : null
+                                    const customNote = prov.notes ?? ''
                                     const updateProv = (patch: Partial<MediaProvenance>) =>
                                         setMedia(prev => prev.map((item, idx) =>
-                                            idx === i ? { ...item, provenance: { ...(item as any).provenance ?? { origin_label: 'Unknown', generated_with: 'Manual' }, ...patch } } : item
+                                            idx !== i ? item : { ...item, provenance: { ...(item as any).provenance ?? { origin_label: 'Unknown', generated_with: '' }, ...patch } }
                                         ))
                                     return (
                                         <div key={i} className="group bg-zinc-800 border border-zinc-700 rounded overflow-hidden">
-                                            {/* Thumbnail */}
-                                            <div className="relative h-20">
-                                                {m.asset_type === 'video' ? (
-                                                    <div className="w-full h-full flex items-center justify-center">
-                                                        <span className="text-zinc-500 text-sm">▶</span>
-                                                    </div>
-                                                ) : (
-                                                    <img
-                                                        src={(() => {
-                                                            const supabase = createClient()
-                                                            return supabase.storage.from(m.bucket).getPublicUrl(m.storage_path).data.publicUrl
-                                                        })()}
-                                                        alt={m.display_name}
-                                                        className="w-full h-full object-cover"
-                                                    />
-                                                )}
-                                                {m.display_name && <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-1 py-0.5 text-[7px] text-zinc-400 truncate">{m.display_name}</div>}
+                                            {/* Thumbnail row */}
+                                            <div className="flex items-center gap-2 px-2 py-1.5">
+                                                <div className="relative w-12 h-12 shrink-0 bg-zinc-900 rounded overflow-hidden">
+                                                    {m.asset_type === 'video' ? (
+                                                        <div className="w-full h-full flex items-center justify-center text-zinc-500 text-sm">▶</div>
+                                                    ) : (
+                                                        <img
+                                                            src={(() => {
+                                                                const supabase = createClient()
+                                                                return supabase.storage.from(m.bucket).getPublicUrl(m.storage_path).data.publicUrl
+                                                            })()}
+                                                            alt={m.display_name}
+                                                            className="w-full h-full object-cover"
+                                                        />
+                                                    )}
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="text-[9px] text-zinc-400 truncate">{m.display_name}</div>
+                                                </div>
                                                 <button
                                                     onClick={() => removeMedia(i)}
-                                                    className="absolute top-0.5 right-0.5 opacity-0 group-hover:opacity-100 w-4 h-4 bg-red-900/80 text-red-300 text-[8px] rounded flex items-center justify-center transition-opacity"
+                                                    className="opacity-0 group-hover:opacity-100 w-5 h-5 bg-red-900/80 text-red-300 text-[8px] rounded flex items-center justify-center transition-opacity shrink-0"
                                                 >✕</button>
                                             </div>
                                             {/* Per-media provenance */}
-                                            <div className="px-1.5 py-1.5 border-t border-zinc-700/50 space-y-1">
-                                                <select
-                                                    value={prov.generated_with ?? 'Manual'}
-                                                    onChange={e => updateProv({ generated_with: e.target.value })}
-                                                    onKeyDown={e => e.stopPropagation()}
-                                                    className="w-full bg-zinc-900 border border-zinc-700/60 rounded px-1 py-0.5 text-[9px] text-zinc-400 focus:outline-none focus:border-zinc-500 transition-colors"
-                                                >
-                                                    {ORIGIN_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
-                                                </select>
-                                                <input
-                                                    type="text"
-                                                    placeholder="Origin…"
-                                                    value={prov.origin_label === 'Unknown' ? '' : (prov.origin_label ?? '')}
-                                                    onChange={e => updateProv({ origin_label: e.target.value || 'Unknown' })}
-                                                    onKeyDown={e => e.stopPropagation()}
-                                                    className="w-full bg-zinc-900 border border-zinc-700/60 rounded px-1 py-0.5 text-[9px] text-zinc-400 placeholder-zinc-700 focus:outline-none focus:border-zinc-500 transition-colors"
-                                                />
+                                            <div className="border-t border-zinc-700/50 px-2 pb-2 pt-1.5 space-y-1.5">
+                                                {/* Generated with */}
+                                                <div>
+                                                    <span className="text-[8px] text-zinc-600 uppercase tracking-wider block mb-1">Generated with</span>
+                                                    <select
+                                                        value={prov.generated_with ?? ''}
+                                                        onChange={e => updateProv({ generated_with: e.target.value })}
+                                                        onKeyDown={e => e.stopPropagation()}
+                                                        className="w-full bg-zinc-900 border border-zinc-700/60 rounded px-1.5 py-0.5 text-[9px] text-zinc-400 focus:outline-none focus:border-zinc-500 transition-colors"
+                                                    >
+                                                        <option value="">—</option>
+                                                        {ORIGIN_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                                                    </select>
+                                                </div>
+                                                {/* Origin chips */}
+                                                <div>
+                                                    <span className="text-[8px] text-zinc-600 uppercase tracking-wider block mb-1">Origin</span>
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {MEDIA_ORIGIN_CHIPS.map(chip => (
+                                                            <button
+                                                                key={chip}
+                                                                type="button"
+                                                                onClick={() => updateProv({ origin_label: chip })}
+                                                                className={`px-1.5 py-0.5 text-[8px] rounded border transition-colors ${currentChip === chip
+                                                                        ? 'border-zinc-500 text-zinc-200 bg-zinc-700'
+                                                                        : 'border-zinc-700 text-zinc-500 bg-zinc-800/50 hover:text-zinc-300 hover:border-zinc-600'
+                                                                    }`}
+                                                            >{chip}</button>
+                                                        ))}
+                                                    </div>
+                                                    {/* Custom origin note (free text supplement) */}
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Note (optional)…"
+                                                        value={customNote}
+                                                        onChange={e => updateProv({ notes: e.target.value || null })}
+                                                        onKeyDown={e => e.stopPropagation()}
+                                                        className="mt-1 w-full bg-zinc-900 border border-zinc-700/40 rounded px-1.5 py-0.5 text-[9px] text-zinc-500 placeholder-zinc-700 focus:outline-none focus:border-zinc-600 transition-colors"
+                                                    />
+                                                </div>
                                             </div>
                                         </div>
                                     )
@@ -369,34 +398,6 @@ export function EntityEditOverlay({ entity, projectId, onSave, onClose }: Entity
                         ))}
                     </div>
 
-                    {/* Provenance */}
-                    <div>
-                        <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 block mb-1.5">Provenance</label>
-                        <div className="grid grid-cols-2 gap-2">
-                            <div>
-                                <span className="text-[9px] text-zinc-600 block mb-0.5">Generated With</span>
-                                <select
-                                    value={provenance.generated_with ?? ''}
-                                    onChange={e => setProvenance(prev => ({ ...prev, generated_with: e.target.value || undefined }))}
-                                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[10px] text-zinc-300 focus:outline-none"
-                                >
-                                    <option value="">—</option>
-                                    {ORIGIN_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
-                                </select>
-                            </div>
-                            <div>
-                                <span className="text-[9px] text-zinc-600 block mb-0.5">Tool Origin</span>
-                                <input
-                                    type="text"
-                                    value={provenance.tool_origin ?? ''}
-                                    onChange={e => setProvenance(prev => ({ ...prev, tool_origin: e.target.value || undefined }))}
-                                    onKeyDown={e => e.stopPropagation()}
-                                    placeholder="e.g. Production Live"
-                                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[10px] text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
-                                />
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
 
