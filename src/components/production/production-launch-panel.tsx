@@ -58,6 +58,11 @@ function asString(v: any): string {
     return String(v).trim()
 }
 
+/** True if the string has any non-whitespace content. */
+function hasMeaningfulText(s: string | undefined | null): boolean {
+    return (s ?? '').trim().length > 0
+}
+
 // ── Prompt type labels (inline, matches PromptContent.tsx) ──
 
 const PROMPT_TYPE_LABELS: Record<string, string> = {
@@ -779,8 +784,13 @@ function assignExportNames(assets: AssetDescriptor[]): Map<string, string> {
 }
 
 /** Build the complete prompt.txt content: upload header + body text.
+ *  Returns '' if there is no meaningful content (no assets, no body).
  *  Header lists export names for the SAME assets in this export context. */
 function buildPromptFileText(assets: AssetDescriptor[], exportNameMap: Map<string, string>, bodyText: string): string {
+    const hasAssets = assets.length > 0
+    const hasBody = hasMeaningfulText(bodyText)
+    if (!hasAssets && !hasBody) return ''
+
     const fileList = assets
         .map(a => {
             const name = exportNameMap.get(a.nodeId)
@@ -788,13 +798,13 @@ function buildPromptFileText(assets: AssetDescriptor[], exportNameMap: Map<strin
             return `${name}${frameRoleSuffix(a.nodeData as Record<string, any>)}`
         })
         .filter((n): n is string => !!n)
-    const header = [
+    const header = hasAssets ? [
         'UPLOAD IMAGES IN THIS ORDER:',
         ...fileList,
         '',
         '─'.repeat(40),
         '',
-    ].join('\n')
+    ].join('\n') : ''
     return header + bodyText
 }
 
@@ -805,8 +815,8 @@ async function triggerExportZip(
     promptFileText?: string,
     zipName?: string,
 ): Promise<void> {
-    if (assets.length === 0) {
-        console.warn('[export-pack] no assets to export')
+    if (assets.length === 0 && !hasMeaningfulText(promptFileText)) {
+        console.warn('[export-pack] nothing to export (no assets, no text)')
         return
     }
 
@@ -876,24 +886,28 @@ function DownloadAssetsButton({ assets, mode, label, exportNameMap, promptFileTe
 }) {
     const [busy, setBusy] = useState(false)
 
+    const canDownload = assets.length > 0 || hasMeaningfulText(promptFileText)
+
     const handleClick = useCallback(async (e: React.MouseEvent) => {
         e.stopPropagation()
-        if (busy || assets.length === 0) return
+        if (busy || !canDownload) return
         setBusy(true)
         try {
             await triggerExportZip(mode, assets, exportNameMap, promptFileText, zipName)
         } finally {
             setBusy(false)
         }
-    }, [assets, mode, busy, exportNameMap, promptFileText, zipName])
-
-    if (assets.length === 0) return null
+    }, [assets, mode, busy, canDownload, exportNameMap, promptFileText, zipName])
 
     return (
         <button
             onClick={handleClick}
-            disabled={busy}
-            className="px-2 py-1 text-[10px] rounded transition-colors border border-zinc-700 bg-transparent hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 shrink-0 disabled:opacity-50"
+            disabled={busy || !canDownload}
+            title={!canDownload ? 'Nothing to export' : undefined}
+            className={`px-2 py-1 text-[10px] rounded transition-colors border shrink-0 ${canDownload
+                    ? 'border-zinc-700 bg-transparent hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 disabled:opacity-50'
+                    : 'border-zinc-800 bg-transparent text-zinc-700 cursor-not-allowed'
+                }`}
         >
             {busy ? '⏳ Exporting…' : `↓ ${label}`}
         </button>
@@ -998,6 +1012,20 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
         }
         return dedupeAssets(all)
     }, [grouped, promptRefsMap, columnAttachmentsMap, fvId, outId])
+
+    // All media nodes in this take (for "Download All Media" in Media Kit — A1)
+    const allTakeMediaAssets = useMemo(() => {
+        return dedupeAssets(
+            mediaNodes
+                .map(n => {
+                    let role: 'ref' | 'final_visual' | 'output' = 'ref'
+                    if (n.type === 'image' && fvId && (n.data as any).promotedSelectionId === fvId) role = 'final_visual'
+                    else if (n.type === 'video' && n.id === outId) role = 'output'
+                    return nodeToAssetDescriptor(n, role)
+                })
+                .filter((a): a is AssetDescriptor => a !== null)
+        )
+    }, [mediaNodes, fvId, outId])
 
     // Deterministic export name map: nodeId → human filename (sanitized, deduped)
     const exportNameMap = useMemo(() => assignExportNames(allPackAssets), [allPackAssets])
@@ -1377,7 +1405,18 @@ export function ProductionLaunchPanel({ nodes, edges, isApproved, currentFinalVi
 
                         {/* Right Column: Media Kit */}
                         <div className="w-[360px] shrink-0 px-6 py-4 overflow-y-auto">
-                            <h3 className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-4">Media Kit</h3>
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">Media Kit</h3>
+                                {hasMedia && (
+                                    <DownloadAssetsButton
+                                        assets={allTakeMediaAssets}
+                                        mode="pack"
+                                        label="All Take Media"
+                                        exportNameMap={assignExportNames(allTakeMediaAssets)}
+                                        zipName={`${zipPrefix}_media.zip`}
+                                    />
+                                )}
+                            </div>
 
                             {!hasMedia && (
                                 <p className="text-xs text-zinc-600 italic">No media in this Take.</p>

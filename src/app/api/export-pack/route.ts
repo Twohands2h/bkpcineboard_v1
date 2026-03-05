@@ -87,8 +87,13 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
         }
 
-        if (!body.assets || !Array.isArray(body.assets) || body.assets.length === 0) {
-            return NextResponse.json({ error: 'No assets provided', received: typeof body.assets }, { status: 400 })
+        if (!body.assets || !Array.isArray(body.assets)) {
+            return NextResponse.json({ error: 'assets must be an array', received: typeof body.assets }, { status: 400 })
+        }
+        // Allow empty assets[] if promptFileText is present (text-only pack)
+        const hasPromptText = typeof body.promptFileText === 'string' && body.promptFileText.trim().length > 0
+        if (body.assets.length === 0 && !hasPromptText) {
+            return NextResponse.json({ error: 'No assets and no promptFileText provided' }, { status: 400 })
         }
 
         const validModes = ['prompt', 'column', 'pack']
@@ -104,7 +109,7 @@ export async function POST(req: NextRequest) {
         const MAX_PACK_BYTES = 50 * 1024 * 1024 // 50 MB
         const assets = dedupeAssets(body.assets)
 
-        if (assets.length === 0) {
+        if (assets.length === 0 && !hasPromptText) {
             return NextResponse.json({ error: 'No exportable assets after dedup' }, { status: 400 })
         }
 
