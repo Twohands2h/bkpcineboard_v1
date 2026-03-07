@@ -168,9 +168,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const searchParams = useSearchParams()
 
   const [takes, setTakes] = useState<Take[]>(initialTakes)
-  const [editorialMarks, setEditorialMarks] = useState<Record<string, { mark: EditorialMark; note: string }>>(() =>
-    Object.fromEntries(initialTakes.map(t => [t.id, { mark: t.editorial_mark ?? null, note: t.editorial_note ?? '' }]))
-  )
 
   const takeFromUrl = searchParams.get('take')
   const defaultTakeId = (takeFromUrl && takes.some(t => t.id === takeFromUrl))
@@ -593,6 +590,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           created_at: newTake.created_at,
           updated_at: newTake.created_at,
           output_video_node_id: null,
+          editorial_mark: null,
+          editorial_note: null,
         }
         return [...prev, localTake]
       })
@@ -670,6 +669,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           created_at: newTake.created_at,
           updated_at: newTake.created_at,
           output_video_node_id: null,
+          editorial_mark: null,
+          editorial_note: null,
         }
         return [...prev, localTake]
       })
@@ -759,10 +760,15 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   // ── Approved Take handlers ──
   const handleApproveTake = async (takeId: string) => {
-    const curMark = editorialMarks[takeId]?.mark
-    if (!curMark || curMark === 'alt' || curMark === 'reject') {
-      setEditorialMarks(prev => ({ ...prev, [takeId]: { ...prev[takeId], mark: 'select' } }))
-      void setEditorialMarkAction({ takeId, mark: 'select', note: editorialMarks[takeId]?.note ?? '' })
+    const curMark = takes.find(t => t.id === takeId)?.editorial_mark ?? null
+    if (curMark !== 'select') {
+      // One-way: approve always sets select; unapprove never clears it
+      setTakes(prev => prev.map(t => t.id === takeId ? { ...t, editorial_mark: 'select' } : t))
+      void setEditorialMarkAction({
+        takeId,
+        mark: 'select',
+        note: takes.find(t => t.id === takeId)?.editorial_note ?? '',
+      })
     }
     await approveTakeAction(shot.id, takeId)
     router.refresh()
@@ -894,19 +900,23 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   }, [])
 
   const handleSetMark = useCallback((takeId: string, mark: EditorialMark) => {
-    setEditorialMarks(prev => ({ ...prev, [takeId]: { ...prev[takeId], mark } }))
-    void setEditorialMarkAction({ takeId, mark, note: editorialMarks[takeId]?.note ?? '' })
-  }, [editorialMarks])
+    setTakes(prev => prev.map(t => t.id === takeId ? { ...t, editorial_mark: mark } : t))
+    void setEditorialMarkAction({
+      takeId,
+      mark,
+      note: takes.find(t => t.id === takeId)?.editorial_note ?? '',
+    })
+  }, [takes])
 
   const handleSetNote = useCallback((takeId: string, note: string) => {
-    setEditorialMarks(prev => ({ ...prev, [takeId]: { ...prev[takeId], note } }))
+    setTakes(prev => prev.map(t => t.id === takeId ? { ...t, editorial_note: note } : t))
   }, [])
 
   const handleCommitNote = useCallback((takeId: string) => {
-    const entry = editorialMarks[takeId]
-    if (!entry) return
-    void setEditorialMarkAction({ takeId, mark: entry.mark, note: entry.note })
-  }, [editorialMarks])
+    const take = takes.find(t => t.id === takeId)
+    if (!take) return
+    void setEditorialMarkAction({ takeId, mark: take.editorial_mark ?? null, note: take.editorial_note ?? '' })
+  }, [takes])
 
   const handleCrystallize = useCallback(() => {
     if (!canvasRef.current) return
@@ -1127,7 +1137,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         onRevokeTake={handleRevokeTake}
         onOpenProduction={handleOpenPLP}
         isProductionReady={shot.approved_take_id === readyTakeId}
-        editorialMarks={editorialMarks}
+        editorialMarks={Object.fromEntries(takes.map(t => [t.id, { mark: t.editorial_mark ?? null, note: t.editorial_note ?? '' }]))}
       />
 
       <div className="flex-1 flex">
@@ -1622,11 +1632,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       {currentTakeId && (() => {
         const take = takes.find(t => t.id === currentTakeId)
         if (!take) return null
-        const entry = editorialMarks[currentTakeId] ?? { mark: null, note: '' }
+        const entry = { mark: take.editorial_mark ?? null, note: take.editorial_note ?? '' }
         const MARKS: { value: EditorialMark; label: string; cls: string; activeCls: string }[] = [
           { value: 'select', label: 'S', cls: 'text-zinc-500 hover:text-emerald-400', activeCls: 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400' },
-          { value: 'alt',    label: 'A', cls: 'text-zinc-500 hover:text-amber-400',   activeCls: 'bg-amber-500/20  border-amber-500/40  text-amber-400'  },
-          { value: 'reject', label: 'R', cls: 'text-zinc-500 hover:text-red-400',     activeCls: 'bg-red-500/20    border-red-500/40    text-red-400'    },
+          { value: 'alt', label: 'A', cls: 'text-zinc-500 hover:text-amber-400', activeCls: 'bg-amber-500/20  border-amber-500/40  text-amber-400' },
+          { value: 'reject', label: 'R', cls: 'text-zinc-500 hover:text-red-400', activeCls: 'bg-red-500/20    border-red-500/40    text-red-400' },
         ]
         return (
           <div className="shrink-0 flex items-center gap-3 px-4 py-1.5 bg-zinc-900 border-t border-zinc-800">
