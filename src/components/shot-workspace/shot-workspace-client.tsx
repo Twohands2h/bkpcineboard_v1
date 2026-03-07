@@ -888,7 +888,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   }, [inspectorOpen, inspectorPrimaryId, inspectorTick])
 
   const handleSelectNodeFromInspector = useCallback((nodeId: string) => {
+    canvasRef.current?.selectNode(nodeId)
     setInspectorPrimaryId(nodeId)
+    setInspectorTick(t => t + 1)
   }, [])
 
   // Inspector write callback: update node.data via canvas imperative handle

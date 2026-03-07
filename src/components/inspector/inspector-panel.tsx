@@ -426,15 +426,34 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
 
 // ── Lineage item ──
 
+function lineageLabel(node: CanvasNode): string {
+    const d = node.data ?? {}
+    if (node.type === 'image' || node.type === 'video') {
+        // filename > displayName > last path segment of src > type label
+        const name = (d.filename as string | undefined)
+            || (d.displayName as string | undefined)
+            || (d.label as string | undefined)
+        if (name) return name
+        const src = d.src as string | undefined
+        if (src) {
+            const seg = src.split('/').pop()?.split('?')[0]
+            if (seg && seg.length > 0) return seg
+        }
+        return node.type === 'image' ? 'Image' : 'Video'
+    }
+    if (node.type === 'prompt') {
+        const text = (d.prompt_text as string | undefined) || (d.title as string | undefined) || (d.label as string | undefined)
+        if (text) return text.length > 52 ? text.slice(0, 52) + '…' : text
+        return 'Prompt'
+    }
+    const title = (d.title as string | undefined) || (d.label as string | undefined) || (d.name as string | undefined)
+    if (title) return title
+    return node.id.slice(0, 8)
+}
+
 function LineageItem({ node, onClick }: { node: CanvasNode; onClick?: (id: string) => void }) {
-    const data = node.data ?? {}
-    const label = (() => {
-        if (node.type === 'prompt') return data.prompt_text ? data.prompt_text.slice(0, 48) + (data.prompt_text.length > 48 ? '…' : '') : 'Prompt'
-        if (node.type === 'image') return data.filename || data.src?.split('/').pop() || 'Image'
-        if (node.type === 'video') return data.filename || data.src?.split('/').pop() || 'Video'
-        return node.id.slice(0, 12)
-    })()
     const icon = node.type === 'image' ? '🖼' : node.type === 'video' ? '🎞' : node.type === 'prompt' ? '📝' : '◈'
+    const label = lineageLabel(node)
     return (
         <button
             onClick={() => onClick?.(node.id)}
