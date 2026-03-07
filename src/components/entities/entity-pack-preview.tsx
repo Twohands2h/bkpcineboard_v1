@@ -4,6 +4,94 @@ import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { EntityImageLightbox } from './entity-image-lightbox'
 
+// ── Entity meta (optional — enables ENTITY.txt + MANIFEST.json in pack download) ──
+
+export interface EntityMeta {
+    id: string
+    name: string
+    type: string
+    description?: string
+}
+
+// ── Pure text builders — no I/O, no URLs in text output ──
+
+export function buildEntityTxt(
+    meta: EntityMeta | undefined,
+    media: NormalizedMedia[],
+    prompts: NormalizedPrompt[],
+    notes: NormalizedNote[],
+): string {
+    const SEP = '─'.repeat(40)
+    const lines: string[] = []
+
+    // Header
+    if (meta) {
+        lines.push(`name: ${meta.name}`)
+        lines.push(`type: ${meta.type || 'unknown'}`)
+        lines.push(`id:   ${meta.id}`)
+        if (meta.description) lines.push(`description: ${meta.description}`)
+    }
+    lines.push(SEP)
+
+    // Prompts
+    if (prompts.length > 0) {
+        lines.push('')
+        lines.push('PROMPTS')
+        lines.push(SEP)
+        prompts.forEach((p, i) => {
+            if (i > 0) lines.push('')
+            lines.push(`Generated with: ${p.origin || '—'}`)
+            if (p.title) lines.push(p.title)
+            lines.push(p.body)
+        })
+    }
+
+    // Media included
+    if (media.length > 0) {
+        lines.push('')
+        lines.push('MEDIA INCLUDED')
+        lines.push(SEP)
+        media.forEach(m => {
+            const gw = m.prov_generated_with ? `Generated: ${m.prov_generated_with}` : 'Generated: —'
+            const origin = `Origin: ${m.prov_origin_label || 'Unknown'}`
+            const note = m.prov_notes ? `  [${m.prov_notes}]` : ''
+            lines.push(`${m.filename || 'unnamed'}  |  ${gw}  |  ${origin}${note}`)
+        })
+    }
+
+    // Notes
+    if (notes.length > 0) {
+        lines.push('')
+        lines.push('NOTES')
+        lines.push(SEP)
+        notes.forEach((n, i) => {
+            if (i > 0) lines.push('')
+            lines.push(n.body)
+        })
+    }
+
+    return lines.join('\n')
+}
+
+export function buildManifestJson(meta: EntityMeta | undefined, media: NormalizedMedia[]): string {
+    const manifest = {
+        entity: meta
+            ? { id: meta.id, name: meta.name, type: meta.type, description: meta.description ?? null }
+            : null,
+        media: media.map(m => ({
+            filename: m.filename || 'unnamed',
+            storage_path: m.storage_path || null,
+            provenance: {
+                generated_with: m.prov_generated_with || null,
+                origin: m.prov_origin_label || 'Unknown',
+                note: m.prov_notes || null,
+            },
+        })),
+        exported_at: new Date().toISOString(),
+    }
+    return JSON.stringify(manifest, null, 2)
+}
+
 // ── Normalizers: handle both EntityContent shape AND Crystallize v1 shape ──
 
 export interface NormalizedMedia {
@@ -74,6 +162,8 @@ function copyToClipboard(text: string) {
 
 interface EntityPackPreviewProps {
     content: any
+    /** Optional entity metadata — enables ENTITY.txt + MANIFEST.json in pack download */
+    entity?: EntityMeta
     /** 'compact' = small thumbs (default), 'full' = full-width media for inspector drawer */
     variant?: 'compact' | 'full'
     /** Called when user clicks a media thumbnail (for external lightbox) */
@@ -84,9 +174,10 @@ interface EntityPackPreviewProps {
     notesDefaultOpen?: boolean
 }
 
-export function EntityPackPreview({ content, variant = 'compact', onImageClick, promptsDefaultOpen, notesDefaultOpen }: EntityPackPreviewProps) {
+export function EntityPackPreview({ content, entity, variant = 'compact', onImageClick, promptsDefaultOpen, notesDefaultOpen }: EntityPackPreviewProps) {
     const [resolutions, setResolutions] = useState<Record<number, string>>({})
     const [lightbox, setLightbox] = useState<{ src: string; filename: string } | null>(null)
+    const [packBusy, setPackBusy] = useState(false)
 
     // Image click: use provided handler, otherwise open portal lightbox
     const handleImageClick = (url: string, filename: string) => {
@@ -112,6 +203,95 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick, 
             URL.revokeObjectURL(a.href)
         } catch {
             window.open(url, '_blank')
+        }
+    }
+
+    // Pack download — all media + ENTITY.txt + MANIFEST.json via /api/export-pack
+    const handlePackDownload = async () => {
+        if (packBusy) return
+        setPackBusy(true)
+        try {
+            const supabase = createClient()
+            const mediaItems = normalizeMedia(content.media)
+            const promptItems = normalizePrompts(content.prompts)
+            const noteItems = normalizeNotes(content.notes)
+
+            // Build asset descriptors for route (media with storage_path only)
+            const assets = mediaItems
+                .filter(m => m.storage_path)
+                .map((m, i) => ({
+                    nodeId: `entity-media-${i}`,
+                    type: m.kind,
+                    bucket: m.kind === 'video' ? 'take-videos' : 'take-images',
+                    storagePath: m.storage_path,
+                    originalFilename: m.filename || `media-${i + 1}`,
+                    exportName: m.filename || `media-${i + 1}`,
+                    role: 'attachment' as const,
+                }))
+
+            if (assets.length === 0) return
+
+            // Build text files
+            const entityTxt = buildEntityTxt(entity, mediaItems, promptItems, noteItems)
+            const manifestJson = buildManifestJson(entity, mediaItems)
+
+            // Build 00_prompt.txt (prompts + notes only — no entity header)
+            const promptLines: string[] = []
+            const SEP = '─'.repeat(40)
+            if (promptItems.length > 0) {
+                promptItems.forEach((p, i) => {
+                    if (i > 0) promptLines.push('', SEP, '')
+                    promptLines.push(`PROMPT #${i + 1}  |  ${p.promptType || 'prompt'}  |  Generated with: ${p.origin || '—'}`)
+                    promptLines.push(SEP)
+                    if (p.title) promptLines.push(p.title)
+                    promptLines.push(p.body)
+                })
+            }
+            if (noteItems.length > 0) {
+                if (promptLines.length > 0) promptLines.push('', SEP, '')
+                promptLines.push('NOTES', SEP)
+                noteItems.forEach((n, i) => {
+                    if (i > 0) promptLines.push('')
+                    promptLines.push(n.body)
+                })
+            }
+
+            const zipName = entity ? `entity_${entity.name.replace(/\s+/g, '-').toLowerCase()}.zip` : 'entity-pack.zip'
+
+            const payload = {
+                mode: 'pack',
+                assets,
+                promptFileText: promptLines.length > 0 ? promptLines.join('\n') : undefined,
+                zipName,
+                extraTextFiles: [
+                    { path: 'ENTITY.txt', content: entityTxt },
+                    { path: 'MANIFEST.json', content: manifestJson },
+                ],
+            }
+
+            const resp = await fetch('/api/export-pack', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            })
+
+            if (!resp.ok) {
+                console.error('[entity-pack] export failed:', resp.status)
+                return
+            }
+
+            const blob = await resp.blob()
+            const a = document.createElement('a')
+            a.href = URL.createObjectURL(blob)
+            a.download = zipName
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(a.href)
+        } catch (err) {
+            console.error('[entity-pack] download error:', err)
+        } finally {
+            setPackBusy(false)
         }
     }
 
@@ -245,6 +425,8 @@ export function EntityPackPreview({ content, variant = 'compact', onImageClick, 
                     ))}
                 </CollapsibleSection>
             )}
+
+
 
             {/* Portal lightbox — fullscreen, outside any drawer/overflow container */}
             {lightbox && (
