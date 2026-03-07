@@ -10,8 +10,8 @@ interface ShotHeaderProps {
   projectId: string
   finalVisual?: FinalVisualData | null
   onUndoFinalVisual?: () => void
-  approvedTakeIndex?: number | null
-  onApprovedTakeClick?: () => void
+  approvedTakeLabel?: string | null
+  onJumpToApprovedTake?: () => void
   outputVideoSrc?: string | null
   onPreviewFV?: () => void
   onPreviewOutput?: () => void
@@ -21,7 +21,7 @@ interface ShotHeaderProps {
   outputTakeLabel?: string | null
 }
 
-export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual, approvedTakeIndex, onApprovedTakeClick, outputVideoSrc, onPreviewFV, onPreviewOutput, onDownloadFV, onDownloadOutput, fvTakeLabel, outputTakeLabel }: ShotHeaderProps) {
+export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual, approvedTakeLabel, onJumpToApprovedTake, outputVideoSrc, onPreviewFV, onPreviewOutput, onDownloadFV, onDownloadOutput, fvTakeLabel, outputTakeLabel }: ShotHeaderProps) {
   const desc = shot.visual_description ?? ''
   return (
     <div className="border-b border-zinc-800 bg-zinc-900 px-6 py-3 shrink-0">
@@ -37,12 +37,17 @@ export function ShotHeader({ shot, projectId, finalVisual, onUndoFinalVisual, ap
             Decided
           </span>
         )}
-        {approvedTakeIndex != null && onApprovedTakeClick && (
+        {shot.approved_take_id && approvedTakeLabel && (
           <span className="inline-flex items-center gap-1.5 ml-1">
             <span className="text-zinc-700">·</span>
-            <span onClick={onApprovedTakeClick} className="text-zinc-400 hover:text-zinc-200 cursor-pointer transition-colors text-[10px] font-medium" title="Go to approved take">
-              T{approvedTakeIndex}
-            </span>
+            <span className="text-zinc-500 text-[10px]">Approved:</span>
+            <button
+              onClick={onJumpToApprovedTake}
+              className="text-zinc-400 hover:text-zinc-200 text-[10px] font-medium underline underline-offset-2 decoration-zinc-600 hover:decoration-zinc-400 cursor-pointer transition-colors"
+              title="Switch to approved take"
+            >
+              {approvedTakeLabel}
+            </button>
           </span>
         )}
       </nav>
