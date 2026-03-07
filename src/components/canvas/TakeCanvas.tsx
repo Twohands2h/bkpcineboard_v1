@@ -195,7 +195,7 @@ function getInsertionIndex(nodes: CanvasNode[], rects: Map<string, Rect>, column
 }
 
 interface SelectionBoxRect { left: number; top: number; width: number; height: number }
-interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string; originalWidth: number }
+interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
     function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onSetFinalVisual, onClearFinalVisual, currentFinalVisualNodeId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, onBeforeDeleteNode, ratingMap, onSetRating, onSelectionChange, onToggleInspector }, ref) {
@@ -845,7 +845,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         if (n.id === det.nodeId) {
                             return targetColId
                                 ? { ...n, data: { ...n.data, parentId: targetColId } }
-                                : { ...n, x: fx, y: fy, width: det.originalWidth, data: { ...n.data, parentId: null } }
+                                : { ...n, x: fx, y: fy, width: det.frozenRect.width, data: { ...n.data, parentId: null } }
                         }
                         if (n.type === 'column') {
                             const col = n as ColumnNode; let order = [...(col.data.childOrder || [])]
@@ -1029,11 +1029,12 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         // Structural link — grey, not used by PLP
                         edgeFrom = c.fromNodeId; edgeTo = tgt.id; edgeLabel = 'struct'
                     } else if ((fromType === 'image' || fromType === 'video') && toType === 'prompt') {
-                        // Media → prompt (canonical ref direction)
+                        // Media → prompt (canonical ref direction: incoming to prompt = References)
                         edgeFrom = c.fromNodeId; edgeTo = tgt.id; edgeLabel = 'ref'
                     } else if (fromType === 'prompt' && (toType === 'image' || toType === 'video')) {
-                        // Prompt → media: reverse to canonical media → prompt
-                        edgeFrom = tgt.id; edgeTo = c.fromNodeId; edgeLabel = 'ref'
+                        // Prompt → media (outgoing from prompt = Lineage/Output)
+                        // Preserve gesture direction; use 'lineage' label so PLP excludes it
+                        edgeFrom = c.fromNodeId; edgeTo = tgt.id; edgeLabel = 'lineage'
                     } else {
                         // All other links: neutral (no label)
                         edgeFrom = c.fromNodeId; edgeTo = tgt.id
@@ -1199,7 +1200,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 const renderRect = currentRects.get(nodeId); if (!renderRect) return
                 const parentId = (nd.data as any).parentId as string
                 frozenRectsRef.current = currentRects; setFrozenColumnId(parentId)
-                detachingRef.current = { nodeId, frozenRect: { ...renderRect }, originalParentId: parentId, originalWidth: nd.width }
+                detachingRef.current = { nodeId, frozenRect: { ...renderRect }, originalParentId: parentId }
                 setDetachingOffset({ dx: 0, dy: 0 })
                 dragRef.current = { nodeId, offsets: new Map([[nodeId, { startX: renderRect.x, startY: renderRect.y }]]), startMouseX: mouseX, startMouseY: mouseY, hasMoved: false }
             } else {
@@ -1626,8 +1627,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         // R4-005: Double-click canvas = reset viewport
         // R4-005b: Only on truly empty canvas — not on nodes, columns, or their children
         const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
-            e.preventDefault()
-            window.getSelection()?.removeAllRanges()
             const target = e.target as HTMLElement
             if (target.closest('[data-node-shell]')) return
             if (target.closest('button') || target.closest('input') || target.closest('textarea')) return
@@ -1714,7 +1713,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         return (
             <div
                 ref={canvasRef}
-                className="flex-1 bg-zinc-950 relative overflow-hidden select-none"
+                className="flex-1 bg-zinc-950 relative overflow-hidden"
                 style={{ cursor: spaceDownRef.current || interactionMode === 'panning' ? 'grab' : undefined }}
                 onMouseDown={handleCanvasMouseDown}
                 onDoubleClick={handleCanvasDoubleClick}

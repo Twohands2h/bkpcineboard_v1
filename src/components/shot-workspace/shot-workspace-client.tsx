@@ -874,12 +874,22 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   // Auto-close inspector when PLP or Export opens (safe UX)
   useEffect(() => { if (showPLP || exportNodes) setInspectorOpen(false) }, [showPLP, exportNodes])
 
-  // Derive inspected node from live nodes
+  // Derive inspected node + lineage data from live canvas state
   const inspectorNode = useMemo(() => {
     if (!inspectorOpen || !inspectorPrimaryId) return null
     return liveNodesRef.current.find(n => n.id === inspectorPrimaryId) ?? null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inspectorOpen, inspectorPrimaryId, inspectorTick])
+
+  const inspectorSnapshot = useMemo(() => {
+    if (!inspectorOpen || !canvasRef.current) return { nodes: [], edges: [] }
+    return canvasRef.current.getSnapshot()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inspectorOpen, inspectorPrimaryId, inspectorTick])
+
+  const handleSelectNodeFromInspector = useCallback((nodeId: string) => {
+    setInspectorPrimaryId(nodeId)
+  }, [])
 
   // Inspector write callback: update node.data via canvas imperative handle
   // Uses updateNodeDataWithHistory which does setNodes + pushHistory + emitNodesChange
@@ -1669,7 +1679,10 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               onClose={() => setInspectorOpen(false)}
               onUpdateNodeData={handleUpdateNodeData}
               onOpenEntityEdit={(eid) => setEditEntityId(eid)}
+              onSelectNode={handleSelectNodeFromInspector}
               projectId={projectId}
+              edges={inspectorSnapshot.edges}
+              allNodes={inspectorSnapshot.nodes}
             />
           )}
 

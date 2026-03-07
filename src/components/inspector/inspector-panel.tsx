@@ -3,7 +3,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import Link from 'next/link'
 
-import type { CanvasNode } from '@/components/canvas/TakeCanvas'
+import type { CanvasNode, CanvasEdge } from '@/components/canvas/TakeCanvas'
 import {
     IMAGE_GENERATED_WITH_OPTIONS,
     VIDEO_GENERATED_WITH_OPTIONS,
@@ -81,12 +81,15 @@ interface InspectorPanelProps {
     onClose: () => void
     onUpdateNodeData?: (nodeId: string, patch: Record<string, any>) => void
     onOpenEntityEdit?: (entityId: string) => void
+    onSelectNode?: (nodeId: string) => void
     projectId?: string
+    edges?: CanvasEdge[]
+    allNodes?: CanvasNode[]
 }
 
 // ── Component ──
 
-export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEdit, projectId }: InspectorPanelProps) {
+export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEdit, onSelectNode, projectId, edges = [], allNodes = [] }: InspectorPanelProps) {
 
     const entityVersion = useEntityVersion()
 
@@ -365,6 +368,42 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
                                 </Section>
                             )}
 
+                            {/* Lineage: Outputs (prompt → media) */}
+                            {node.type === 'prompt' && (() => {
+                                const targets = edges
+                                    .filter(e => e.from === node.id)
+                                    .map(e => allNodes.find(n => n.id === e.to) ?? { id: e.to, type: 'unknown' as any })
+                                    .filter(n => n.type === 'image' || n.type === 'video' || n.type === 'unknown')
+                                if (targets.length === 0) return null
+                                return (
+                                    <Section label="Outputs (Lineage)">
+                                        <div className="flex flex-col gap-1">
+                                            {targets.map(n => (
+                                                <LineageItem key={n.id} node={n as CanvasNode} onClick={onSelectNode} />
+                                            ))}
+                                        </div>
+                                    </Section>
+                                )
+                            })()}
+
+                            {/* Lineage: Derived from (media ← prompt) */}
+                            {(node.type === 'image' || node.type === 'video') && (() => {
+                                const sources = edges
+                                    .filter(e => e.to === node.id)
+                                    .map(e => allNodes.find(n => n.id === e.from) ?? { id: e.from, type: 'unknown' as any })
+                                    .filter(n => n.type === 'prompt' || n.type === 'unknown')
+                                if (sources.length === 0) return null
+                                return (
+                                    <Section label="Derived from">
+                                        <div className="flex flex-col gap-1">
+                                            {sources.map(n => (
+                                                <LineageItem key={n.id} node={n as CanvasNode} onClick={onSelectNode} />
+                                            ))}
+                                        </div>
+                                    </Section>
+                                )
+                            })()}
+
                             {/* Canvas position */}
                             <Section label="Position">
                                 <Value>{Math.round(node.x)}, {Math.round(node.y)}</Value>
@@ -382,6 +421,29 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
                 </div>
             </div>
         </div>
+    )
+}
+
+// ── Lineage item ──
+
+function LineageItem({ node, onClick }: { node: CanvasNode; onClick?: (id: string) => void }) {
+    const data = node.data ?? {}
+    const label = (() => {
+        if (node.type === 'prompt') return data.prompt_text ? data.prompt_text.slice(0, 48) + (data.prompt_text.length > 48 ? '…' : '') : 'Prompt'
+        if (node.type === 'image') return data.filename || data.src?.split('/').pop() || 'Image'
+        if (node.type === 'video') return data.filename || data.src?.split('/').pop() || 'Video'
+        return node.id.slice(0, 12)
+    })()
+    const icon = node.type === 'image' ? '🖼' : node.type === 'video' ? '🎞' : node.type === 'prompt' ? '📝' : '◈'
+    return (
+        <button
+            onClick={() => onClick?.(node.id)}
+            disabled={!onClick}
+            className="flex items-center gap-2 text-left w-full px-2 py-1 rounded hover:bg-zinc-800 transition-colors group disabled:cursor-default"
+        >
+            <span className="text-[11px] shrink-0">{icon}</span>
+            <span className="text-[11px] text-zinc-400 group-hover:text-zinc-200 truncate transition-colors">{label}</span>
+        </button>
     )
 }
 
