@@ -28,7 +28,7 @@ export default async function ShotWorkspacePage({ params }: Props) {
   }
 
   // Fetch takes from DB (real schema)
-  const rawTakes = await listShotTakes(shotId)
+  const rawTakes = await listShotTakes(shotId) as any[]
 
   // Sort by take_number (immutable, monotonic — canonical order)
   const sortedRawTakes = [...rawTakes].sort((a, b) => {
@@ -47,6 +47,8 @@ export default async function ShotWorkspacePage({ params }: Props) {
     created_at: take.created_at,
     updated_at: take.created_at,
     output_video_node_id: take.output_video_node_id ?? null,
+    editorial_mark: (take.editorial_mark ?? null) as import('@/app/actions/set-editorial-mark').EditorialMark,
+    editorial_note: take.editorial_note ?? null,
   }))
 
   // ── Scene + Shot Strip data ──
