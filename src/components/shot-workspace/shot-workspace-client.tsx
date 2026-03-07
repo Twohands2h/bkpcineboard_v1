@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ShotHeader } from './shot-header'
 import { TakeTabs } from './take-tabs'
+import { setEditorialMarkAction, type EditorialMark } from '@/app/actions/set-editorial-mark'
 import { TakeCanvas, type TakeCanvasHandle, type CanvasNode, type CanvasEdge, type UndoHistory } from '@/components/canvas/TakeCanvas'
 import { VIEWPORT_INITIAL, type ViewportState } from '@/utils/screenToWorld'
 import type { ImageData, VideoData } from '@/components/canvas/NodeContent'
@@ -140,6 +141,8 @@ interface Take {
   created_at: string
   updated_at: string
   output_video_node_id: string | null
+  editorial_mark: EditorialMark
+  editorial_note: string | null
 }
 
 interface StripData {
@@ -165,6 +168,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const searchParams = useSearchParams()
 
   const [takes, setTakes] = useState<Take[]>(initialTakes)
+  const [editorialMarks, setEditorialMarks] = useState<Record<string, { mark: EditorialMark; note: string }>>(() =>
+    Object.fromEntries(initialTakes.map(t => [t.id, { mark: t.editorial_mark ?? null, note: t.editorial_note ?? '' }]))
+  )
 
   const takeFromUrl = searchParams.get('take')
   const defaultTakeId = (takeFromUrl && takes.some(t => t.id === takeFromUrl))
@@ -753,6 +759,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   // ── Approved Take handlers ──
   const handleApproveTake = async (takeId: string) => {
+    const curMark = editorialMarks[takeId]?.mark
+    if (!curMark || curMark === 'alt' || curMark === 'reject') {
+      setEditorialMarks(prev => ({ ...prev, [takeId]: { ...prev[takeId], mark: 'select' } }))
+      void setEditorialMarkAction({ takeId, mark: 'select', note: editorialMarks[takeId]?.note ?? '' })
+    }
     await approveTakeAction(shot.id, takeId)
     router.refresh()
   }
@@ -797,17 +808,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [inspectorPrimaryId, setInspectorPrimaryId] = useState<string | null>(null)
   const [inspectorTick, setInspectorTick] = useState(0) // increments to re-derive node after data change
 
-  const [selectionCount, setSelectionCount] = useState(0)
-
   const handleSelectionChange = useCallback((ids: Set<string>, primaryId: string | null) => {
-    const crystallizableCount = canvasRef.current
-      ? Array.from(ids).filter(id => {
-        const snap = canvasRef.current!.getSnapshot()
-        const node = snap?.nodes.find((n: any) => n.id === id)
-        return node && node.type !== 'column'
-      }).length
-      : 0
-    setSelectionCount(crystallizableCount)
     inspectorSelectionRef.current = { ids, primaryId }
     // Only trigger re-render if inspector is open — avoids render storms when closed
     if (inspectorOpen) setInspectorPrimaryId(primaryId)
@@ -891,6 +892,21 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     setEntityLibraryFilter(undefined)
     setGhostEntityType(null)
   }, [])
+
+  const handleSetMark = useCallback((takeId: string, mark: EditorialMark) => {
+    setEditorialMarks(prev => ({ ...prev, [takeId]: { ...prev[takeId], mark } }))
+    void setEditorialMarkAction({ takeId, mark, note: editorialMarks[takeId]?.note ?? '' })
+  }, [editorialMarks])
+
+  const handleSetNote = useCallback((takeId: string, note: string) => {
+    setEditorialMarks(prev => ({ ...prev, [takeId]: { ...prev[takeId], note } }))
+  }, [])
+
+  const handleCommitNote = useCallback((takeId: string) => {
+    const entry = editorialMarks[takeId]
+    if (!entry) return
+    void setEditorialMarkAction({ takeId, mark: entry.mark, note: entry.note })
+  }, [editorialMarks])
 
   const handleCrystallize = useCallback(() => {
     if (!canvasRef.current) return
@@ -1111,11 +1127,15 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         onRevokeTake={handleRevokeTake}
         onOpenProduction={handleOpenPLP}
         isProductionReady={shot.approved_take_id === readyTakeId}
+        editorialMarks={editorialMarks}
       />
 
       <div className="flex-1 flex">
         <aside className="w-12 bg-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
           {/* Tool rail ALTO: azioni */}
+          <button onClick={() => setShowEntityLibrary(true)} title="Entity Library">
+            👤
+          </button>
           {/* More menu (⋯) — secondary actions */}
           <div className="relative group">
             <button
@@ -1243,19 +1263,12 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           >
             <span className="text-[9px] text-amber-400 pointer-events-none">Prm</span>
           </button>
+          <button onClick={handleCrystallize} title="Crystallize Selection → Entity">
+            💎
+          </button>
+
           {/* Entity type tokens — drag to insert entity_ref filtered by type */}
           <div className="w-6 border-t border-zinc-700 my-1" />
-          {/* Entity Library — opens filtered library; sits above entity tokens */}
-          <button
-            onClick={() => setShowEntityLibrary(true)}
-            title="Entity Library"
-            className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-300 pointer-events-none">
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-            </svg>
-          </button>
           {([
             ['character', 'Char', 'text-amber-400   bg-amber-500/10   border-amber-500/40'],
             ['environment', 'Envi', 'text-emerald-400 bg-emerald-500/10 border-emerald-500/40'],
@@ -1305,7 +1318,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         </aside>
 
         <div
-          className={`flex-1 flex relative overflow-hidden${isDraggingFile ? ' ring-2 ring-inset ring-zinc-500/50' : ''}`}
+          className={`flex-1 flex relative${isDraggingFile ? ' ring-2 ring-inset ring-zinc-500/50' : ''}`}
           onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
           onDragEnter={(e) => { e.preventDefault(); dragCounterRef.current++; setIsDraggingFile(true) }}
           onDragLeave={() => { dragCounterRef.current--; if (dragCounterRef.current <= 0) { setIsDraggingFile(false); dragCounterRef.current = 0 } }}
@@ -1571,22 +1584,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
             />
           )}
 
-          {/* Floating Crystallize CTA — center-bottom, visible only when selection > 0 */}
-          {selectionCount > 0 && (
-            <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 pointer-events-none flex justify-center">
-              <button
-                onClick={handleCrystallize}
-                className="pointer-events-auto flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-900/90 border border-amber-500/40 text-amber-400 text-[11px] font-medium shadow-lg hover:bg-zinc-800 hover:border-amber-400/60 transition-all backdrop-blur-sm select-none"
-                title="Crystallize Selection → Entity"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="pointer-events-none shrink-0">
-                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-                </svg>
-                Crystallize {selectionCount > 1 ? `${selectionCount} nodes` : 'node'} → Entity
-              </button>
-            </div>
-          )}
-
           {/* Inspector handle icon — right edge, visible only when inspector is closed */}
           {!inspectorOpen && readyTakeId && (
             <button
@@ -1620,6 +1617,44 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           )}
         </div>
       </div>
+
+      {/* ── Editorial Bulletin ── */}
+      {currentTakeId && (() => {
+        const take = takes.find(t => t.id === currentTakeId)
+        if (!take) return null
+        const entry = editorialMarks[currentTakeId] ?? { mark: null, note: '' }
+        const MARKS: { value: EditorialMark; label: string; cls: string; activeCls: string }[] = [
+          { value: 'select', label: 'S', cls: 'text-zinc-500 hover:text-emerald-400', activeCls: 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400' },
+          { value: 'alt',    label: 'A', cls: 'text-zinc-500 hover:text-amber-400',   activeCls: 'bg-amber-500/20  border-amber-500/40  text-amber-400'  },
+          { value: 'reject', label: 'R', cls: 'text-zinc-500 hover:text-red-400',     activeCls: 'bg-red-500/20    border-red-500/40    text-red-400'    },
+        ]
+        return (
+          <div className="shrink-0 flex items-center gap-3 px-4 py-1.5 bg-zinc-900 border-t border-zinc-800">
+            <span className="text-[10px] text-zinc-500 font-medium shrink-0">Take {take.take_number}</span>
+            <div className="flex items-center gap-1 shrink-0">
+              {MARKS.map(({ value, label, cls, activeCls }) => (
+                <button
+                  key={value}
+                  onClick={() => handleSetMark(currentTakeId, entry.mark === value ? null : value)}
+                  className={`w-5 h-5 rounded border text-[9px] font-bold flex items-center justify-center transition-all select-none ${entry.mark === value ? activeCls : `border-transparent ${cls}`}`}
+                  title={value === 'select' ? 'Select' : value === 'alt' ? 'Alt' : 'Reject'}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <input
+              type="text"
+              value={entry.note}
+              onChange={e => handleSetNote(currentTakeId, e.target.value)}
+              onBlur={() => handleCommitNote(currentTakeId)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.currentTarget.blur() } }}
+              placeholder="take note…"
+              className="flex-1 bg-transparent text-zinc-400 placeholder-zinc-700 text-[10px] outline-none min-w-0"
+            />
+          </div>
+        )
+      })()}
 
       {showPLP && (
         <ProductionLaunchPanel
