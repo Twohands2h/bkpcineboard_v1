@@ -33,8 +33,7 @@ import { CrystallizeModal } from '@/components/entities/crystallize-modal'
 import { EntityEditOverlay } from '@/components/entities/entity-edit-overlay'
 import { ENTITY_TYPE_UI } from '@/lib/entities/entity-type-ui'
 import type { EntityType } from '@/app/actions/entities'
-import { crystallizeEntityAction, getEntityAction, getEntitiesByIdsAction } from '@/app/actions/entities'
-import type { EntityFreshData } from '@/app/actions/entities'
+import { crystallizeEntityAction, getEntityAction } from '@/app/actions/entities'
 import type { Entity } from '@/app/actions/entities'
 
 // ===================================================
@@ -779,7 +778,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [showPLP, setShowPLP] = useState(false)
   const [plpNodes, setPlpNodes] = useState<CanvasNode[]>([])
   const [plpEdges, setPlpEdges] = useState<CanvasEdge[]>([])
-  const [plpEntityDataMap, setPlpEntityDataMap] = useState<Map<string, EntityFreshData>>(new Map())
   const [showEntityLibrary, setShowEntityLibrary] = useState(false)
   // Entity token drag: tracks drop position + which type token was dragged
   const pendingEntityDropRef = useRef<{ screenX: number; screenY: number } | null>(null)
@@ -799,7 +797,17 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [inspectorPrimaryId, setInspectorPrimaryId] = useState<string | null>(null)
   const [inspectorTick, setInspectorTick] = useState(0) // increments to re-derive node after data change
 
+  const [selectionCount, setSelectionCount] = useState(0)
+
   const handleSelectionChange = useCallback((ids: Set<string>, primaryId: string | null) => {
+    const crystallizableCount = canvasRef.current
+      ? Array.from(ids).filter(id => {
+        const snap = canvasRef.current!.getSnapshot()
+        const node = snap?.nodes.find((n: any) => n.id === id)
+        return node && node.type !== 'column'
+      }).length
+      : 0
+    setSelectionCount(crystallizableCount)
     inspectorSelectionRef.current = { ids, primaryId }
     // Only trigger re-render if inspector is open — avoids render storms when closed
     if (inspectorOpen) setInspectorPrimaryId(primaryId)
@@ -836,7 +844,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     canvasRef.current?.updateNodeDataWithHistory(nodeId, patch)
   }, [])
 
-  const handleOpenPLP = async () => {
+  const handleOpenPLP = () => {
     if (!canvasRef.current) return
     const snap = canvasRef.current.getSnapshot()
     setPlpNodes(snap.nodes)
@@ -849,24 +857,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       console.log(`[PLP edge] ${e.from.slice(0, 8)}→${e.to.slice(0, 8)} dir=${dir}`)
     }
     setShowPLP(true)
-
-    // Fetch fresh entity data for export (bypasses node.data stale values)
-    const entityIds = [...new Set(
-      snap.nodes
-        .filter((n: any) => n.type === 'entity_ref')
-        .map((n: any) => n.data?.entity_id as string | undefined)
-        .filter((id): id is string => typeof id === 'string' && id.length > 0)
-    )]
-    if (entityIds.length === 0) {
-      setPlpEntityDataMap(new Map())
-      return
-    }
-    try {
-      const freshMap = await getEntitiesByIdsAction(entityIds)
-      setPlpEntityDataMap(freshMap)
-    } catch {
-      setPlpEntityDataMap(new Map()) // fallback: PLP uses node.data
-    }
   }
   const handleInsertEntityRef = useCallback((entity: Entity) => {
     if (!canvasRef.current) return
@@ -1126,9 +1116,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       <div className="flex-1 flex">
         <aside className="w-12 bg-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
           {/* Tool rail ALTO: azioni */}
-          <button onClick={() => setShowEntityLibrary(true)} title="Entity Library">
-            👤
-          </button>
           {/* More menu (⋯) — secondary actions */}
           <div className="relative group">
             <button
@@ -1256,12 +1243,19 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           >
             <span className="text-[9px] text-amber-400 pointer-events-none">Prm</span>
           </button>
-          <button onClick={handleCrystallize} title="Crystallize Selection → Entity">
-            💎
-          </button>
-
           {/* Entity type tokens — drag to insert entity_ref filtered by type */}
           <div className="w-6 border-t border-zinc-700 my-1" />
+          {/* Entity Library — opens filtered library; sits above entity tokens */}
+          <button
+            onClick={() => setShowEntityLibrary(true)}
+            title="Entity Library"
+            className="w-9 h-9 bg-zinc-700 hover:bg-zinc-500 hover:scale-105 rounded flex items-center justify-center transition-all select-none"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-300 pointer-events-none">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+            </svg>
+          </button>
           {([
             ['character', 'Char', 'text-amber-400   bg-amber-500/10   border-amber-500/40'],
             ['environment', 'Envi', 'text-emerald-400 bg-emerald-500/10 border-emerald-500/40'],
@@ -1311,7 +1305,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         </aside>
 
         <div
-          className={`flex-1 flex relative${isDraggingFile ? ' ring-2 ring-inset ring-zinc-500/50' : ''}`}
+          className={`flex-1 flex relative overflow-hidden${isDraggingFile ? ' ring-2 ring-inset ring-zinc-500/50' : ''}`}
           onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
           onDragEnter={(e) => { e.preventDefault(); dragCounterRef.current++; setIsDraggingFile(true) }}
           onDragLeave={() => { dragCounterRef.current--; if (dragCounterRef.current <= 0) { setIsDraggingFile(false); dragCounterRef.current = 0 } }}
@@ -1577,6 +1571,22 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
             />
           )}
 
+          {/* Floating Crystallize CTA — center-bottom, visible only when selection > 0 */}
+          {selectionCount > 0 && (
+            <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 pointer-events-none flex justify-center">
+              <button
+                onClick={handleCrystallize}
+                className="pointer-events-auto flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-900/90 border border-amber-500/40 text-amber-400 text-[11px] font-medium shadow-lg hover:bg-zinc-800 hover:border-amber-400/60 transition-all backdrop-blur-sm select-none"
+                title="Crystallize Selection → Entity"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="pointer-events-none shrink-0">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                </svg>
+                Crystallize {selectionCount > 1 ? `${selectionCount} nodes` : 'node'} → Entity
+              </button>
+            </div>
+          )}
+
           {/* Inspector handle icon — right edge, visible only when inspector is closed */}
           {!inspectorOpen && readyTakeId && (
             <button
@@ -1621,8 +1631,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           sceneIndex={sceneIdx}
           shotIndex={shot.order_index}
           takeNumber={currentTake?.take_number ?? 1}
-          entityDataMap={plpEntityDataMap}
-          onClose={() => { setShowPLP(false); setPlpEntityDataMap(new Map()) }}
+          onClose={() => setShowPLP(false)}
         />
       )}
       {showEntityLibrary && (

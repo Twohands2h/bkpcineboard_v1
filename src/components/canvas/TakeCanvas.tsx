@@ -195,7 +195,7 @@ function getInsertionIndex(nodes: CanvasNode[], rects: Map<string, Rect>, column
 }
 
 interface SelectionBoxRect { left: number; top: number; width: number; height: number }
-interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
+interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string; originalWidth: number }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
     function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onSetFinalVisual, onClearFinalVisual, currentFinalVisualNodeId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, onBeforeDeleteNode, ratingMap, onSetRating, onSelectionChange, onToggleInspector }, ref) {
@@ -211,10 +211,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
         const hoveredNodeIdRef = useRef<string | null>(null)
         hoveredNodeIdRef.current = hoveredNodeId
-
-        // ── Entity→Prompt link toast (B1) ──
-        const [entityLinkToast, setEntityLinkToast] = useState(false)
-        const entityLinkToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
         // ── Peek Ghost Preview (entity_ref only) ──
         const [peekNodeId, setPeekNodeId] = useState<string | null>(null)
@@ -849,7 +845,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         if (n.id === det.nodeId) {
                             return targetColId
                                 ? { ...n, data: { ...n.data, parentId: targetColId } }
-                                : { ...n, x: fx, y: fy, width: det.frozenRect.width, data: { ...n.data, parentId: null } }
+                                : { ...n, x: fx, y: fy, width: det.originalWidth, data: { ...n.data, parentId: null } }
                         }
                         if (n.type === 'column') {
                             const col = n as ColumnNode; let order = [...(col.data.childOrder || [])]
@@ -1002,16 +998,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
             setConnectionGhost({ fromX: f.x, fromY: f.y, toX: world.x, toY: world.y })
         }, [mouseToWorld])
 
-        // Coalescing: reset timer on each call, toast shows for 1.8s after last event
-        const showEntityLinkToast = useCallback(() => {
-            if (entityLinkToastTimerRef.current) clearTimeout(entityLinkToastTimerRef.current)
-            setEntityLinkToast(true)
-            entityLinkToastTimerRef.current = setTimeout(() => {
-                setEntityLinkToast(false)
-                entityLinkToastTimerRef.current = null
-            }, 1800)
-        }, [])
-
         const handleConnectionMouseUp = useCallback((e: MouseEvent) => {
             window.removeEventListener('mousemove', handleConnectionMouseMove); window.removeEventListener('mouseup', handleConnectionMouseUp)
             const c = connectionRef.current
@@ -1063,15 +1049,11 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     if (!isDupe) {
                         setEdges(p => [...p, { id: crypto.randomUUID(), from: edgeFrom, to: edgeTo, label: edgeLabel }])
                         setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
-                        // B1: toast when entity_ref links to prompt (PLP-relevant edge)
-                        if (fromType === 'entity_ref' && toType === 'prompt') {
-                            showEntityLinkToast()
-                        }
                     }
                 }
             }
             connectionRef.current = null; setConnectionGhost(null); setInteractionMode('idle')
-        }, [handleConnectionMouseMove, pushHistory, emitNodesChange, mouseToWorld, showEntityLinkToast])
+        }, [handleConnectionMouseMove, pushHistory, emitNodesChange, mouseToWorld])
 
         const handleConnectionStart = useCallback((nodeId: string, mx: number, my: number) => {
             const cr = canvasRef.current?.getBoundingClientRect(); if (!cr) return
@@ -1217,7 +1199,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 const renderRect = currentRects.get(nodeId); if (!renderRect) return
                 const parentId = (nd.data as any).parentId as string
                 frozenRectsRef.current = currentRects; setFrozenColumnId(parentId)
-                detachingRef.current = { nodeId, frozenRect: { ...renderRect }, originalParentId: parentId }
+                detachingRef.current = { nodeId, frozenRect: { ...renderRect }, originalParentId: parentId, originalWidth: nd.width }
                 setDetachingOffset({ dx: 0, dy: 0 })
                 dragRef.current = { nodeId, offsets: new Map([[nodeId, { startX: renderRect.x, startY: renderRect.y }]]), startMouseX: mouseX, startMouseY: mouseY, hasMoved: false }
             } else {
@@ -1644,6 +1626,8 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         // R4-005: Double-click canvas = reset viewport
         // R4-005b: Only on truly empty canvas — not on nodes, columns, or their children
         const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
+            e.preventDefault()
+            window.getSelection()?.removeAllRanges()
             const target = e.target as HTMLElement
             if (target.closest('[data-node-shell]')) return
             if (target.closest('button') || target.closest('input') || target.closest('textarea')) return
@@ -1730,7 +1714,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
         return (
             <div
                 ref={canvasRef}
-                className="flex-1 bg-zinc-950 relative overflow-hidden"
+                className="flex-1 bg-zinc-950 relative overflow-hidden select-none"
                 style={{ cursor: spaceDownRef.current || interactionMode === 'panning' ? 'grab' : undefined }}
                 onMouseDown={handleCanvasMouseDown}
                 onDoubleClick={handleCanvasDoubleClick}
@@ -2057,15 +2041,6 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         naturalHeight={inspectImage.naturalHeight}
                         onClose={() => setInspectImage(null)}
                     />
-                )}
-
-                {/* B1: Entity→Prompt link toast */}
-                {entityLinkToast && (
-                    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
-                        <div className="px-3 py-1.5 rounded-full bg-zinc-800 border border-zinc-600 text-zinc-300 text-[11px] font-medium shadow-lg">
-                            Entity added to Prompt Pack
-                        </div>
-                    </div>
                 )}
 
                 {/* Confirm Modal — replaces window.confirm for delete guards */}

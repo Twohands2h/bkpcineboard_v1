@@ -467,18 +467,35 @@ function EntityRow({ entity, usageCount, projectId, onEdit, onDelete, onReplace,
     const promptCount = (entity.content as any)?.prompts?.length ?? 0
     const description = (entity.content as any)?.description ?? ''
     const thumbnail = (entity.content as any)?.thumbnail_path
+    // Derive public URL from first media item if no thumbnail_path
+    const firstMediaSrc = !thumbnail
+        ? ((entity.content as any)?.media?.[0]?.src ?? null)
+        : null
+    const thumbSrc = thumbnail || firstMediaSrc || null
 
     return (
         <div className="group flex items-start gap-3 p-3 bg-zinc-800/40 border border-zinc-700/50 rounded-lg hover:border-zinc-600/60 transition-colors">
             {/* Thumbnail — fixed 48×48, never shifts regardless of content */}
             <div className="w-12 h-12 shrink-0 rounded bg-zinc-800 border border-zinc-700 flex items-center justify-center overflow-hidden">
-                {thumbnail ? (
-                    <img src={thumbnail} alt="" width={48} height={48} className="w-full h-full object-cover" />
-                ) : (
-                    <div className="w-5 h-5 flex items-center justify-center shrink-0">
-                        <TypeIcon size={20} className={typeCfg.textClass} />
-                    </div>
-                )}
+                {thumbSrc ? (
+                    <img
+                        src={thumbSrc}
+                        alt=""
+                        width={48}
+                        height={48}
+                        className="w-full h-full object-cover"
+                        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; (e.currentTarget.nextElementSibling as HTMLElement | null)?.removeAttribute('hidden') }}
+                    />
+                ) : null}
+                <div
+                    hidden={!!thumbSrc}
+                    className="w-5 h-5 flex items-center justify-center shrink-0"
+                >
+                    {TypeIcon
+                        ? <TypeIcon size={20} className={typeCfg.textClass} />
+                        : <span className="text-zinc-500 text-xs">?</span>
+                    }
+                </div>
             </div>
 
             {/* Info */}
