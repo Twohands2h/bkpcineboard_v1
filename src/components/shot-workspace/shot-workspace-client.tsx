@@ -13,6 +13,7 @@ import {
   loadLatestTakeSnapshotAction,
 } from '@/app/actions/take-snapshots'
 import { createTakeAction } from '@/app/actions/takes'
+import { createShotAction } from '@/app/actions/create-shot'
 import { setShotFinalVisualAction, getShotFinalVisualAction, clearShotFinalVisualAction } from '@/app/actions/shot-final-visual'
 import {
   approveTakeAction,
@@ -782,6 +783,34 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   // ── Take Export ──
   const [exportNodes, setExportNodes] = useState<CanvasNode[] | null>(null)
 
+  // ── New Shot modal ──
+  const [showNewShotModal, setShowNewShotModal] = useState(false)
+  const [newShotName, setNewShotName] = useState('')
+  const [newShotTag, setNewShotTag] = useState('')
+  const [newShotPending, setNewShotPending] = useState(false)
+
+  const handleNewShotSubmit = async () => {
+    const name = newShotName.trim()
+    if (!name || newShotPending) return
+    setNewShotPending(true)
+    try {
+      const { id: newShotId } = await createShotAction({
+        projectId,
+        sceneId: shot.scene_id,
+        name,
+        tag: newShotTag.trim() || undefined,
+      })
+      setShowNewShotModal(false)
+      setNewShotName('')
+      setNewShotTag('')
+      router.push(`/projects/${projectId}/shots/${newShotId}`)
+    } catch (err) {
+      console.error('Failed to create shot:', err)
+    } finally {
+      setNewShotPending(false)
+    }
+  }
+
   const handleExportOpen = () => {
     if (!canvasRef.current) return
     setExportNodes(canvasRef.current.getSnapshot().nodes)
@@ -1033,6 +1062,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           currentSceneId={stripData.currentSceneId}
           currentShotId={shot.id}
           sceneShots={stripData.sceneShots}
+          onNewShot={() => setShowNewShotModal(true)}
         />
         {uploadsInProgress && (
           <div
@@ -1767,6 +1797,62 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           onConfirm={confirmState.onConfirm}
           onCancel={() => setConfirmState(null)}
         />
+      )}
+
+      {/* ── New Shot modal ── */}
+      {showNewShotModal && (
+        <div
+          className="fixed inset-0 z-[200] bg-black/70 flex items-center justify-center"
+          onClick={() => { setShowNewShotModal(false); setNewShotName(''); setNewShotTag('') }}
+        >
+          <div
+            className="bg-zinc-900 border border-zinc-700 rounded-lg p-5 w-80 flex flex-col gap-4 shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <h2 className="text-sm font-semibold text-zinc-100 tracking-wide">New Shot</h2>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Name <span className="text-red-400">*</span></label>
+              <input
+                autoFocus
+                type="text"
+                value={newShotName}
+                onChange={e => setNewShotName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleNewShotSubmit(); if (e.key === 'Escape') { setShowNewShotModal(false); setNewShotName(''); setNewShotTag('') } }}
+                placeholder="e.g. Reaction close-up"
+                className="bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Tag <span className="text-zinc-600 font-normal normal-case">(optional)</span></label>
+              <input
+                type="text"
+                value={newShotTag}
+                onChange={e => setNewShotTag(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleNewShotSubmit(); if (e.key === 'Escape') { setShowNewShotModal(false); setNewShotName(''); setNewShotTag('') } }}
+                placeholder="e.g. B-roll"
+                className="bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => { setShowNewShotModal(false); setNewShotName(''); setNewShotTag('') }}
+                className="px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleNewShotSubmit}
+                disabled={!newShotName.trim() || newShotPending}
+                className="px-4 py-1.5 text-xs font-medium bg-zinc-700 hover:bg-zinc-600 text-zinc-100 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {newShotPending ? 'Creating…' : 'Create Shot'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

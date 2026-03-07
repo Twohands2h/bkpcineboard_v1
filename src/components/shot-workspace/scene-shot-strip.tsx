@@ -29,6 +29,7 @@ interface SceneShotStripProps {
     currentShotId: string
     sceneShots: StripShot[]
     activeShotOverrideHasFV?: boolean
+    onNewShot?: () => void
 }
 
 // Session-only memory helpers (no DB, no domain changes)
@@ -52,6 +53,7 @@ export function SceneShotStrip({
     currentShotId,
     sceneShots,
     activeShotOverrideHasFV,
+    onNewShot,
 }: SceneShotStripProps) {
     const router = useRouter()
 
@@ -89,8 +91,8 @@ export function SceneShotStrip({
                         key={scene.id}
                         onClick={() => navigateToScene(scene)}
                         className={`px-2.5 py-1 text-[10px] font-medium rounded transition-colors whitespace-nowrap ${scene.id === currentSceneId
-                                ? 'bg-zinc-700 text-zinc-100'
-                                : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
+                            ? 'bg-zinc-700 text-zinc-100'
+                            : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
                             }`}
                     >
                         {scene.title || `Scene ${scene.order_index + 1}`}
@@ -117,8 +119,8 @@ export function SceneShotStrip({
                             onClick={() => navigateToShot(shot.id)}
                             onMouseEnter={() => router.prefetch(shotUrl)}
                             className={`shrink-0 flex items-center gap-1.5 px-1.5 py-0.5 rounded transition-colors relative ${isActive
-                                    ? 'bg-zinc-700/80 ring-1 ring-blue-500/60'
-                                    : 'hover:bg-zinc-800'
+                                ? 'bg-zinc-700/80 ring-1 ring-blue-500/60'
+                                : 'hover:bg-zinc-800'
                                 }`}
                         >
                             {/* Thumbnail or placeholder */}
@@ -151,8 +153,8 @@ export function SceneShotStrip({
                             {effectiveStatus !== 'DEFAULT' && (
                                 <div
                                     className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${effectiveStatus === 'DECIDED'
-                                            ? 'bg-emerald-500'
-                                            : 'bg-amber-500/70'
+                                        ? 'bg-emerald-500'
+                                        : 'bg-amber-500/70'
                                         }`}
                                     title={effectiveStatus === 'DECIDED' ? 'Approved' : 'Has Final Visual'}
                                 />
@@ -161,6 +163,21 @@ export function SceneShotStrip({
                     )
                 })}
             </div>
+
+            {/* + New Shot */}
+            {onNewShot && (
+                <>
+                    <div className="w-px h-6 bg-zinc-800 shrink-0" />
+                    <button
+                        onClick={onNewShot}
+                        className="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors text-[10px] font-medium"
+                        title="New Shot in this scene"
+                    >
+                        <span className="text-[11px] leading-none">+</span>
+                        <span>New Shot</span>
+                    </button>
+                </>
+            )}
         </div>
     )
 }
