@@ -1057,6 +1057,18 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
     }
   }, [shot.id, loadShotDerivedState, router])
 
+  // ── Approved take label + mark (for header) ──
+  const approvedTake = shot.approved_take_id
+    ? takes.find(t => t.id === shot.approved_take_id) ?? null
+    : null
+  const approvedTakeLabel = approvedTake
+    ? `T${String(approvedTake.take_number).padStart(2, '0')}`
+    : null
+
+  const handleJumpToApprovedTake = () => {
+    if (shot.approved_take_id) setCurrentTakeId(shot.approved_take_id)
+  }
+
   // Strip rendering helper
   const renderStrip = () => {
     if (!stripData || stripData.scenes.length === 0) return null
@@ -1098,6 +1110,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           outputVideoSrc={null}
           fvTakeLabel={null}
           outputTakeLabel={null}
+          approvedTakeLabel={approvedTakeLabel}
+          onJumpToApprovedTake={handleJumpToApprovedTake}
         />
         <div className="flex-1 flex items-center justify-center bg-zinc-950">
           <div className="text-center">
@@ -1145,6 +1159,8 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         onDownloadOutput={localOutputVideoSrc ? () => triggerDownload(localOutputVideoSrc!, `${shotPrefix}_OUTPUT.${extFromUrl(localOutputVideoSrc!, 'mp4')}`) : undefined}
         fvTakeLabel={fvTakeLabel}
         outputTakeLabel={outputTakeLabel}
+        approvedTakeLabel={approvedTakeLabel}
+        onJumpToApprovedTake={handleJumpToApprovedTake}
       />
 
       <TakeTabs
