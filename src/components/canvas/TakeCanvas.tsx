@@ -200,12 +200,13 @@ interface SelectionBoxRect { left: number; top: number; width: number; height: n
 interface DetachingState { nodeId: string; frozenRect: Rect; originalParentId: string }
 
 export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
-    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onSetFinalVisual, onClearFinalVisual, currentFinalVisualNodeId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, onBeforeDeleteNode, ratingMap, onSetRating, onSelectionChange, onToggleInspector }, ref) {
+    function TakeCanvas({ takeId, initialNodes, initialEdges, onNodesChange, initialUndoHistory, onUndoHistoryChange, onSetFinalVisual, onClearFinalVisual, currentFinalVisualNodeId, outputVideoNodeId, onSetOutputVideo, onClearOutputVideo, onBeforeDeleteNode, ratingMap, onSetRating, onSelectionChange, onToggleInspector, onOpenInspector }, ref) {
         const [nodes, _setNodesRaw] = useState<CanvasNode[]>(() => initialNodes ?? [])
         const [edges, _setEdgesRaw] = useState<CanvasEdge[]>(() => initialEdges ?? [])
         const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
         const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
         const [editingEdgeLabel, setEditingEdgeLabel] = useState<string | null>(null)
+        const [gwEditingCustomId, setGwEditingCustomId] = useState<string | null>(null)
         const [interactionMode, setInteractionMode] = useState<InteractionMode>('idle')
         const [editingField, setEditingField] = useState<'title' | 'body' | null>(null)
         const [selectionBoxRect, setSelectionBoxRect] = useState<SelectionBoxRect | null>(null)
@@ -1916,6 +1917,55 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                             {isCurrentFV ? 'Final Visual ✓' : 'Set Final Visual'}
                                         </button>
                                     )}
+                                    {primarySelectedId === activeNodeId && (() => {
+                                        const gwCurrent: string = (liveNode.data as any)?.generated_with ?? ''
+                                        const gwOpts = ['Unknown', 'Midjourney', 'Stable Diffusion', 'DALL·E', 'Flux', 'Freepik', 'ComfyUI', 'Nanobanana', 'Imported / Real Footage']
+                                        const gwIsCustom = gwCurrent && !gwOpts.includes(gwCurrent)
+                                        const isEditingCustom = gwEditingCustomId === liveNode.id
+                                        const saveGw = (val: string) => {
+                                            const trimmed = val.trim()
+                                            setGwEditingCustomId(null)
+                                            if (!trimmed || trimmed === gwCurrent) return
+                                            setNodes(p => p.map(n => n.id === liveNode.id ? { ...n, data: { ...n.data, generated_with: trimmed } } : n))
+                                            setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                                        }
+                                        if (isEditingCustom) return (
+                                            <input
+                                                autoFocus
+                                                type="text"
+                                                defaultValue={gwIsCustom ? gwCurrent : ''}
+                                                placeholder="e.g. HiDream, Kling…"
+                                                onBlur={e => saveGw(e.target.value)}
+                                                onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') saveGw((e.target as HTMLInputElement).value); if (e.key === 'Escape') setGwEditingCustomId(null) }}
+                                                onMouseDown={e => e.stopPropagation()}
+                                                onClick={e => e.stopPropagation()}
+                                                className="bg-zinc-800 border border-sky-600 text-sky-300 text-[10px] font-medium rounded px-1.5 py-0.5 w-32 focus:outline-none"
+                                            />
+                                        )
+                                        return (
+                                            <div className="relative flex items-center">
+                                                <select
+                                                    value={gwIsCustom ? '__custom__' : (gwCurrent || 'Unknown')}
+                                                    onChange={e => {
+                                                        e.stopPropagation()
+                                                        const val = e.target.value
+                                                        if (val === '__custom_edit__') { setGwEditingCustomId(liveNode.id); return }
+                                                        setNodes(p => p.map(n => n.id === liveNode.id ? { ...n, data: { ...n.data, generated_with: val === 'Unknown' ? null : val } } : n))
+                                                        setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                                                    }}
+                                                    onMouseDown={e => e.stopPropagation()}
+                                                    onClick={e => e.stopPropagation()}
+                                                    className="appearance-none bg-zinc-800/90 border border-zinc-700 text-zinc-500 text-[10px] font-medium rounded px-1.5 pr-4 py-0.5 cursor-pointer hover:border-zinc-500 hover:text-zinc-300 transition-colors focus:outline-none"
+                                                    title="Generated with"
+                                                >
+                                                    {gwOpts.map(o => <option key={o} value={o}>{o}</option>)}
+                                                    {gwIsCustom && <option value="__custom__">{gwCurrent}</option>}
+                                                    <option value="__custom_edit__">Custom…</option>
+                                                </select>
+                                                <span className="absolute right-1 pointer-events-none text-zinc-600 text-[8px]">▾</span>
+                                            </div>
+                                        )
+                                    })()}
                                 </div>
                             </div>
                         )
@@ -1948,8 +1998,92 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 >
                                     {isOutput ? 'Output ✓' : 'Set Output'}
                                 </button>
+                                {primarySelectedId === activeNodeId && (() => {
+                                    const gwCurrent: string = (node.data as any)?.generated_with ?? ''
+                                    const gwOpts = ['Unknown', 'Runway', 'Kling', 'Veo', 'Pika', 'ComfyUI', 'Imported / Real Footage']
+                                    const gwIsCustom = gwCurrent && !gwOpts.includes(gwCurrent)
+                                    const isEditingCustom = gwEditingCustomId === node.id
+                                    const saveGw = (val: string) => {
+                                        const trimmed = val.trim()
+                                        setGwEditingCustomId(null)
+                                        if (!trimmed || trimmed === gwCurrent) return
+                                        setNodes(p => p.map(n => n.id === node.id ? { ...n, data: { ...n.data, generated_with: trimmed } } : n))
+                                        setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                                    }
+                                    if (isEditingCustom) return (
+                                        <input
+                                            autoFocus
+                                            type="text"
+                                            defaultValue={gwIsCustom ? gwCurrent : ''}
+                                            placeholder="e.g. HiDream, Kling…"
+                                            onBlur={e => saveGw(e.target.value)}
+                                            onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') saveGw((e.target as HTMLInputElement).value); if (e.key === 'Escape') setGwEditingCustomId(null) }}
+                                            onMouseDown={e => e.stopPropagation()}
+                                            onClick={e => e.stopPropagation()}
+                                            className="bg-zinc-800 border border-sky-600 text-sky-300 text-[10px] font-medium rounded px-1.5 py-0.5 w-32 focus:outline-none"
+                                        />
+                                    )
+                                    return (
+                                        <div className="relative flex items-center">
+                                            <select
+                                                value={gwIsCustom ? '__custom__' : (gwCurrent || 'Unknown')}
+                                                onChange={e => {
+                                                    e.stopPropagation()
+                                                    const val = e.target.value
+                                                    if (val === '__custom_edit__') { setGwEditingCustomId(node.id); return }
+                                                    setNodes(p => p.map(n => n.id === node.id ? { ...n, data: { ...n.data, generated_with: val === 'Unknown' ? null : val } } : n))
+                                                    setTimeout(() => { pushHistory(); emitNodesChange() }, 0)
+                                                }}
+                                                onMouseDown={e => e.stopPropagation()}
+                                                onClick={e => e.stopPropagation()}
+                                                className="appearance-none bg-zinc-800/90 border border-zinc-700 text-zinc-500 text-[10px] font-medium rounded px-1.5 pr-4 py-0.5 cursor-pointer hover:border-zinc-500 hover:text-zinc-300 transition-colors focus:outline-none"
+                                                title="Generated with"
+                                            >
+                                                {gwOpts.map(o => <option key={o} value={o}>{o}</option>)}
+                                                {gwIsCustom && <option value="__custom__">{gwCurrent}</option>}
+                                                <option value="__custom_edit__">Custom…</option>
+                                            </select>
+                                            <span className="absolute right-1 pointer-events-none text-zinc-600 text-[8px]">▾</span>
+                                        </div>
+                                    )
+                                })()}
                             </div>
                         )
+                    })()}
+
+                    {/* Generated With — passive badge, world-space inside vp transform, below-left of node (same row as FF/LF pill) */}
+                    {interactionMode === 'idle' && (() => {
+                        const abbrev: Record<string, string> = {
+                            'Midjourney': 'MJ', 'Stable Diffusion': 'SD', 'DALL·E': 'DLE',
+                            'Flux': 'FX', 'Freepik': 'FPK', 'ComfyUI': 'CUI',
+                            'Nanobanana': 'NB', 'Runway': 'RW', 'Kling': 'KL',
+                            'Veo': 'Veo', 'Pika': 'PKA', 'Manual': 'MAN',
+                            'Imported / Real Footage': 'IRL',
+                        }
+                        const gwNodes = nodesRef.current.filter(n =>
+                            (n.type === 'image' || n.type === 'video') &&
+                            (n.data as any)?.generated_with &&
+                            n.id !== activeNodeId
+                        )
+                        return gwNodes.map(node => {
+                            const rect = renderRects.get(node.id)
+                            if (!rect) return null
+                            const raw: string = (node.data as any).generated_with ?? ''
+                            if (!raw || raw === 'Unknown') return null
+                            const s = 1 / viewport.scale
+                            const label = abbrev[raw] ?? (raw.length > 5 ? raw.slice(0, 5) : raw)
+                            return (
+                                <div
+                                    key={`gw-tag-${node.id}`}
+                                    className="absolute pointer-events-none z-[9996]"
+                                    style={{ left: rect.x, top: rect.y + rect.height + 8 * s, transform: `scale(${s})`, transformOrigin: 'top left' }}
+                                >
+                                    <span className="inline-block px-1.5 py-0.5 text-[10px] font-mono font-bold leading-none rounded bg-sky-950/90 border border-sky-600/70 text-sky-400 whitespace-nowrap">
+                                        {label}
+                                    </span>
+                                </div>
+                            )
+                        })
                     })()}
 
                     {/* Rating pill — top-right outside node, cycles 0→1→2→3→0 (image/video with storage_path) */}
@@ -1985,6 +2119,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         )
                     })()}
                 </div>
+
+
+
+
                 {nodes.length === 0 && edges.length === 0 && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none"><p className="text-zinc-600 text-sm">Drag "Note" or "Image" from sidebar to canvas</p></div>
                 )}

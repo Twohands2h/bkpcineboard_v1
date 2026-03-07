@@ -1656,6 +1656,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               }}
               onSelectionChange={handleSelectionChange}
               onToggleInspector={handleToggleInspector}
+              onOpenInspector={() => setInspectorOpen(true)}
             />
           )}
 
