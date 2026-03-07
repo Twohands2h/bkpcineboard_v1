@@ -1860,15 +1860,15 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
 
                     {/* FV pill — bottom center outside selected image node, toggle set/clear */}
                     {/* Combined row: [FF] [LF] + [FV] for image nodes */}
-                    {activeNodeId && interactionMode === 'idle' && (() => {
-                        const liveNode = nodesRef.current.find(n => n.id === activeNodeId)
+                    {primarySelectedId && interactionMode === 'idle' && (() => {
+                        const liveNode = nodesRef.current.find(n => n.id === primarySelectedId)
                         if (!liveNode || liveNode.type !== 'image') return null
-                        const rect = renderRects.get(activeNodeId)
+                        const rect = renderRects.get(primarySelectedId)
                         if (!rect) return null
                         const s = 1 / viewport.scale
                         const isCurrentFV = liveNode.id === currentFinalVisualNodeId
-                        const fr = primarySelectedId === activeNodeId ? ((liveNode.data as any).frame_role ?? null) : null
-                        const showFfLf = primarySelectedId === activeNodeId
+                        const fr = (liveNode.data as any).frame_role ?? null
+                        const showFfLf = true
                         const showFv = !!onSetFinalVisual
                         if (!showFfLf && !showFv) return null
                         const setRole = (role: string | null) => {
@@ -1917,7 +1917,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                             {isCurrentFV ? 'Final Visual ✓' : 'Set Final Visual'}
                                         </button>
                                     )}
-                                    {primarySelectedId === activeNodeId && (() => {
+                                    {(() => {
                                         const gwCurrent: string = (liveNode.data as any)?.generated_with ?? ''
                                         const gwOpts = ['Unknown', 'Midjourney', 'Stable Diffusion', 'DALL·E', 'Flux', 'Freepik', 'ComfyUI', 'Nanobanana', 'Imported / Real Footage']
                                         const gwIsCustom = gwCurrent && !gwOpts.includes(gwCurrent)
@@ -1972,10 +1972,10 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     })()}
 
                     {/* Output pill — bottom center outside video node, toggle set/clear */}
-                    {onSetOutputVideo && activeNodeId && interactionMode === 'idle' && (() => {
-                        const node = nodesRef.current.find(n => n.id === activeNodeId)
+                    {onSetOutputVideo && primarySelectedId && interactionMode === 'idle' && (() => {
+                        const node = nodesRef.current.find(n => n.id === primarySelectedId)
                         if (!node || node.type !== 'video') return null
-                        const rect = renderRects.get(activeNodeId)
+                        const rect = renderRects.get(primarySelectedId)
                         if (!rect) return null
                         const s = 1 / viewport.scale
                         const isOutput = node.id === outputVideoNodeId
@@ -1998,7 +1998,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                                 >
                                     {isOutput ? 'Output ✓' : 'Set Output'}
                                 </button>
-                                {primarySelectedId === activeNodeId && (() => {
+                                {(() => {
                                     const gwCurrent: string = (node.data as any)?.generated_with ?? ''
                                     const gwOpts = ['Unknown', 'Runway', 'Kling', 'Veo', 'Pika', 'ComfyUI', 'Imported / Real Footage']
                                     const gwIsCustom = gwCurrent && !gwOpts.includes(gwCurrent)
@@ -2063,7 +2063,7 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                         const gwNodes = nodesRef.current.filter(n =>
                             (n.type === 'image' || n.type === 'video') &&
                             (n.data as any)?.generated_with &&
-                            n.id !== activeNodeId
+                            n.id !== primarySelectedId
                         )
                         return gwNodes.map(node => {
                             const rect = renderRects.get(node.id)
@@ -2087,12 +2087,12 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                     })()}
 
                     {/* Rating pill — top-right outside node, cycles 0→1→2→3→0 (image/video with storage_path) */}
-                    {onSetRating && activeNodeId && interactionMode === 'idle' && (() => {
-                        const node = nodesRef.current.find(n => n.id === activeNodeId)
+                    {onSetRating && primarySelectedId && interactionMode === 'idle' && (() => {
+                        const node = nodesRef.current.find(n => n.id === primarySelectedId)
                         if (!node || (node.type !== 'image' && node.type !== 'video')) return null
                         const sp = (node.data as any)?.storage_path
                         if (!sp) return null
-                        const rect = renderRects.get(activeNodeId)
+                        const rect = renderRects.get(primarySelectedId)
                         if (!rect) return null
                         const s = 1 / viewport.scale
                         const rating = ratingMap?.[sp] ?? 0
