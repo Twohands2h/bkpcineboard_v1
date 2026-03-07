@@ -118,6 +118,8 @@ export interface TakeCanvasHandle {
     patchEntityRefsForReplace: (fromEntityId: string, toEntityId: string) => number
     /** In-memory only: remove entity_ref nodes + connected edges. No history, no persist. */
     removeEntityRefs: (entityId: string) => number
+    /** Select a single node by id (clears other selections). No history. */
+    selectNode: (nodeId: string) => void
 }
 
 type InteractionMode = 'idle' | 'dragging' | 'editing' | 'resizing' | 'selecting' | 'connecting' | 'panning'
@@ -693,6 +695,11 @@ export const TakeCanvas = forwardRef<TakeCanvasHandle, TakeCanvasProps>(
                 }))
                 // No pushHistory, no emitNodesChange — server already wrote the snapshot
                 return count
+            },
+            selectNode: (nodeId: string): void => {
+                setSelectedNodeIds(new Set([nodeId]))
+                setSelectedEdgeId(null)
+                setInteractionMode('idle')
             },
             removeEntityRefs: (entityId: string): number => {
                 const removedIds = new Set<string>()
