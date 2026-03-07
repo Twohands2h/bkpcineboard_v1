@@ -12,7 +12,7 @@ import {
 
 import { getEntityAction, type Entity } from '@/app/actions/entities'
 import { getEntityUsageAction, type EntityUsageResult } from '@/app/actions/entity-ref-ops'
-import { EntityPackPreview, normalizeMedia, normalizePrompts, normalizeNotes, getMediaUrl } from '@/components/entities/entity-pack-preview'
+import { EntityPackPreview, normalizeMedia, normalizePrompts, normalizeNotes, getMediaUrl, buildEntityTxt, buildManifestJson, type EntityMeta } from '@/components/entities/entity-pack-preview'
 import { entityCache, invalidateEntityCache, useEntityVersion } from '@/lib/entities/entity-cache'
 import { getEntityTypeUI } from '@/lib/entities/entity-type-ui'
 // ── Helpers ──
@@ -151,34 +151,34 @@ export function InspectorPanel({ node, onClose, onUpdateNodeData, onOpenEntityEd
                 </div>
 
                 {/* Body */}
-                <div className="flex-1 overflow-y-auto px-3 py-3">
+                <div className="flex-1 overflow-y-auto px-3 pb-3 pt-0">
                     {!node ? (
                         <p className="text-xs text-zinc-600 italic">Select a node to inspect</p>
 
                     ) : isEntityRef ? (
                         /* ═══ Entity Ref layout ═══ */
                         <div className="space-y-3">
-                            {/* Actions: top, always visible */}
+                            {/* Sticky actions bar — buttons only */}
                             {data.entity_id && onOpenEntityEdit && (
-                                <div className="flex items-center gap-2">
-                                    <button
-                                        onClick={() => onOpenEntityEdit(data.entity_id)}
-                                        className="flex-1 px-2 py-1.5 text-[10px] rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 hover:bg-amber-500/20 transition-colors text-center"
-                                    >
-                                        Edit Entity
-                                    </button>
-                                    {fetchedEntity && (
-                                        <div className="flex-1">
-                                            <DownloadEntityPackButton entity={fetchedEntity} />
-                                        </div>
-                                    )}
+                                <div className="sticky top-0 z-10 bg-zinc-900 pt-3 pb-2">
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={() => onOpenEntityEdit(data.entity_id)}
+                                            className="flex-1 px-2 py-1.5 text-[10px] rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 hover:bg-amber-500/20 transition-colors text-center"
+                                        >
+                                            Edit Entity
+                                        </button>
+                                        {fetchedEntity && (
+                                            <div className="flex-1">
+                                                <DownloadEntityPackButton entity={fetchedEntity} />
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="border-t border-zinc-800 mt-2" />
                                 </div>
                             )}
 
-                            {/* Separator */}
-                            <div className="border-t border-zinc-800" />
-
-                            {/* Badge + name: live from fetchedEntity, neutral while loading */}
+                            {/* Badge + name — scrolls with content */}
                             {(() => {
                                 if (entityLoading || (!fetchedEntity && data.entity_id)) {
                                     return (
@@ -563,35 +563,7 @@ function ProvenanceSelect({ value, options, placeholder, nodeId, field, onUpdate
     )
 }
 
-// ── Download Entity Pack ZIP ──
-
-function formatEntityPackText(entity: Entity): string {
-    const c = entity.content as any
-    const lines: string[] = []
-
-    lines.push(`ENTITY: ${entity.name}`)
-    lines.push(`TYPE: ${entity.entity_type}`)
-    if (c?.description) lines.push(`DESCRIPTION: ${c.description}`)
-    lines.push('─'.repeat(40))
-
-    const prompts = normalizePrompts(c?.prompts ?? [])
-    if (prompts.length > 0) {
-        lines.push('', 'PROMPTS', '─'.repeat(40))
-        prompts.forEach((p, i) => {
-            lines.push(``, `#${i + 1}  |  ${p.promptType}  |  Origin: ${p.origin}`)
-            if (p.title) lines.push(`Title: ${p.title}`)
-            lines.push(p.body, '─'.repeat(40))
-        })
-    }
-
-    const notes = normalizeNotes(c?.notes ?? [])
-    if (notes.length > 0) {
-        lines.push('', 'NOTES', '─'.repeat(40))
-        notes.forEach((n, i) => { lines.push(`#${i + 1}: ${n.body}`) })
-    }
-
-    return lines.join('\n')
-}
+// ── Download Entity Pack ZIP (keystone: ENTITY.txt + MANIFEST.json + media) ──
 
 function DownloadEntityPackButton({ entity }: { entity: Entity }) {
     const [busy, setBusy] = useState(false)
@@ -599,50 +571,74 @@ function DownloadEntityPackButton({ entity }: { entity: Entity }) {
     const handleDownload = useCallback(async () => {
         if (busy) return
         setBusy(true)
-
-        const c = entity.content as any
-        const media = normalizeMedia(c?.media ?? [])
-
-        const assets = media.map((m, i) => ({
-            nodeId: `entity-media-${i}`,
-            type: m.kind,
-            bucket: m.kind === 'video' ? 'take-videos' : 'take-images',
-            storagePath: m.storage_path,
-            originalFilename: m.filename || `media-${i}`,
-            exportName: m.filename || `media-${i}`,
-            role: 'ref' as const,
-        }))
-
-        const promptFileText = formatEntityPackText(entity)
-        const zipName = `entity-${entity.name.replace(/[^a-zA-Z0-9]/g, '_')}-pack`
-
         try {
+            const c = entity.content as any
+            const mediaItems = normalizeMedia(c?.media ?? [])
+            const promptItems = normalizePrompts(c?.prompts ?? [])
+            const noteItems = normalizeNotes(c?.notes ?? [])
+
+            const assets = mediaItems
+                .filter(m => m.storage_path)
+                .map((m, i) => ({
+                    nodeId: `entity-media-${i}`,
+                    type: m.kind,
+                    bucket: m.kind === 'video' ? 'take-videos' : 'take-images',
+                    storagePath: m.storage_path,
+                    originalFilename: m.filename || `media-${i + 1}`,
+                    exportName: m.filename || `media-${i + 1}`,
+                    role: 'attachment' as const,
+                }))
+
+            if (assets.length === 0) { setBusy(false); return }
+
+            const meta: EntityMeta = { id: entity.id, name: entity.name, type: entity.entity_type }
+            const entityTxt = buildEntityTxt(meta, mediaItems, promptItems, noteItems)
+            const manifestJson = buildManifestJson(meta, mediaItems)
+
+            const promptLines: string[] = []
+            const SEP = '─'.repeat(40)
+            if (promptItems.length > 0) {
+                promptItems.forEach((p, i) => {
+                    if (i > 0) promptLines.push('', SEP, '')
+                    promptLines.push(`PROMPT #${i + 1}  |  ${p.promptType || 'prompt'}  |  Generated with: ${p.origin || '—'}`)
+                    promptLines.push(SEP)
+                    if (p.title) promptLines.push(p.title)
+                    promptLines.push(p.body)
+                })
+            }
+            if (noteItems.length > 0) {
+                if (promptLines.length > 0) promptLines.push('', SEP, '')
+                promptLines.push('NOTES', SEP)
+                noteItems.forEach((n, i) => { if (i > 0) promptLines.push(''); promptLines.push(n.body) })
+            }
+
+            const zipName = `entity_${entity.name.replace(/\s+/g, '-').toLowerCase()}.zip`
             const resp = await fetch('/api/export-pack', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ mode: 'pack', assets, promptFileText, zipName }),
+                body: JSON.stringify({
+                    mode: 'pack',
+                    assets,
+                    promptFileText: promptLines.length > 0 ? promptLines.join('\n') : undefined,
+                    zipName,
+                    extraTextFiles: [
+                        { path: 'ENTITY.txt', content: entityTxt },
+                        { path: 'MANIFEST.json', content: manifestJson },
+                    ],
+                }),
             })
-            if (!resp.ok) {
-                console.error('[entity-pack] export failed:', resp.status)
-                setBusy(false)
-                return
-            }
+            if (!resp.ok) { console.error('[entity-pack] export failed:', resp.status); return }
             const blob = await resp.blob()
-            if (blob.size === 0) { setBusy(false); return }
-
-            const cd = resp.headers.get('content-disposition') ?? ''
-            const fnMatch = cd.match(/filename="?([^";\s]+)"?/)
-            const filename = fnMatch?.[1] ?? `${zipName}.zip`
-
-            const url = URL.createObjectURL(blob)
             const a = document.createElement('a')
-            a.href = url; a.download = filename; a.style.display = 'none'
-            document.body.appendChild(a); a.click()
-            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url) }, 100)
+            a.href = URL.createObjectURL(blob)
+            a.download = zipName
+            document.body.appendChild(a); a.click(); document.body.removeChild(a)
+            URL.revokeObjectURL(a.href)
         } catch (err) {
             console.error('[entity-pack] download error:', err)
+        } finally {
+            setBusy(false)
         }
-        setBusy(false)
     }, [entity, busy])
 
     return (
@@ -651,7 +647,7 @@ function DownloadEntityPackButton({ entity }: { entity: Entity }) {
             disabled={busy}
             className="w-full px-2 py-1.5 text-[10px] rounded bg-zinc-700/60 border border-zinc-600/40 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 disabled:opacity-50 transition-colors text-center"
         >
-            {busy ? '⏳ Packing…' : '📦 Download Pack'}
+            {busy ? '⏳ Packing…' : '↓ Entity Pack'}
         </button>
     )
 }
