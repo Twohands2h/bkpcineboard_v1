@@ -35,7 +35,7 @@ import { CrystallizeModal } from '@/components/entities/crystallize-modal'
 import { EntityEditOverlay } from '@/components/entities/entity-edit-overlay'
 import { ENTITY_TYPE_UI } from '@/lib/entities/entity-type-ui'
 import type { EntityType } from '@/app/actions/entities'
-import { crystallizeEntityAction, getEntityAction } from '@/app/actions/entities'
+import { crystallizeEntityAction, getEntityAction, listEntitiesAction } from '@/app/actions/entities'
 import type { Entity } from '@/app/actions/entities'
 
 // ===================================================
@@ -836,6 +836,11 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const pendingEntityDropRef = useRef<{ screenX: number; screenY: number } | null>(null)
   const [entityLibraryFilter, setEntityLibraryFilter] = useState<EntityType | undefined>(undefined)
   const [ghostEntityType, setGhostEntityType] = useState<EntityType | null>(null)
+  // Entities for @mention in Note/Prompt nodes — lightweight fetch, no polling
+  const [canvasEntities, setCanvasEntities] = useState<Entity[]>([])
+  useEffect(() => { listEntitiesAction(projectId).then(setCanvasEntities).catch(() => { }) }, [projectId])
+  // Canvas selection state — drives floating Crystallize CTA visibility
+  const [canvasSelectionIds, setCanvasSelectionIds] = useState<Set<string>>(new Set())
   const [crystallizeState, setCrystallizeState] = useState<{
     selectedIds: string[]
     entityContent: any
@@ -852,6 +857,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
 
   const handleSelectionChange = useCallback((ids: Set<string>, primaryId: string | null) => {
     inspectorSelectionRef.current = { ids, primaryId }
+    setCanvasSelectionIds(new Set(ids))
     // Only trigger re-render if inspector is open — avoids render storms when closed
     if (inspectorOpen) setInspectorPrimaryId(primaryId)
   }, [inspectorOpen])
@@ -1208,9 +1214,6 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       <div className="flex-1 flex">
         <aside className="w-12 bg-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
           {/* Tool rail ALTO: azioni */}
-          <button onClick={() => setShowEntityLibrary(true)} title="Entity Library">
-            👤
-          </button>
           {/* More menu (⋯) — secondary actions */}
           <div className="relative group">
             <button
@@ -1338,12 +1341,19 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
           >
             <span className="text-[9px] text-amber-400 pointer-events-none">Prm</span>
           </button>
-          <button onClick={handleCrystallize} title="Crystallize Selection → Entity">
-            💎
-          </button>
-
           {/* Entity type tokens — drag to insert entity_ref filtered by type */}
+          {/* Entity Library book button — above tokens, below divider */}
           <div className="w-6 border-t border-zinc-700 my-1" />
+          <button
+            onClick={() => setShowEntityLibrary(true)}
+            title="Entity Library"
+            className="w-9 h-9 hover:bg-zinc-700/60 rounded flex items-center justify-center transition-all select-none"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="text-zinc-400 hover:text-zinc-200">
+              <path d="M3 2.5A1.5 1.5 0 0 1 4.5 1h7A1.5 1.5 0 0 1 13 2.5v11a.5.5 0 0 1-.765.424L8 11.434l-4.235 2.49A.5.5 0 0 1 3 13.5v-11Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+              <path d="M6 5h4M6 7.5h3" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+            </svg>
+          </button>
           {([
             ['character', 'Char', 'text-amber-400   bg-amber-500/10   border-amber-500/40'],
             ['environment', 'Envi', 'text-emerald-400 bg-emerald-500/10 border-emerald-500/40'],
@@ -1657,8 +1667,33 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
               onSelectionChange={handleSelectionChange}
               onToggleInspector={handleToggleInspector}
               onOpenInspector={() => setInspectorOpen(true)}
+              entities={canvasEntities}
             />
           )}
+
+          {/* Floating Crystallize CTA — centered bottom, visible when crystallizable nodes selected */}
+          {(() => {
+            if (canvasSelectionIds.size === 0) return null
+            const snap = canvasRef.current?.getSnapshot()
+            if (!snap) return null
+            const selectedNodes = snap.nodes.filter(n => canvasSelectionIds.has(n.id))
+            const crystallizable = selectedNodes.filter(n => n.type !== 'column' && n.type !== 'entity_ref')
+            if (crystallizable.length === 0) return null
+            return (
+              <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-[200] pointer-events-none flex items-center justify-center">
+                <button
+                  onClick={handleCrystallize}
+                  className="pointer-events-auto flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-900/95 border border-amber-500/60 text-amber-400 text-[11px] font-semibold shadow-2xl hover:bg-zinc-800 hover:border-amber-400 transition-all select-none"
+                  title="Crystallize selection into Entity"
+                >
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M8 1L10.5 5.5H13.5L11.5 8.5L13 13L8 10.5L3 13L4.5 8.5L2.5 5.5H5.5L8 1Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+                  </svg>
+                  Crystallize {crystallizable.length > 1 ? `(${crystallizable.length})` : ''}
+                </button>
+              </div>
+            )
+          })()}
 
           {/* Inspector handle icon — right edge, visible only when inspector is closed */}
           {!inspectorOpen && readyTakeId && (
