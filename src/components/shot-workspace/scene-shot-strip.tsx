@@ -170,10 +170,10 @@ export function SceneShotStrip({
                     <div className="w-px h-6 bg-zinc-800 shrink-0" />
                     <button
                         onClick={onNewShot}
-                        className="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors text-[10px] font-medium"
+                        className="shrink-0 flex items-center gap-1.5 px-3 py-1 rounded border border-transparent hover:border-zinc-600 hover:bg-zinc-800 hover:text-zinc-200 text-zinc-500 transition-colors text-[10px] font-medium focus:outline-none focus:border-zinc-500"
                         title="New Shot in this scene"
                     >
-                        <span className="text-[11px] leading-none">+</span>
+                        <span className="text-[13px] leading-none font-light">+</span>
                         <span>New Shot</span>
                     </button>
                 </>

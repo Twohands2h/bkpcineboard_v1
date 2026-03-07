@@ -787,7 +787,15 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
   const [showNewShotModal, setShowNewShotModal] = useState(false)
   const [newShotName, setNewShotName] = useState('')
   const [newShotTag, setNewShotTag] = useState('')
+  const [newShotPlacement, setNewShotPlacement] = useState<'end' | 'after'>('end')
   const [newShotPending, setNewShotPending] = useState(false)
+
+  const closeNewShotModal = () => {
+    setShowNewShotModal(false)
+    setNewShotName('')
+    setNewShotTag('')
+    setNewShotPlacement('end')
+  }
 
   const handleNewShotSubmit = async () => {
     const name = newShotName.trim()
@@ -799,10 +807,9 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
         sceneId: shot.scene_id,
         name,
         tag: newShotTag.trim() || undefined,
+        afterShotId: newShotPlacement === 'after' ? shot.id : undefined,
       })
-      setShowNewShotModal(false)
-      setNewShotName('')
-      setNewShotTag('')
+      closeNewShotModal()
       router.push(`/projects/${projectId}/shots/${newShotId}`)
     } catch (err) {
       console.error('Failed to create shot:', err)
@@ -1803,7 +1810,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
       {showNewShotModal && (
         <div
           className="fixed inset-0 z-[200] bg-black/70 flex items-center justify-center"
-          onClick={() => { setShowNewShotModal(false); setNewShotName(''); setNewShotTag('') }}
+          onClick={closeNewShotModal}
         >
           <div
             className="bg-zinc-900 border border-zinc-700 rounded-lg p-5 w-80 flex flex-col gap-4 shadow-2xl"
@@ -1818,7 +1825,7 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 type="text"
                 value={newShotName}
                 onChange={e => setNewShotName(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleNewShotSubmit(); if (e.key === 'Escape') { setShowNewShotModal(false); setNewShotName(''); setNewShotTag('') } }}
+                onKeyDown={e => { if (e.key === 'Enter') handleNewShotSubmit(); if (e.key === 'Escape') closeNewShotModal() }}
                 placeholder="e.g. Reaction close-up"
                 className="bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
               />
@@ -1830,15 +1837,39 @@ export function ShotWorkspaceClient({ shot, takes: initialTakes, projectId, stri
                 type="text"
                 value={newShotTag}
                 onChange={e => setNewShotTag(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleNewShotSubmit(); if (e.key === 'Escape') { setShowNewShotModal(false); setNewShotName(''); setNewShotTag('') } }}
+                onKeyDown={e => { if (e.key === 'Enter') handleNewShotSubmit(); if (e.key === 'Escape') closeNewShotModal() }}
                 placeholder="e.g. B-roll"
                 className="bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
               />
             </div>
 
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Placement</label>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setNewShotPlacement('end')}
+                  className={`flex-1 px-3 py-1.5 text-xs rounded border transition-colors ${newShotPlacement === 'end'
+                      ? 'border-zinc-500 bg-zinc-700 text-zinc-100'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600'
+                    }`}
+                >
+                  End of scene
+                </button>
+                <button
+                  onClick={() => setNewShotPlacement('after')}
+                  className={`flex-1 px-3 py-1.5 text-xs rounded border transition-colors ${newShotPlacement === 'after'
+                      ? 'border-zinc-500 bg-zinc-700 text-zinc-100'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600'
+                    }`}
+                >
+                  After current shot
+                </button>
+              </div>
+            </div>
+
             <div className="flex justify-end gap-2 pt-1">
               <button
-                onClick={() => { setShowNewShotModal(false); setNewShotName(''); setNewShotTag('') }}
+                onClick={closeNewShotModal}
                 className="px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
               >
                 Cancel
